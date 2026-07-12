@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments and local configuration
+.venv/
+.venv-*/
+venv/
+.env
+.env.*
+!.env.example
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Editors and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*~
+*.swp
+
+# Experiment outputs: committed evidence lives under paper/evidence/ instead
+logs/
+logs_*/
+outputs/
+runs/
+wandb/
+checkpoints/
+checkpoints_*/
+traces/
+traces_*/
+*.pt
+*.pth
+*.ckpt
+*.log
+
+# LaTeX build products. Do not ignore source PDFs/SVGs globally.
+paper/build/
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+
+# Keep committed raw JSON/CSV and paper figures trackable.
+!paper/evidence/raw/**
+!paper/evidence/tables/**
+!paper/figures/**
