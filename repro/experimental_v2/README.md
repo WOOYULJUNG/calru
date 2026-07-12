@@ -188,6 +188,17 @@ python repro/experimental_v2/launch_p0.py \
 이 행렬은 RP 세 조건 18, CA/RG horizon-information control 12, RG-LRU main 24,
 matched GRU 6, RG-LRU learning-rate sensitivity 12 runs로 구성된다.
 
+학습과 다섯 checkpoint-only 분석을 한 번에 순차 실행하려면 환경 경로를 지정해
+`run_confirmatory_pipeline.sh`를 사용한다. 학습이 성공한 뒤 fixed performance,
+retention permutation, campaign/legacy dynamics, ring transport가 GPU별로 병렬 실행된다.
+
+```bash
+ARTIFACT_ROOT=/path/to/p0-training \
+ANALYSIS_ROOT=/path/to/p0-analysis \
+PYTHON=/path/to/python \
+bash repro/experimental_v2/run_confirmatory_pipeline.sh
+```
+
 `--dry-run`에서 모든 조건이 `ready`이고 manifest의 `parameter_match`가 5% 이내인
 것을 확인한 뒤에만 같은 명령에서 `--dry-run`을 제거한다. 향후 variant가 현재
 builder에서 사라지거나 parameter matching이 실패하면 실제 실행은 어떤 job도
