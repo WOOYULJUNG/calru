@@ -11,9 +11,11 @@
    요약표다.
 3. [`notes/methods_equations_data_ko.md`](notes/methods_equations_data_ko.md)는
    수식, 실험 방법, 수치 주장과 한계를 코드에 대조한 감사본이다.
-4. [`manuscript/sections_01_02.md`](manuscript/sections_01_02.md)는 현재 최신인
+4. [`notes/additional_experiments_ko.md`](notes/additional_experiments_ko.md)는
+   최신 living draft의 주장에 필요한 추가 실험과 실행 우선순위를 정리한다.
+5. [`manuscript/sections_01_02.md`](manuscript/sections_01_02.md)는 현재 최신인
    Introduction과 Related Work 조각이다.
-5. [`archive/`](archive/)는 역사 보존용이며 현재 주장이나 수치의 근거가 아니다.
+6. [`archive/`](archive/)는 역사 보존용이며 현재 주장이나 수치의 근거가 아니다.
 
 ## 현재 빠진 논문 자산
 
