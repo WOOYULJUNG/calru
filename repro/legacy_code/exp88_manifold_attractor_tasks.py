@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
 import random
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +47,49 @@ TASKS = (
     "surface_hold",
     "surface_integrate",
 )
+
+
+def deterministic_experiment_seed(base_seed: int, task: str, seed: int, purpose: str, step: int = 0) -> int:
+    """Derive a stable RNG seed without depending on Python's randomized hash."""
+
+    payload = f"{int(base_seed)}|{task}|{int(seed)}|{purpose}|{int(step)}".encode("utf-8")
+    return int(hashlib.sha256(payload).hexdigest()[:8], 16) & 0x7FFFFFFF
+
+
+@contextmanager
+def isolated_experiment_rng(seed: int):
+    """Use a deterministic Python/NumPy/Torch RNG stream, then restore callers.
+
+    The v2 launcher uses this to keep training batches, long-horizon probes,
+    and final evaluation independent.  Legacy runs retain their historical
+    behavior by leaving the corresponding seed-base arguments negative.
+    """
+
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+    try:
+        with torch.random.fork_rng(devices=devices, enabled=True):
+            random.seed(int(seed))
+            np.random.seed(int(seed) % (2**32 - 1))
+            torch.manual_seed(int(seed))
+            if devices:
+                torch.cuda.manual_seed_all(int(seed))
+            yield
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+
+
+def configure_deterministic_runtime(enabled: bool) -> None:
+    """Enable the deterministic CUDA/CPU policy used by confirmatory v2 runs."""
+
+    if not enabled:
+        return
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True)
 
 
 def fixed_rotation(device, dtype, seed: int = 123):
@@ -574,6 +619,7 @@ def train_eval_one(args):
     geom = task_geometry(task)
     rank_for_model = model_rank_for_task(task)
 
+    configure_deterministic_runtime(bool(args.deterministic_training))
     set_seed(seed)
     ensure_dir(args.out_dir)
     ensure_dir(args.ckpt_dir)
@@ -638,8 +684,16 @@ def train_eval_one(args):
     t0 = time.time()
     model.train()
     for step in range(1, int(args.steps) + 1):
-        horizon = random.randint(int(args.train_min), int(args.train_max))
-        x, y, _, _ = make_task_batch(task, int(args.batch), horizon, args.device_obj, args)
+        if int(args.train_data_seed_base) >= 0:
+            train_seed = deterministic_experiment_seed(
+                int(args.train_data_seed_base), task, seed, "train_batch", step
+            )
+            with isolated_experiment_rng(train_seed):
+                horizon = random.randint(int(args.train_min), int(args.train_max))
+                x, y, _, _ = make_task_batch(task, int(args.batch), horizon, args.device_obj, args)
+        else:
+            horizon = random.randint(int(args.train_min), int(args.train_max))
+            x, y, _, _ = make_task_batch(task, int(args.batch), horizon, args.device_obj, args)
         out = model(x)
         task_loss = F.mse_loss(out, y)
         reg = model.regularization_loss() if hasattr(model, "regularization_loss") else None
@@ -653,14 +707,28 @@ def train_eval_one(args):
 
         if is_pan_variant(variant) and not args.force_all_slow and step % int(args.pan_probe_every) == 0:
             model.eval()
-            probe_x, _, probe_target, _ = make_task_batch(
-                task,
-                int(args.pan_probe_batch),
-                int(args.pan_probe_horizon),
-                args.device_obj,
-                args,
-                profile="train",
-            )
+            if int(args.probe_seed_base) >= 0:
+                probe_seed = deterministic_experiment_seed(
+                    int(args.probe_seed_base), task, seed, "long_horizon_probe", step
+                )
+                with isolated_experiment_rng(probe_seed):
+                    probe_x, _, probe_target, _ = make_task_batch(
+                        task,
+                        int(args.pan_probe_batch),
+                        int(args.pan_probe_horizon),
+                        args.device_obj,
+                        args,
+                        profile="train",
+                    )
+            else:
+                probe_x, _, probe_target, _ = make_task_batch(
+                    task,
+                    int(args.pan_probe_batch),
+                    int(args.pan_probe_horizon),
+                    args.device_obj,
+                    args,
+                    profile="train",
+                )
             score_payload, _ = compute_pan_scores_for_task(model, probe_x, probe_target, int(args.pan_h_probe))
             all_scores = torch.cat([scores.detach().flatten() for _, scores in score_payload])
             pan_last_score_mean = float(all_scores.mean().item())
@@ -689,7 +757,15 @@ def train_eval_one(args):
             lambda_trace["pan_score_mean"].append(float(pan_last_score_mean))
             lambda_trace["pan_score_max"].append(float(pan_last_score_max))
 
-    metrics = evaluate_model(model, task, args)
+    evaluation_seed = ""
+    if int(args.eval_seed_base) >= 0:
+        evaluation_seed = deterministic_experiment_seed(
+            int(args.eval_seed_base), task, 0, "fixed_evaluation", 0
+        )
+        with isolated_experiment_rng(evaluation_seed):
+            metrics = evaluate_model(model, task, args)
+    else:
+        metrics = evaluate_model(model, task, args)
     result = {
         "task": task,
         "geometry": geom.name,
@@ -702,6 +778,8 @@ def train_eval_one(args):
         "tag": tag,
         "seed": seed,
         "params": sum(p.numel() for p in model.parameters() if p.requires_grad),
+        "params_trainable": sum(p.numel() for p in model.parameters() if p.requires_grad),
+        "params_total": sum(p.numel() for p in model.parameters()),
         "train_steps": int(args.steps),
         "train_min": int(args.train_min),
         "train_max": int(args.train_max),
@@ -718,6 +796,20 @@ def train_eval_one(args):
         "rec_dim": int(args.rec_dim),
         "layers": int(args.layers),
         "lr": float(args.lr),
+        "train_data_seed_base": int(args.train_data_seed_base),
+        "probe_seed_base": int(args.probe_seed_base),
+        "eval_seed_base": int(args.eval_seed_base),
+        "evaluation_seed": evaluation_seed,
+        "deterministic_rng_streams": bool(
+            int(args.train_data_seed_base) >= 0
+            and int(args.probe_seed_base) >= 0
+            and int(args.eval_seed_base) >= 0
+        ),
+        "deterministic_training": bool(args.deterministic_training),
+        "torch_deterministic_algorithms": bool(torch.are_deterministic_algorithms_enabled()),
+        "cudnn_deterministic": bool(torch.backends.cudnn.deterministic),
+        "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
+        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", ""),
         "slow_lambda_init_mode": args.slow_lambda_init_mode,
         "slow_lambda_min": float(args.slow_lambda_min),
         "slow_lambda_max": float(args.slow_lambda_max),
@@ -747,6 +839,13 @@ def train_eval_one(args):
             lambda_gt_0p99=np.asarray(lambda_trace["lambda_gt_0p99"], dtype=np.int64),
             pan_score_mean=np.asarray(lambda_trace["pan_score_mean"], dtype=np.float32),
             pan_score_max=np.asarray(lambda_trace["pan_score_max"], dtype=np.float32),
+        )
+    if args.log_loss_trajectory:
+        np.savez_compressed(
+            os.path.join(args.trace_dir, f"{task}_{tag}_seed{seed}_loss_trace.npz"),
+            steps=np.arange(1, len(losses) + 1, dtype=np.int64),
+            train_total_loss=np.asarray(losses, dtype=np.float32),
+            train_task_loss=np.asarray(task_losses, dtype=np.float32),
         )
     return {"status": "done", "path": json_path}
 
@@ -837,6 +936,11 @@ def parse_args():
     p.add_argument("--all-slow-lambda", type=float, default=0.999)
     p.add_argument("--log-lambda-trajectory", action="store_true")
     p.add_argument("--lambda-log-every", type=int, default=1000)
+    p.add_argument("--log-loss-trajectory", action="store_true")
+    p.add_argument("--train-data-seed-base", type=int, default=-1)
+    p.add_argument("--probe-seed-base", type=int, default=-1)
+    p.add_argument("--eval-seed-base", type=int, default=-1)
+    p.add_argument("--deterministic-training", action="store_true")
     p.add_argument("--gpu", type=int, default=-1)
     p.add_argument("--device", default="auto")
     p.add_argument("--out-dir", default="exp88_manifold_results")

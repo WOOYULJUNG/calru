@@ -7,8 +7,10 @@
 
 현재 보장하는 재현 범위는 **저장된 raw JSON/CSV에서 9개의 논문 증거표를
 결정적으로 다시 집계하는 것**이다. 학습 코드는 [`repro/`](repro/)에 보존되어
-있지만, 원 checkpoint와 trace가 포함되어 있지 않고 launcher도 공개 환경에서
-end-to-end로 다시 검증되지 않았다. 따라서 이 저장소는 아직 “모든 모델을
+있지만 원 checkpoint와 trace가 포함되어 있지 않다. 새 P0 confirmatory launcher와
+축소 GPU end-to-end 검증은 [`repro/experimental_v2/`](repro/experimental_v2/)에
+별도로 추가했지만, full 10,000-step campaign 결과는 아직 생성 중이다. 따라서 이
+저장소는 아직 “모든 모델을
 처음부터 재학습하여 동일 수치를 얻는 완전한 학습 재현 패키지”가 아니다.
 
 ## 먼저 확인할 상태
@@ -86,6 +88,7 @@ paper/
   figures/               최종 figure를 위한 자리와 규칙
 repro/
   legacy_code/           실험 당시 파일명 그대로의 코드 snapshot
+  experimental_v2/       격리된 P0 학습·fixed test·동역학 분석
 src/calru_paper/          결정적 evidence 집계 구현
 scripts/                  사용자용 집계·검증 진입점
 tests/                    집계 재현성 검사

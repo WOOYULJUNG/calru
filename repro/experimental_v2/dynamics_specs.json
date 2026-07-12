@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "description": "Checkpoint-only Exp88 dynamics evaluation: final state-dependent CA-LRU and existing comparison checkpoints.",
+  "checkpoints": [
+    {
+      "paper_model": "CA-LRU",
+      "task": "ring_hold",
+      "tag": "am_lru_rnw_eps3e-5",
+      "result_dir": "exp88_writer_sweep_results",
+      "checkpoint_dir": "checkpoints_exp88_writer_sweep"
+    },
+    {
+      "paper_model": "LRU",
+      "task": "ring_hold",
+      "tag": "lru",
+      "result_dir": "exp88_manifold_main_results",
+      "checkpoint_dir": "checkpoints_exp88_manifold_main"
+    },
+    {
+      "paper_model": "GRU",
+      "task": "ring_hold",
+      "tag": "gru",
+      "result_dir": "exp88_manifold_main_results",
+      "checkpoint_dir": "checkpoints_exp88_manifold_main"
+    },
+    {
+      "paper_model": "CA-LRU",
+      "task": "torus_integrate",
+      "tag": "am_lru_rnw_eps3e-5",
+      "result_dir": "exp88_writer_sweep_results",
+      "checkpoint_dir": "checkpoints_exp88_writer_sweep"
+    },
+    {
+      "paper_model": "LRU",
+      "task": "torus_integrate",
+      "tag": "lru",
+      "result_dir": "exp88_manifold_main_results",
+      "checkpoint_dir": "checkpoints_exp88_manifold_main"
+    },
+    {
+      "paper_model": "GRU",
+      "task": "torus_integrate",
+      "tag": "gru",
+      "result_dir": "exp88_manifold_main_results",
+      "checkpoint_dir": "checkpoints_exp88_manifold_main"
+    }
+  ]
+}

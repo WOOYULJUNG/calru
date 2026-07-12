@@ -28,7 +28,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from pan_block import BLOCK_VARIANTS, build_block_model, normalize_block_variant
+from pan_block import (
+    BLOCK_VARIANTS,
+    build_block_model,
+    find_parameter_matched_rec_dim,
+    normalize_block_variant,
+)
 from plru_regularizers import DEFAULT_C, DEFAULT_TAU, DEFAULT_WARMUP_FRAC, canonical_q_loss_from_lam
 
 
@@ -74,6 +79,8 @@ MODEL_COLORS = {
     "PAN-full": "#2563EB",
     "PAN-NW-full": "#38BDF8",
     "PAN-RNW-full": "#0F766E",
+    "RG-LRU-full": "#8B5CF6",
+    "GRU-full": "#1D4ED8",
 }
 MODEL_DISPLAY_NAMES = {
     "Leaky RNN": "Leaky RNN",
@@ -92,6 +99,8 @@ MODEL_DISPLAY_NAMES = {
     "rm-real full zero-drive": "rank-matched LRU full",
     "PAN-NW-full": "AM-LRU-NW",
     "PAN-RNW-full": "AM-LRU-RNW",
+    "RG-LRU-full": "RG-LRU",
+    "GRU-full": "GRU (shared scaffold)",
 }
 BASELINE_VARIANTS = (
     "RNN",
@@ -132,6 +141,12 @@ MODEL_VARIANTS = BASELINE_VARIANTS + (
     "PAN-NW-full",
     "PAN-RNW-full",
 )
+# Opt-in modern baselines. Keeping these separate preserves the historical
+# meaning of ``--models all`` and the default Exp71 sweep.
+ADDITIONAL_MODEL_VARIANTS = (
+    "RG-LRU-full",
+    "GRU-full",
+)
 _PLT = None
 _PLOT_IMPORT_FAILED = False
 
@@ -162,7 +177,16 @@ PAN_WRAPPER_CONFIGS = {
     "PAN-NW-full": {"encoder_bias": False, "use_norm_in": False},
     "PAN-RNW-full": {"encoder_bias": False, "use_norm_in": False},
 }
-WRAPPER_CONFIGS = {**RM_REAL_FULL_WRAPPER_CONFIGS, **LRU_FULL_WRAPPER_CONFIGS, **PAN_WRAPPER_CONFIGS}
+MODERN_WRAPPER_CONFIGS = {
+    "RG-LRU-full": {"encoder_bias": False, "use_norm_in": False},
+    "GRU-full": {"encoder_bias": False, "use_norm_in": False},
+}
+WRAPPER_CONFIGS = {
+    **RM_REAL_FULL_WRAPPER_CONFIGS,
+    **LRU_FULL_WRAPPER_CONFIGS,
+    **PAN_WRAPPER_CONFIGS,
+    **MODERN_WRAPPER_CONFIGS,
+}
 
 
 def is_pan_variant(variant):
@@ -302,6 +326,17 @@ def normalize_model_variant(name):
         "amlru-rnw": "PAN-RNW-full",
         "pan-recurrent-writer": "PAN-RNW-full",
         "pan-recurrent-writer-full": "PAN-RNW-full",
+        "rg-lru": "RG-LRU-full",
+        "rglru": "RG-LRU-full",
+        "rg-lru-full": "RG-LRU-full",
+        "rglru-full": "RG-LRU-full",
+        "griffin-rg-lru": "RG-LRU-full",
+        "griffin-rg-lru-full": "RG-LRU-full",
+        "gru-full": "GRU-full",
+        "scaffold-gru": "GRU-full",
+        "scaffold-gru-full": "GRU-full",
+        "matched-gru": "GRU-full",
+        "scaffold-matched-gru": "GRU-full",
         "pan-unit": "PAN-unit",
         "rank-matched-lru-unit": "rank-matched LRU unit",
         "rankmatched-lru-unit": "rank-matched LRU unit",
@@ -1029,6 +1064,11 @@ def build_model_variant(
     pan_lstm_forget_bias_init=1.0,
     pan_lstm_input_bias_init=0.0,
     pan_lstm_ablation_state="c_only",
+    rglru_num_blocks=16,
+    rglru_recurrence_scale=8.0,
+    rglru_min_radius=0.90,
+    rglru_max_radius=0.999,
+    gru_full_keep_bias_init=0.0,
 ):
     if variant == "RNN":
         return RNNBaseline(input_dim, output_dim, hidden=rec_dim)
@@ -1208,6 +1248,31 @@ def build_model_variant(
             pan_lambda_max=pan_lambda_max,
             **wrapper_kwargs,
         )
+    if variant in MODERN_WRAPPER_CONFIGS:
+        wrapper_kwargs = MODERN_WRAPPER_CONFIGS[variant]
+        block_variant = {
+            "RG-LRU-full": "RG-LRU-Block",
+            "GRU-full": "GRU-Block",
+        }[variant]
+        return build_block_model(
+            variant=block_variant,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            d_model=d_model,
+            rec_dim=rec_dim,
+            num_layers=layers,
+            dropout=dropout,
+            plru_tau=plru_tau,
+            plru_c=plru_c,
+            pan_lambda_min=pan_lambda_min,
+            pan_lambda_max=pan_lambda_max,
+            rglru_num_blocks=rglru_num_blocks,
+            rglru_recurrence_scale=rglru_recurrence_scale,
+            rglru_min_radius=rglru_min_radius,
+            rglru_max_radius=rglru_max_radius,
+            gru_keep_bias_init=gru_full_keep_bias_init,
+            **wrapper_kwargs,
+        )
     if variant == "rank-matched LRU-Block":
         model = build_block_model(
             variant="LRU-Block",
@@ -1242,6 +1307,87 @@ def build_model_variant(
         pan_lambda_min=pan_lambda_min,
         pan_lambda_max=pan_lambda_max,
     )
+
+
+def select_scaffold_matched_rec_dim(
+    candidate_variant,
+    input_dim,
+    output_dim,
+    d_model=96,
+    reference_rec_dim=96,
+    layers=1,
+    dropout=0.0,
+    candidate_rec_dims=None,
+    rglru_num_blocks=16,
+    rglru_recurrence_scale=8.0,
+    rglru_min_radius=0.90,
+    rglru_max_radius=0.999,
+    gru_full_keep_bias_init=0.0,
+):
+    """Choose an RG-LRU/GRU width nearest to the final CA-LRU parameter count.
+
+    The reference and candidate use the same Exp88 outer scaffold: bias-free
+    encoder, no input LayerNorm, shared block GLU/residual/output LayerNorm,
+    and the same head. Only the recurrent module and, when necessary, its
+    internal width differ. Matching counts every stored parameter, including
+    CA-LRU theta values updated by RP despite ``requires_grad=False``. The
+    returned object also records gradient-trainable counts separately.
+    """
+
+    candidate_variant = normalize_model_variant(candidate_variant)
+    block_variants = {
+        "RG-LRU-full": "RG-LRU-Block",
+        "GRU-full": "GRU-Block",
+    }
+    if candidate_variant not in block_variants:
+        valid = ", ".join(block_variants)
+        raise ValueError(
+            f"parameter matching supports {valid}; got {candidate_variant!r}"
+        )
+
+    common_kwargs = dict(
+        input_dim=int(input_dim),
+        output_dim=int(output_dim),
+        d_model=int(d_model),
+        num_layers=int(layers),
+        dropout=float(dropout),
+        encoder_bias=False,
+        use_norm_in=False,
+    )
+    if candidate_rec_dims is None:
+        max_width = 2 * max(int(reference_rec_dim), int(d_model))
+        if candidate_variant == "RG-LRU-full":
+            blocks = int(rglru_num_blocks)
+            candidate_rec_dims = range(blocks, max_width + 1, blocks)
+        else:
+            candidate_rec_dims = range(1, max_width + 1)
+
+    def candidate_factory(rec_dim):
+        return build_block_model(
+            variant=block_variants[candidate_variant],
+            rec_dim=int(rec_dim),
+            rglru_num_blocks=int(rglru_num_blocks),
+            rglru_recurrence_scale=float(rglru_recurrence_scale),
+            rglru_min_radius=float(rglru_min_radius),
+            rglru_max_radius=float(rglru_max_radius),
+            gru_keep_bias_init=float(gru_full_keep_bias_init),
+            **common_kwargs,
+        )
+
+    # Parameter counting should not alter the seed stream used to initialize
+    # the actual experiment model.
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        reference = build_block_model(
+            variant="PAN-RNW-Block",
+            rec_dim=int(reference_rec_dim),
+            **common_kwargs,
+        )
+        return find_parameter_matched_rec_dim(
+            reference_model=reference,
+            candidate_factory=candidate_factory,
+            candidate_rec_dims=candidate_rec_dims,
+        )
 
 
 def rmse(pred, target):

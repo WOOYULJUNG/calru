@@ -21,6 +21,22 @@
 4. 기존 checkpoint를 이용해 carrier-only perturbation, clean-state-family,
    zero-input Jacobian을 다시 분석한다.
 
+### 2026-07-12 실행 결정
+
+사전 구현·GPU smoke를 통과한 confirmatory queue는 총 72 runs로 고정했다.
+
+- aligned RP / RP-off / uniform theta-cap: 18;
+- CA-LRU ordinary-gradient H=500 / RG-LRU H=500 auxiliary: 12;
+- RG-LRU 8 tasks: 24;
+- same-scaffold parameter-matched GRU anchors: 6;
+- RG-LRU anchor learning-rate sensitivity (`3e-4`, `3e-3`; main `1e-3`): 12.
+
+모든 조건은 training batch, long-horizon probe, fixed evaluation RNG를 분리하고
+deterministic CUDA 설정을 사용한다. 학습기 내부 metric과 별도로 공통 `.npy` test
+assets 및 SHA-256에서 H=1000 성능을 다시 계산한다. 완료 여부는 파일 존재가 아니라
+구조 검증과 artifact hash가 든 immutable receipt로 판단한다. P1의 5-seed 확장과
+parameter-matched writer sweep은 아래 decision gate를 본 뒤 진행한다.
+
 초안의 모든 P0 항목을 곧바로 전 task와 5 seeds로 실행할 필요는 없다. 두 anchor
 task에서 먼저 결과를 확인한 뒤 전체 task와 seed로 확장하는 편이 안전하다.
 

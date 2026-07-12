@@ -4,7 +4,7 @@ This module separates the shared sequence-model scaffold from the recurrent
 module. The intended comparison is:
 
     LRU-Block, near-one LRU-Block, real-diag LRU-Block, P-LRU-Block, PAN-Block,
-    PAN-NW-Block, PAN-RNW-Block
+    PAN-NW-Block, PAN-RNW-Block, RG-LRU-Block, GRU-Block
 
 All variants share encoder, block wrapper, GLU path, skip path, normalization,
 dropout, depth, width, and output head. The recurrent module is the intervention.
@@ -12,6 +12,7 @@ dropout, depth, width, and output head. The recurrent module is the intervention
 
 import math
 import re
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -28,6 +29,8 @@ BLOCK_VARIANTS = (
     "PAN-Block",
     "PAN-NW-Block",
     "PAN-RNW-Block",
+    "RG-LRU-Block",
+    "GRU-Block",
 )
 
 
@@ -60,6 +63,15 @@ def normalize_block_variant(name):
         "pan-rnw-block": "PAN-RNW-Block",
         "pan-recurrent-writer": "PAN-RNW-Block",
         "pan-recurrent-writer-block": "PAN-RNW-Block",
+        "rg-lru": "RG-LRU-Block",
+        "rglru": "RG-LRU-Block",
+        "rg-lru-block": "RG-LRU-Block",
+        "rglru-block": "RG-LRU-Block",
+        "griffin-rg-lru": "RG-LRU-Block",
+        "griffin-rg-lru-block": "RG-LRU-Block",
+        "gru-block": "GRU-Block",
+        "scaffold-gru": "GRU-Block",
+        "scaffold-gru-block": "GRU-Block",
     }
     if key not in aliases:
         valid = ", ".join(BLOCK_VARIANTS)
@@ -347,6 +359,228 @@ class PANNonlinearWriterRec(nn.Module):
         self.theta.clamp_(-18.0, 18.0)
 
 
+class BlockDiagonalLinear(nn.Module):
+    """Square block-diagonal affine map used by the Griffin RG-LRU gates.
+
+    This is intentionally local to the recurrence implementation so the
+    surrounding :class:`RecurrentBlock` remains identical across models.
+    ``width`` must be divisible by ``num_blocks``.
+    """
+
+    def __init__(self, width, num_blocks, variance_scale=1.0):
+        super().__init__()
+        self.width = int(width)
+        self.num_blocks = int(num_blocks)
+        if self.width <= 0:
+            raise ValueError(f"width must be positive, got {self.width}")
+        if self.num_blocks <= 0:
+            raise ValueError(f"num_blocks must be positive, got {self.num_blocks}")
+        if self.width % self.num_blocks != 0:
+            raise ValueError(
+                f"width ({self.width}) must be divisible by num_blocks ({self.num_blocks})"
+            )
+        self.block_width = self.width // self.num_blocks
+        self.variance_scale = float(variance_scale)
+        self.weight = nn.Parameter(
+            torch.empty(self.num_blocks, self.block_width, self.block_width)
+        )
+        self.bias = nn.Parameter(torch.empty(self.num_blocks, self.block_width))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        std = math.sqrt(self.variance_scale / self.block_width)
+        nn.init.normal_(self.weight, mean=0.0, std=std)
+        nn.init.zeros_(self.bias)
+
+    def forward(self, x):
+        if x.shape[-1] != self.width:
+            raise ValueError(
+                f"expected final dimension {self.width}, got {x.shape[-1]}"
+            )
+        blocked = x.reshape(*x.shape[:-1], self.num_blocks, self.block_width)
+        out = torch.einsum("...bi,bij->...bj", blocked, self.weight)
+        out = out + self.bias
+        return out.reshape(*x.shape[:-1], self.width)
+
+
+class _SqrtBoundDerivative(torch.autograd.Function):
+    """Square root whose backward derivative is capped for stability.
+
+    Griffin's reference implementation caps the derivative at 1000 to avoid
+    numerical failures when the dynamic recurrence approaches one.
+    """
+
+    max_gradient = 1000.0
+
+    @staticmethod
+    def forward(ctx, x):
+        ctx.save_for_backward(x)
+        return torch.sqrt(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (x,) = ctx.saved_tensors
+        clipped_x_times_four = torch.clamp(
+            4.0 * x, min=1.0 / (_SqrtBoundDerivative.max_gradient**2)
+        )
+        return grad_output / torch.sqrt(clipped_x_times_four)
+
+
+def _inverse_softplus(x):
+    """Numerically stable inverse of softplus for strictly positive ``x``."""
+
+    return x + torch.log(-torch.expm1(-x))
+
+
+class RGLRURec(nn.Module):
+    """Real-Gated LRU adapted to the shared CA-LRU block interface.
+
+    The recurrence follows De et al., *Griffin: Mixing Gated Linear
+    Recurrences with Local Attention for Efficient Language Models* (2024),
+    and Google DeepMind's reference RecurrentGemma implementation
+    (``google-deepmind/recurrentgemma`` commit ``2efa84d``,
+    ``recurrentgemma/torch/layers.py``)::
+
+        i_t = sigmoid(W_i x_t + b_i)
+        r_t = sigmoid(W_r x_t + b_r)
+        a_t = exp(-c * r_t * softplus(a_param))
+        h_t = a_t * h_{t-1} + sqrt(1 - a_t**2) * (i_t * x_t)
+
+    A learned input projection permits ``input_dim != hidden_dim`` while the
+    recurrence itself remains diagonal. Gate maps are block diagonal, as in
+    Griffin. The Conv1D and parallel branch from the language-model block are
+    deliberately omitted because the experiment holds the outer block
+    scaffold fixed and changes only its recurrent module.
+    """
+
+    def __init__(
+        self,
+        input_dim,
+        hidden_dim,
+        output_dim,
+        num_blocks=16,
+        recurrence_scale=8.0,
+        min_radius=0.90,
+        max_radius=0.999,
+        gate_variance_scale=1.0,
+    ):
+        super().__init__()
+        self.input_dim = int(input_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.output_dim = int(output_dim)
+        self.num_blocks = int(num_blocks)
+        self.recurrence_scale = float(recurrence_scale)
+        self.min_radius = float(min_radius)
+        self.max_radius = float(max_radius)
+        if self.input_dim <= 0 or self.hidden_dim <= 0 or self.output_dim <= 0:
+            raise ValueError("input_dim, hidden_dim, and output_dim must be positive")
+        if self.recurrence_scale <= 0.0:
+            raise ValueError("recurrence_scale must be positive")
+        if not (0.0 < self.min_radius < self.max_radius < 1.0):
+            raise ValueError(
+                "RG-LRU radii must satisfy 0 < min_radius < max_radius < 1"
+            )
+
+        # The reference recurrent block zero-initializes the projection bias.
+        # A bias-free adapter preserves the stronger blank-input identity:
+        # u_t=0 implies that the RG-LRU input contribution is exactly zero.
+        self.input_proj = nn.Linear(self.input_dim, self.hidden_dim, bias=False)
+        self.input_gate = BlockDiagonalLinear(
+            self.hidden_dim,
+            self.num_blocks,
+            variance_scale=gate_variance_scale,
+        )
+        self.recurrence_gate = BlockDiagonalLinear(
+            self.hidden_dim,
+            self.num_blocks,
+            variance_scale=gate_variance_scale,
+        )
+        self.a_param = nn.Parameter(torch.empty(self.hidden_dim))
+        self.out_proj = nn.Linear(self.hidden_dim, self.output_dim)
+        self.reset_parameters()
+
+    @property
+    def state_size(self):
+        return self.hidden_dim
+
+    def reset_parameters(self):
+        nn.init.normal_(
+            self.input_proj.weight,
+            mean=0.0,
+            std=math.sqrt(1.0 / self.input_dim),
+        )
+        self.input_gate.reset_parameters()
+        self.recurrence_gate.reset_parameters()
+        nn.init.normal_(
+            self.out_proj.weight,
+            mean=0.0,
+            std=math.sqrt(1.0 / self.hidden_dim),
+        )
+        nn.init.zeros_(self.out_proj.bias)
+        with torch.no_grad():
+            # Sampling radius squared uniformly matches the ring-area
+            # initialization used by the official implementation.
+            radius_sq = torch.empty_like(self.a_param).uniform_(
+                self.min_radius**2,
+                self.max_radius**2,
+            )
+            radius = torch.sqrt(radius_sq)
+            self.a_param.copy_(_inverse_softplus(-torch.log(radius)))
+
+    def lam_mag(self):
+        """Return the learned base radius before input-dependent gating."""
+
+        return torch.exp(-F.softplus(self.a_param))
+
+    def projected_input_and_gates(self, u_t):
+        x_t = self.input_proj(u_t)
+        input_gate = torch.sigmoid(self.input_gate(x_t))
+        recurrence_gate = torch.sigmoid(self.recurrence_gate(x_t))
+        return x_t, input_gate, recurrence_gate
+
+    def step(self, u_t, state):
+        x_t, input_gate, recurrence_gate = self.projected_input_and_gates(u_t)
+        log_a = -self.recurrence_scale * recurrence_gate * F.softplus(self.a_param)
+        a_t = torch.exp(log_a)
+        input_scale = _SqrtBoundDerivative.apply(
+            torch.clamp(1.0 - torch.exp(2.0 * log_a), min=0.0)
+        )
+        return a_t * state + input_scale * input_gate * x_t
+
+    def output(self, state):
+        return self.out_proj(state)
+
+
+class GRURec(nn.Module):
+    """Standard GRU recurrence behind the shared full-block scaffold."""
+
+    def __init__(self, input_dim, hidden_dim, output_dim, keep_bias_init=0.0):
+        super().__init__()
+        self.input_dim = int(input_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.output_dim = int(output_dim)
+        if self.input_dim <= 0 or self.hidden_dim <= 0 or self.output_dim <= 0:
+            raise ValueError("input_dim, hidden_dim, and output_dim must be positive")
+        self.cell = nn.GRUCell(self.input_dim, self.hidden_dim)
+        with torch.no_grad():
+            # PyTorch orders gates as reset, update, new. A positive update
+            # bias increases retention under its h'=(1-z)n+z h convention.
+            update = slice(self.hidden_dim, 2 * self.hidden_dim)
+            self.cell.bias_ih[update].fill_(float(keep_bias_init))
+            self.cell.bias_hh[update].zero_()
+        self.out_proj = nn.Linear(self.hidden_dim, self.output_dim)
+
+    @property
+    def state_size(self):
+        return self.hidden_dim
+
+    def step(self, u_t, state):
+        return self.cell(u_t, state)
+
+    def output(self, state):
+        return self.out_proj(state)
+
+
 class RecurrentBlock(nn.Module):
     """Shared block wrapper around an interchangeable recurrent module."""
 
@@ -437,6 +671,11 @@ class FullBlockSequenceModel(nn.Module):
         use_residual=True,
         decode_mode="stream",
         carry_stream=False,
+        rglru_num_blocks=16,
+        rglru_recurrence_scale=8.0,
+        rglru_min_radius=0.90,
+        rglru_max_radius=0.999,
+        gru_keep_bias_init=0.0,
     ):
         super().__init__()
         self.input_dim = int(input_dim)
@@ -447,6 +686,11 @@ class FullBlockSequenceModel(nn.Module):
         self.num_layers = int(num_layers)
         self.decode_mode = str(decode_mode)
         self.carry_stream = bool(carry_stream)
+        self.rglru_num_blocks = int(rglru_num_blocks)
+        self.rglru_recurrence_scale = float(rglru_recurrence_scale)
+        self.rglru_min_radius = float(rglru_min_radius)
+        self.rglru_max_radius = float(rglru_max_radius)
+        self.gru_keep_bias_init = float(gru_keep_bias_init)
 
         self.encoder = nn.Linear(self.input_dim, self.d_model, bias=bool(encoder_bias))
         self.blocks = nn.ModuleList()
@@ -544,6 +788,23 @@ class FullBlockSequenceModel(nn.Module):
                 lambda_max=pan_lambda_max,
                 writer_mode="recurrent",
             )
+        if self.variant == "RG-LRU-Block":
+            return RGLRURec(
+                input_dim=self.d_model,
+                hidden_dim=self.rec_dim,
+                output_dim=self.d_model,
+                num_blocks=self.rglru_num_blocks,
+                recurrence_scale=self.rglru_recurrence_scale,
+                min_radius=self.rglru_min_radius,
+                max_radius=self.rglru_max_radius,
+            )
+        if self.variant == "GRU-Block":
+            return GRURec(
+                input_dim=self.d_model,
+                hidden_dim=self.rec_dim,
+                output_dim=self.d_model,
+                keep_bias_init=self.gru_keep_bias_init,
+            )
         raise AssertionError(self.variant)
 
     @property
@@ -637,6 +898,11 @@ def build_block_model(
     use_residual=True,
     decode_mode="stream",
     carry_stream=False,
+    rglru_num_blocks=16,
+    rglru_recurrence_scale=8.0,
+    rglru_min_radius=0.90,
+    rglru_max_radius=0.999,
+    gru_keep_bias_init=0.0,
 ):
     return FullBlockSequenceModel(
         input_dim=input_dim,
@@ -659,4 +925,83 @@ def build_block_model(
         use_residual=use_residual,
         decode_mode=decode_mode,
         carry_stream=carry_stream,
+        rglru_num_blocks=rglru_num_blocks,
+        rglru_recurrence_scale=rglru_recurrence_scale,
+        rglru_min_radius=rglru_min_radius,
+        rglru_max_radius=rglru_max_radius,
+        gru_keep_bias_init=gru_keep_bias_init,
     )
+
+
+@dataclass(frozen=True)
+class ParameterMatch:
+    """Result of a recurrent-width parameter matching search."""
+
+    target_params: int
+    candidate_params: int
+    candidate_rec_dim: int
+    relative_error: float
+    target_trainable_params: int
+    candidate_trainable_params: int
+
+
+def count_trainable_parameters(model):
+    """Count trainable scalar parameters without counting frozen RP state."""
+
+    return sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+
+
+def count_model_parameters(model):
+    """Count every stored parameter, including RP-updated frozen theta values."""
+
+    return sum(parameter.numel() for parameter in model.parameters())
+
+
+def find_parameter_matched_rec_dim(reference_model, candidate_factory, candidate_rec_dims):
+    """Select the candidate recurrent width closest to ``reference_model``.
+
+    Args:
+        reference_model: Instantiated target model (normally CA-LRU).
+        candidate_factory: Callable taking an integer recurrent width and
+            returning an instantiated candidate model.
+        candidate_rec_dims: Finite iterable of positive widths to search. For
+            RG-LRU these should be divisible by the requested gate-block count.
+
+    Returns:
+        :class:`ParameterMatch`, with ties resolved toward the smaller width.
+
+    Candidate construction is isolated with ``torch.random.fork_rng`` so this
+    bookkeeping helper does not perturb experiment initialization.
+    """
+
+    target_params = count_model_parameters(reference_model)
+    target_trainable_params = count_trainable_parameters(reference_model)
+    if target_params <= 0:
+        raise ValueError("reference_model has no trainable parameters")
+    widths = sorted(set(int(width) for width in candidate_rec_dims))
+    if not widths or widths[0] <= 0:
+        raise ValueError("candidate_rec_dims must contain positive integers")
+
+    best = None
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        for width in widths:
+            candidate = candidate_factory(width)
+            candidate_params = count_model_parameters(candidate)
+            candidate_trainable_params = count_trainable_parameters(candidate)
+            error = abs(candidate_params - target_params) / target_params
+            match = ParameterMatch(
+                target_params=target_params,
+                candidate_params=candidate_params,
+                candidate_rec_dim=width,
+                relative_error=float(error),
+                target_trainable_params=target_trainable_params,
+                candidate_trainable_params=candidate_trainable_params,
+            )
+            if best is None or (match.relative_error, width) < (
+                best.relative_error,
+                best.candidate_rec_dim,
+            ):
+                best = match
+            del candidate
+    return best

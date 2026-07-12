@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "campaign_label": "p0_anchor_v1",
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "gpus": [
+    0,
+    1,
+    2
+  ],
+  "task_groups": {
+    "anchor": [
+      "ring_hold",
+      "torus_integrate"
+    ],
+    "main": [
+      "ring_hold",
+      "ring_integrate",
+      "torus_hold",
+      "torus_integrate",
+      "complex_curve_hold",
+      "complex_curve_integrate",
+      "surface_hold",
+      "surface_integrate"
+    ]
+  },
+  "training": {
+    "steps": 10000,
+    "batch": 256,
+    "eval_batch": 256,
+    "analysis_batch": 96,
+    "train_min": 80,
+    "train_max": 260,
+    "id_horizon": 260,
+    "temporal_horizons": [
+      500,
+      1000,
+      2000
+    ],
+    "post_holds": [
+      500,
+      1000
+    ],
+    "recovery_steps": [
+      0,
+      20,
+      100,
+      500
+    ],
+    "normal_radii": [
+      0.25,
+      0.5,
+      1.0
+    ],
+    "repeated_kicks": [
+      1,
+      20,
+      100
+    ],
+    "repeated_horizon": 500,
+    "velocity_scales": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "hold_min": 5,
+    "hold_max": 20,
+    "move_min": 3,
+    "move_max": 10,
+    "final_hold_min": 20,
+    "final_hold_max": 80,
+    "ood_hold_min": 30,
+    "ood_hold_max": 120,
+    "ood_final_hold_min": 100,
+    "ood_final_hold_max": 250,
+    "ring_velocity_deg": 3.0,
+    "torus_velocity_deg": 2.5,
+    "curve_velocity_deg": 2.5,
+    "surface_velocity_scale": 0.018,
+    "d_model": 96,
+    "rec_dim": 96,
+    "layers": 1,
+    "dropout": 0.0,
+    "lr": 0.001,
+    "grad_clip": 1.0,
+    "plru_tau": 0.001,
+    "plru_c": 50.0,
+    "rank_matched_lambda_high": 0.999,
+    "rank_matched_lambda_low": 0.0,
+    "slow_lambda_init_mode": "linspace",
+    "slow_lambda_min": 0.9,
+    "slow_lambda_max": 0.999,
+    "pan_lambda_min": 0.9,
+    "pan_lambda_max": 0.999,
+    "pan_warmup_frac": 0.3,
+    "train_data_seed_base": 880071,
+    "probe_seed_base": 880072,
+    "eval_seed_base": 880073,
+    "log_loss_trajectory": true,
+    "deterministic_training": true
+  },
+  "rp_controls": {
+    "enabled": true,
+    "task_group": "anchor",
+    "epsilon": 0.00003,
+    "eta_lambda": 3000,
+    "probe_every": 100,
+    "probe_batch": 96,
+    "probe_sequence_horizon": 260,
+    "probe_blank_horizon": 500,
+    "lambda_log_every": 1000,
+    "include_aligned": true,
+    "include_off": true,
+    "include_uniform_cap": true,
+    "uniform_lambdas": []
+  },
+  "standard_models": [
+    {
+      "name": "rg_lru_main",
+      "model": "rg-lru-full",
+      "worker_model": "RG-LRU-full",
+      "task_group": "main",
+      "enabled": false,
+      "parameter_match_to_ca_lru": true,
+      "reference_rec_dim": 96,
+      "max_parameter_mismatch": 0.05,
+      "training_overrides": {}
+    },
+    {
+      "name": "matched_gru_anchor",
+      "model": "matched-gru-full",
+      "worker_model": "GRU-full",
+      "task_group": "anchor",
+      "enabled": false,
+      "parameter_match_to_ca_lru": true,
+      "reference_rec_dim": 96,
+      "max_parameter_mismatch": 0.05,
+      "training_overrides": {}
+    },
+    {
+      "name": "rg_lru_lr3e4_anchor",
+      "model": "rg-lru-full",
+      "worker_model": "RG-LRU-full",
+      "task_group": "anchor",
+      "enabled": false,
+      "parameter_match_to_ca_lru": true,
+      "reference_rec_dim": 96,
+      "max_parameter_mismatch": 0.05,
+      "training_overrides": {
+        "lr": 0.0003
+      }
+    },
+    {
+      "name": "rg_lru_lr3e3_anchor",
+      "model": "rg-lru-full",
+      "worker_model": "RG-LRU-full",
+      "task_group": "anchor",
+      "enabled": false,
+      "parameter_match_to_ca_lru": true,
+      "reference_rec_dim": 96,
+      "max_parameter_mismatch": 0.05,
+      "training_overrides": {
+        "lr": 0.003
+      }
+    }
+  ],
+  "auxiliary_controls": {
+    "enabled": true,
+    "task_group": "anchor",
+    "loss_weight": 1.0,
+    "every": 100,
+    "start_step": -1,
+    "batch": 96,
+    "sequence_horizon": 260,
+    "blank_horizon": 500,
+    "pan_theta_clip": 18.0,
+    "models": [
+      {
+        "name": "gradient_lambda_aux",
+        "model": "PAN-RNW-full",
+        "enabled": true,
+        "train_pan_theta": true,
+        "training_overrides": {}
+      },
+      {
+        "name": "lru_aux_h500",
+        "model": "lru-full",
+        "enabled": true,
+        "train_pan_theta": false,
+        "training_overrides": {}
+      },
+      {
+        "name": "rg_lru_aux_h500",
+        "model": "rg-lru-full",
+        "worker_model": "RG-LRU-full",
+        "enabled": false,
+        "train_pan_theta": false,
+        "parameter_match_to_ca_lru": true,
+        "reference_rec_dim": 96,
+        "max_parameter_mismatch": 0.05,
+        "training_overrides": {}
+      },
+      {
+        "name": "matched_gru_aux_h500",
+        "model": "matched-gru-full",
+        "worker_model": "GRU-full",
+        "enabled": false,
+        "train_pan_theta": false,
+        "parameter_match_to_ca_lru": true,
+        "reference_rec_dim": 96,
+        "max_parameter_mismatch": 0.05,
+        "training_overrides": {}
+      }
+    ]
+  },
+  "compute_matched_controls": []
+}
