@@ -9,7 +9,8 @@
 결정적으로 다시 집계하는 것**이다. 학습 코드는 [`repro/`](repro/)에 보존되어
 있지만 원 checkpoint와 trace가 포함되어 있지 않다. 새 P0 confirmatory launcher와
 축소 GPU end-to-end 검증은 [`repro/experimental_v2/`](repro/experimental_v2/)에
-별도로 추가했지만, full 10,000-step campaign 결과는 아직 생성 중이다. 따라서 이
+보존되어 있다. Ságodi식 state audit·ring 재학습·manifold 분석을 다시 구성한 현재
+pipeline은 [`repro/sagodi_protocol/`](repro/sagodi_protocol/)에 격리했다. 따라서 이
 저장소는 아직 “모든 모델을
 처음부터 재학습하여 동일 수치를 얻는 완전한 학습 재현 패키지”가 아니다.
 
@@ -73,6 +74,17 @@ legacy model tag를 보존한 코드가 있다. 환경 버전과 대표 명령�
 디렉터리에 저장해야 한다. 새 결과가 기존 표를 재현한다고 주장하려면 환경,
 명령, seed, hardware, wall time과 차이를 별도로 보고해야 한다.
 
+### 3. Ságodi-aligned ring pilot: 실행 pipeline 제공
+
+[`repro/sagodi_protocol/analysis_protocol.yaml`](repro/sagodi_protocol/analysis_protocol.yaml)은
+Phase 0 state/blank-map audit와 Phase 1 ring pilot만 활성화한다. 공통 fixed bank,
+5개 pilot seed × 3개 모델, Track-A reconstruction, 8-path settling/fiber,
+clean-paired radial/ambient perturbation, source/checkpoint-bound receipt를 사용한다.
+이는 non-confirmatory pilot이며 C4·10 main seeds·torus·dimension scaling은 결과
+검토 후 새 freeze가 있어야 실행한다. 세부 해석 규칙은
+[`repro/sagodi_protocol/EXPERIMENT_RECONSTRUCTION_ko.md`](repro/sagodi_protocol/EXPERIMENT_RECONSTRUCTION_ko.md)를
+따른다.
+
 ## 저장소 구조
 
 ~~~text
@@ -89,6 +101,7 @@ paper/
 repro/
   legacy_code/           실험 당시 파일명 그대로의 코드 snapshot
   experimental_v2/       격리된 P0 학습·fixed test·동역학 분석
+  sagodi_protocol/        Phase-gated Ságodi ring 재학습·분석 pipeline
 src/calru_paper/          결정적 evidence 집계 구현
 scripts/                  사용자용 집계·검증 진입점
 tests/                    집계 재현성 검사
