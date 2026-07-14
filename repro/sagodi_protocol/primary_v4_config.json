@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "campaign_id": "sagodi_primary_v4_n128",
+  "protocol_revision": "paper_matched_sagodi_n128_parameter_matched_calru_n52_v1",
+  "task": {
+    "name": "angular_integration",
+    "horizon": 256,
+    "dt": 0.1,
+    "gp_length_scale": 1.0,
+    "gp_std": 1.0,
+    "gp_jitter": 1e-06,
+    "initialization_mode": "hidden-init",
+    "target_indexing": "q_t_plus_1_after_velocity_update"
+  },
+  "models": [
+    {"id": "sagodi_rnn_tanh_n128", "width": 128, "parameter_count": 17154, "role": "paper_matched_baseline"},
+    {"id": "sagodi_gru_n128", "width": 128, "parameter_count": 50818, "role": "paper_matched_baseline"},
+    {"id": "sagodi_lstm_n64", "width": 64, "parameter_count": 17538, "role": "paper_matched_baseline"},
+    {"id": "lru_n52", "width": 52, "parameter_count": 17058, "role": "parameter_matched_baseline"},
+    {"id": "no_rp_n52", "width": 52, "parameter_count": 17058, "role": "mechanism_control"},
+    {"id": "ca_lru_n52", "width": 52, "parameter_count": 17058, "role": "proposed"}
+  ],
+  "training": {
+    "optimizer": "Adam",
+    "betas": [0.9, 0.999],
+    "epsilon": 1e-08,
+    "weight_decay": 0.0,
+    "batch_size": 64,
+    "updates": 5000,
+    "state_noise_std": 0.1,
+    "gradient_clipping": null,
+    "online_batches": true,
+    "validation_interval": 500,
+    "trace_interval": 50
+  },
+  "learning_rate_tuning": {
+    "grid": [0.01, 0.001, 0.0001, 0.00001],
+    "seeds": [100, 101, 102, 103, 104],
+    "paper_selector_updates": 100,
+    "continued_sentinel_updates": 5000,
+    "success_mse_threshold": 0.01,
+    "paper_baseline_learning_rate": 0.01,
+    "no_rp_inherits_from": "ca_lru_n52"
+  },
+  "main": {
+    "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  },
+  "retention_plasticity": {
+    "warmup_updates": 1500,
+    "interval_updates": 50,
+    "probe_batch_size": 96,
+    "probe_horizon": 256,
+    "blank_ablation_horizon": 500,
+    "eta_lambda": 3000.0,
+    "damage_epsilon": 0.00003,
+    "tuning_eta_lambda_grid": [300.0, 1000.0, 3000.0],
+    "tuning_damage_epsilon_grid": [0.00001, 0.00003, 0.0001],
+    "tuning_seeds": [100, 101, 102, 103, 104],
+    "eligibility_id_mse_threshold": 0.01,
+    "selection_metric": "heldout_blank_memory_mse",
+    "selection_blank_horizon": 4096,
+    "theta_clip": [-18.0, 18.0],
+    "frozen_for_main": true
+  },
+  "evaluation_banks": {
+    "tuning": {
+      "trials": 1024,
+      "task_seed": 0,
+      "stream_key": ["primary_v4", "fixed_tuning_bank"]
+    },
+    "main_test": {
+      "trials": 1024,
+      "task_seed": 1,
+      "stream_key": ["primary_v4", "fixed_main_test_bank"]
+    }
+  }
+}
