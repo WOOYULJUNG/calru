@@ -74,15 +74,19 @@ legacy model tag를 보존한 코드가 있다. 환경 버전과 대표 명령�
 디렉터리에 저장해야 한다. 새 결과가 기존 표를 재현한다고 주장하려면 환경,
 명령, seed, hardware, wall time과 차이를 별도로 보고해야 한다.
 
-### 3. Ságodi public-code-resolved v5: 현재 실행 경로
+### 3. Ságodi public-code-centered controlled adaptation v6: 현재 실행 경로
 
-현재 재학습 경로는 Ságodi 공개 저장소의 코드를 커밋
-`cbd7404e9baca4b2dc291560cfc6576bb7b1f078`로 고정한다. RNN/GRU/LSTM을
-각 코드 경로의 noise·LR·regularization으로 5,000 updates 재현한 뒤,
-세 모델이 모두 clean held-out MSE `<0.01`을 통과해야 LRU/CA-LRU의
-`LR × state-noise` 탐색과 RP 탐색이 시작된다. 실행 명령과 repair
-내역은 [`repro/sagodi_protocol/README.md`](repro/sagodi_protocol/README.md)와
-[`SAGODI_SOURCE_RESOLVED_V1_FREEZE_ko.md`](repro/sagodi_protocol/SAGODI_SOURCE_RESOLVED_V1_FREEZE_ko.md)에 있다.
+현재 재학습 경로는 Ságodi 공개 저장소를 commit
+`cbd7404e9baca4b2dc291560cfc6576bb7b1f078`로 고정하되, 서로 다른 공개
+RNN/GRU/LSTM 경로를 T128/B64/5k 공통 비교 계약으로 옮긴 **controlled
+adaptation with documented repairs, not exact**다. main seed 10개를 모두
+보고하고 MSE `<0.01`은 descriptive yield, NMSE `<-20 dB`는 seed별 분석
+eligibility로 사용한다. baseline 모델 하나의 zero eligibility는 downstream을
+막지 않는다. 이후 LRU를 같은 fixed bank에서 독립 tuning/main하고, LRU가
+eligible seed를 하나 이상 만들 때만 No-RP/CA-LRU pair를 시작한다. CA는
+No-RP의 LR/noise를 상속한다. 실행 명령과 차이/repair 내역은
+[`repro/sagodi_protocol/README.md`](repro/sagodi_protocol/README.md)와
+[`SAGODI_SOURCE_REPAIRED_BASELINES_V6_FREEZE_ko.md`](repro/sagodi_protocol/SAGODI_SOURCE_REPAIRED_BASELINES_V6_FREEZE_ko.md)에 있다.
 
 ### 4. Historical Ságodi-based primary v3.1: provenance only
 

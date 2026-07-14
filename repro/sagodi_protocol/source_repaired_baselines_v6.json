@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "campaign_id": "sagodi_source_repaired_baselines_v6",
+  "protocol_revision": "public_code_centered_documented_repairs_v1",
+  "track_classification": "public_code_centered_controlled_adaptation_with_documented_repairs_not_exact",
+  "upstream": {
+    "repository": "https://github.com/catniplab/back_to_the_continuous_attractor",
+    "commit": "cbd7404e9baca4b2dc291560cfc6576bb7b1f078",
+    "paths": {
+      "shared_task": "tasks.py:65-108",
+      "sagodi_rnn_tanh_n128": {
+        "model": "models.py:104-319",
+        "training": "models.py:393-629",
+        "runner": "run_training_s.py:233-248"
+      },
+      "sagodi_gru_n128": {
+        "model": "gru.py:35-80",
+        "training": "gru.py:119-196",
+        "recipe": "gru.py:198-211"
+      },
+      "sagodi_lstm_n64": {
+        "model": "lstm.py:65-162",
+        "training": "lstm.py:201-267",
+        "recipe": "lstm.py:277-288"
+      }
+    }
+  },
+  "controlled_adaptation_registry": {
+    "rnn_upstream_to_v6": "root_yaml_T100_H200_B128_1000_updates_StepLR_early_stop_to_T128_H128_B64_5000_constant_lr_no_early_stop",
+    "gru_upstream_to_v6": "T128_H128_B64_5000_recipe_retained_but_lr_and_post_transition_state_noise_tuned_and_uninitialized_map_repaired",
+    "lstm_upstream_to_v6": "T128_H64_B64_5000_recipe_with_uninitialized_maps_cell_typo_and_WD0p01_repaired_plus_lr_state_noise_tuned",
+    "rng_deviation": "keyed_numpy_default_rng_and_separate_torch_generators_replace_upstream_global_rng_order",
+    "gp_deviation": "numpy_cholesky_with_registered_1e-6_jitter_and_cross_BLAS_regeneration_tolerance_1e-6",
+    "adapter_deviation": "time_major_cell_unroll_adapters_replace_upstream_batch_first_module_forward",
+    "dropout_rng_order_deviation": "GRU_per_step_decode_dropout_draw_order_is_not_claimed_bit_exact_to_upstream_full_sequence_dropout"
+  },
+  "task": {
+    "name": "angular_integration",
+    "duration": 12.8,
+    "horizon": 128,
+    "dt": 0.1,
+    "gp_length_scale": 1.0,
+    "gp_std": 1.0,
+    "gp_jitter": 1e-06,
+    "input_sparsity": "variable_uniform_0_2",
+    "random_angle_init": true,
+    "target_indexing": "q_t_plus_1_after_velocity_update",
+    "initial_state_semantics": "source_q1_post_update_target"
+  },
+  "models": [
+    {
+      "id": "sagodi_rnn_tanh_n128",
+      "width": 128,
+      "parameter_count": 17154,
+      "source_target_noise_std": 0.0,
+      "source_output_dropout": 0.0,
+      "recurrent_weight_decay": 0.0,
+      "gradient_clip_norm": null,
+      "repair_contract": [
+        "initialize_output_to_hidden_map",
+        "constant_learning_rate_no_early_stopping",
+        "paper_aligned_zero_recurrent_bias_selected_by_registered_parity"
+      ],
+      "recurrent_bias_policy": "paper_aligned_zero_bias_repair_selected_by_registered_parity",
+      "known_upstream_oddity": "upstream_brec_zero_then_overwritten_uniform_minus_sqrtH_plus_sqrtH",
+      "bias_parity_evidence": {
+        "task": "T128_variable_sparsity_q1_constant_lr_0p001_seed100_5000_updates",
+        "zero_bias_noise0_mse": 0.00576372,
+        "zero_bias_noise0_nmse_db": -19.3827,
+        "upstream_literal_best_mse": 0.0129422,
+        "upstream_literal_best_nmse_db": -15.87,
+        "selection_role": "initializer_repair_only_not_scientific_result"
+      }
+    },
+    {
+      "id": "sagodi_gru_n128",
+      "width": 128,
+      "parameter_count": 50818,
+      "source_target_noise_std": 0.01,
+      "source_output_dropout": 0.5,
+      "recurrent_weight_decay": 0.0001,
+      "gradient_clip_norm": 100.0,
+      "repair_contract": [
+        "initialize_output_to_hidden_map"
+      ],
+      "recurrent_bias_policy": "torch_grucell_default_bias",
+      "known_upstream_oddity": null
+    },
+    {
+      "id": "sagodi_lstm_n64",
+      "width": 64,
+      "parameter_count": 17538,
+      "source_target_noise_std": 0.01,
+      "source_output_dropout": 0.0,
+      "recurrent_weight_decay": 0.0,
+      "gradient_clip_norm": 1.0,
+      "repair_contract": [
+        "initialize_output_to_hidden_and_cell_maps",
+        "independent_cell_initialization_map",
+        "recurrent_weight_decay_repaired_from_0p01_to_0"
+      ],
+      "recurrent_bias_policy": "torch_lstmcell_default_bias",
+      "known_upstream_oddity": "published_weight_decay_0p01_collapses_training"
+    }
+  ],
+  "training": {
+    "optimizer": "Adam",
+    "betas": [0.9, 0.999],
+    "epsilon": 1e-08,
+    "batch_size": 64,
+    "updates": 5000,
+    "online_batches": true,
+    "constant_learning_rate": true,
+    "early_stopping": false,
+    "trace_interval": 50,
+    "validation_interval": 500,
+    "worker_threads": 1
+  },
+  "hyperparameter_tuning": {
+    "learning_rate_grid": [0.01, 0.003, 0.001, 0.0003],
+    "actual_post_transition_state_noise_std_grid": [0.0, 0.01, 0.0316228, 0.1],
+    "sentinel_seed": 100,
+    "fanout_seeds": [101, 102, 103, 104],
+    "top_k_per_model": 3,
+    "success_mse_threshold": 0.01,
+    "analysis_nmse_db_threshold": -20.0,
+    "selection_rule": "max_five_seed_nmse_eligible_then_max_five_seed_mse_successes_then_min_median_mse_then_min_mean_mse_then_grid_order",
+    "failure_policy": "failed_runs_remain_in_denominator"
+  },
+  "main": {
+    "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    "fresh_from_tuning": true,
+    "mse_threshold_role": "descriptive_success_yield_only",
+    "analysis_eligibility_rule": "per_seed_nmse_db_below_minus20",
+    "scientific_pass_minimum_eligible_per_model": 1,
+    "low_eligible_count_warning_below": 3
+  },
+  "evaluation_banks": {
+    "tuning": {
+      "trials": 1024,
+      "task_seed": 32001,
+      "stream_key": ["sagodi_source_repaired_baselines_v6", "fixed_tuning_bank"]
+    },
+    "main_test": {
+      "trials": 1024,
+      "task_seed": 32002,
+      "stream_key": ["sagodi_source_repaired_baselines_v6", "fixed_main_test_bank"]
+    }
+  }
+}
