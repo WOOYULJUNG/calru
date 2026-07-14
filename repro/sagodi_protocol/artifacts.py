@@ -29,10 +29,25 @@ def _reject_nonfinite_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant is forbidden: {value}")
 
 
-def strict_json_loads(payload: str | bytes | bytearray) -> Any:
-    """Parse standards-compliant JSON and reject Python's NaN/Infinity extension."""
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous objects instead of silently keeping the last key."""
 
-    return json.loads(payload, parse_constant=_reject_nonfinite_constant)
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key is forbidden: {key!r}")
+        result[key] = value
+    return result
+
+
+def strict_json_loads(payload: str | bytes | bytearray) -> Any:
+    """Parse JSON while rejecting non-finite constants and duplicate object keys."""
+
+    return json.loads(
+        payload,
+        parse_constant=_reject_nonfinite_constant,
+        object_pairs_hook=_unique_json_object,
+    )
 
 
 def strict_json_load(path: Path | str) -> Any:

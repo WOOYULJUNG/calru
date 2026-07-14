@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import torch
 
-from repro.sagodi_protocol.config import load_protocol
+from repro.sagodi_protocol.config import NATIVE_RECIPE_PROTOCOL_PATH, load_protocol
 from repro.sagodi_protocol.models import (
+    INITIAL_ENCODER_PYTORCH_DEFAULT,
+    INITIAL_ENCODER_SAGODI_W_OTR,
     ModelConfig,
     build_protocol_model,
     model_config_from_protocol,
@@ -76,6 +78,30 @@ def test_model_builder_consumes_frozen_architecture_block():
     assert isinstance(model.core.blocks[0].norm_in, torch.nn.Identity)
     assert model.core.blocks[0].rec.writer_mode == "recurrent"
     assert model.core.carry_stream is False
+    assert config.initial_encoder_bias is True
+    assert config.initial_encoder_weight_init == INITIAL_ENCODER_PYTORCH_DEFAULT
+    assert model.initial_encoder.bias is not None
+
+
+def test_native_hidden_initializer_uses_bias_free_sagodi_w_otr_policy():
+    protocol = load_protocol(NATIVE_RECIPE_PROTOCOL_PATH)
+    torch.manual_seed(17)
+    config = model_config_from_protocol(protocol, "ca_lru")
+    model = build_protocol_model(config)
+    assert config.initial_encoder_bias is False
+    assert config.initial_encoder_weight_init == INITIAL_ENCODER_SAGODI_W_OTR
+    assert model.initial_encoder.bias is None
+    expected_std = 1.0 / (model.primary_state_size**0.5)
+    observed = model.initial_encoder.weight.detach()
+    assert abs(float(observed.mean())) < 0.03
+    assert abs(float(observed.std(unbiased=False)) - expected_std) < 0.03
+    metadata = model.metadata()["initial_state_encoder_initialization"]
+    assert metadata == {
+        "policy": INITIAL_ENCODER_SAGODI_W_OTR,
+        "bias": False,
+        "weight_distribution": "Normal(0, 1/sqrt(primary_state_dimension))",
+        "primary_state_dimension": 96,
+    }
 
 
 def test_gru_resolved_architecture_uses_state_size_not_nonexistent_hidden_dim():

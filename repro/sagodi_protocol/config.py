@@ -16,6 +16,12 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 DEFAULT_PROTOCOL_PATH = Path(__file__).with_name("analysis_protocol.yaml")
+NATIVE_RECIPE_PROTOCOL_PATH = Path(__file__).with_name(
+    "calru_native_sagodi_ring_pilot_v1.yaml"
+)
+
+PROTOCOL_A_TRACK = "A_sagodi_training_rules"
+NATIVE_RECIPE_TRACK = "calru_native_recipe_transfer"
 
 REQUIRED_CLAIM_GATES = frozenset(
     {
@@ -44,6 +50,17 @@ PILOT_MODEL_SEEDS = (100, 101, 102, 103, 104)
 
 class ProtocolConfigError(ValueError):
     """Raised when a protocol freeze is malformed or internally inconsistent."""
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject duplicate JSON keys instead of silently keeping the last value."""
+
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ProtocolConfigError(f"protocol contains duplicate JSON key: {key!r}")
+        result[key] = value
+    return result
 
 
 def _require(condition: bool, message: str) -> None:
@@ -76,7 +93,7 @@ def load_protocol(path: str | Path | None = None) -> dict[str, Any]:
     protocol_path = Path(path) if path is not None else DEFAULT_PROTOCOL_PATH
     try:
         with protocol_path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
+            data = json.load(handle, object_pairs_hook=_unique_json_object)
     except FileNotFoundError as exc:
         raise ProtocolConfigError(f"protocol file not found: {protocol_path}") from exc
     except json.JSONDecodeError as exc:
@@ -166,18 +183,75 @@ def validate_protocol(protocol: Mapping[str, Any]) -> None:
         tuple(phase1.get("depends_on", [])) == ("phase0_state_audit",),
         "Phase 1 must depend on Phase 0",
     )
+    protocol_track = phase1.get("protocol_track")
     _require(
-        phase1.get("protocol_track") == "A_sagodi_training_rules",
-        "Phase 1 must use Protocol A training rules",
+        protocol_track in {PROTOCOL_A_TRACK, NATIVE_RECIPE_TRACK},
+        "Phase 1 protocol_track is unsupported",
     )
+    native_recipe = protocol_track == NATIVE_RECIPE_TRACK
+    if native_recipe:
+        _require(
+            protocol.get("freeze_id") == "calru_native_sagodi_ring_pilot_v1",
+            "native-recipe track must use its dedicated freeze_id",
+        )
+        reporting = _require_mapping(protocol.get("reporting"), "reporting")
+        _require(
+            reporting
+            == {
+                "training_track": NATIVE_RECIPE_TRACK,
+                "display_label": "CA-LRU native training on Ságodi ring task",
+                "protocol_A_eligible": False,
+                "protocol_B_confirmatory_eligible": False,
+            },
+            "native-recipe reporting labels differ from the freeze",
+        )
+        launch_policy = _require_mapping(
+            phase1.get("launch_policy"), "phase1.launch_policy"
+        )
+        _require(
+            launch_policy
+            == {
+                "mode": "sentinel_then_remaining",
+                "sentinel_model": "ca_lru",
+                "sentinel_seed": 100,
+                "gate": "verified_training_completion_receipt",
+            },
+            "native-recipe launch policy differs from the freeze",
+        )
+    else:
+        _require(
+            protocol.get("freeze_id") == "sagodi_phase01_ring_pilot_v1",
+            "Protocol A track must use its dedicated freeze_id",
+        )
+        _require(
+            "reporting" not in protocol,
+            "Protocol A must not declare native-recipe reporting labels",
+        )
+        _require(
+            "launch_policy" not in phase1,
+            "Protocol A must not declare the native sentinel launch policy",
+        )
 
     task = _require_mapping(phase1.get("task"), "phase1.task")
     _require(task.get("id") == "angular_velocity_integration", "Phase 1 task must be angular integration")
     _require(task.get("topology") == "S1", "Phase 1 must be a ring task")
     _require(task.get("latent_dimension") == 1, "Phase 1 latent dimension must be one")
     _require(task.get("sequence_steps") == 256, "Phase 1 T must be 256")
-    _require(task.get("initialization_mode") == "hidden_init", "Protocol A uses hidden initialization")
-    _require(task.get("input_feature") == "raw_angular_velocity", "Protocol A uses raw velocity")
+    _require(task.get("initialization_mode") == "hidden_init", "Phase 1 uses hidden initialization")
+    _require(task.get("input_feature") == "raw_angular_velocity", "Phase 1 uses raw velocity")
+    velocity_process = _require_mapping(
+        task.get("velocity_process"), "phase1.task.velocity_process"
+    )
+    if native_recipe:
+        _require(
+            velocity_process.get("gp_cholesky_jitter") == 0.000001,
+            "native-recipe GP Cholesky jitter must remain 1e-6",
+        )
+    else:
+        _require(
+            "gp_cholesky_jitter" not in velocity_process,
+            "Protocol A freeze must not be retroactively changed with GP jitter metadata",
+        )
     indexing = _require_mapping(task.get("indexing"), "phase1.task.indexing")
     _require(
         indexing.get("velocity_token_t_target") == "q_t_plus_1_after_velocity_update",
@@ -207,14 +281,27 @@ def validate_protocol(protocol: Mapping[str, Any]) -> None:
     initializer = _require_mapping(
         architecture.get("initial_state_encoder"), "architecture.initial_state_encoder"
     )
-    _require(
-        initializer
-        == {
+    expected_initializer = {
+        "input_dimension": 2,
+        "output_dimension": "primary_state_dimension",
+        "module": "torch.nn.Linear",
+        "bias": True,
+    }
+    if native_recipe:
+        expected_initializer = {
             "input_dimension": 2,
             "output_dimension": "primary_state_dimension",
             "module": "torch.nn.Linear",
-            "bias": True,
-        },
+            "bias": False,
+            "weight_initialization": {
+                "distribution": "normal",
+                "mean": 0.0,
+                "standard_deviation": "1_over_sqrt_primary_state_dimension",
+                "source": "Sagodi_official_W_otr",
+            },
+        }
+    _require(
+        initializer == expected_initializer,
         "initial-state encoder architecture differs from the pilot freeze",
     )
     builder = _require_mapping(
@@ -287,48 +374,123 @@ def validate_protocol(protocol: Mapping[str, Any]) -> None:
         },
         "GRU architecture differs from the pilot freeze",
     )
-    _require(training.get("batch_size") == 64, "Protocol A batch size must be 64")
-    _require(training.get("optimizer_updates") == 5000, "Protocol A updates must be 5000")
     optimizer = _require_mapping(training.get("optimizer"), "phase1.training.optimizer")
-    _require(optimizer.get("name") == "Adam", "Protocol A optimizer must be Adam")
-    _require(optimizer.get("betas") == [0.9, 0.999], "Adam betas must be frozen")
-
     learning_rate = _require_mapping(training.get("learning_rate"), "learning_rate")
-    _require(
-        learning_rate.get("pilot_grid") == [0.01, 0.001, 0.0001, 0.00001],
-        "Protocol A LR grid must be preserved",
-    )
-    _require(
-        learning_rate.get("active_launch_values") == [0.01],
-        "initial pilot launch must use only 1e-2",
-    )
-    _require(
-        learning_rate.get("frozen_pilot_default") == 0.01,
-        "1e-2 must be marked as the frozen pilot default",
-    )
-    _require(
-        learning_rate.get("selection_status")
-        == "pilot_default_not_selected_from_current_results",
-        "pilot LR must not be described as result-selected",
-    )
-    _require(
-        learning_rate.get("future_grid_sweep_enabled") is False,
-        "LR grid sweep must not be launched in this freeze",
-    )
-
     noise = _require_mapping(training.get("state_noise"), "phase1.training.state_noise")
-    _require(noise.get("enabled") is True, "Protocol A state noise must be enabled")
-    _require(noise.get("coordinate_standard_deviation") == 0.1, "noise std must be 0.1")
-    _require(noise.get("analysis_noise_enabled") is False, "analysis noise must be disabled")
-
     rp = _require_mapping(training.get("rp_schedule_for_ca_lru"), "rp schedule")
-    _require(rp.get("warmup_updates") == 1500, "Protocol A RP warm-up must be 1500")
-    _require(rp.get("interval_updates") == 50, "Protocol A RP interval must be 50")
-    _require(rp.get("calls_after_warmup") == 70, "Protocol A must make 70 RP calls")
-    _require(rp.get("probe_batch_size") == 256, "RP probe batch must be 256")
-    _require(rp.get("probe_horizon") == 256, "RP probe horizon must be 256")
-    _require(rp.get("eta_lambda_pilot_default") == 3000.0, "pilot eta_lambda must be explicit")
-    _require(rp.get("damage_epsilon_pilot_default") == 0.00003, "pilot damage epsilon must be explicit")
+    clipping = _require_mapping(
+        training.get("gradient_clipping"), "phase1.training.gradient_clipping"
+    )
+    if native_recipe:
+        _require(training.get("batch_size") == 256, "native recipe batch size must be 256")
+        _require(
+            training.get("optimizer_updates") == 10000,
+            "native recipe updates must be 10000",
+        )
+        _require(
+            optimizer
+            == {
+                "name": "AdamW",
+                "betas": [0.9, 0.999],
+                "epsilon": 0.00000001,
+                "weight_decay": 0.00001,
+            },
+            "native recipe optimizer differs from AdamW freeze",
+        )
+        _require(
+            learning_rate
+            == {
+                "active_launch_values": [0.001],
+                "frozen_pilot_default": 0.001,
+                "selection_status": "inherited_from_successful_exp88_recipe_not_selected_on_sagodi_results",
+                "future_grid_sweep_enabled": False,
+            },
+            "native recipe learning-rate block differs from the freeze",
+        )
+        _require(
+            noise
+            == {
+                "enabled": False,
+                "distribution": "none",
+                "coordinate_standard_deviation": 0.0,
+                "coordinate_variance": 0.0,
+                "analysis_noise_enabled": False,
+            },
+            "native recipe must disable training state noise",
+        )
+        _require(
+            clipping
+            == {"policy": "global_norm", "frozen_numeric_value": 1.0},
+            "native recipe gradient clipping must be global norm 1.0",
+        )
+        _require(
+            training.get("progress_logging")
+            == {
+                "interval_updates": 100,
+                "atomic_json_path": "progress.json",
+                "record_pre_clip_global_gradient_norm": True,
+            },
+            "native recipe progress logging differs from the freeze",
+        )
+        _require(
+            rp
+            == {
+                "warmup_updates": 3000,
+                "interval_updates": 100,
+                "calls_after_warmup": 70,
+                "probe_batch_size": 96,
+                "probe_horizon": 256,
+                "blank_ablation_horizon": 500,
+                "probe_noise_enabled": False,
+                "probe_bank": "deterministic_by_rp_call_index",
+                "pre_warmup_score_only_probes": "not_executed",
+                "legacy_pre_warmup_probe_difference": "Exp88_computed_score_only_probes_steps_100_through_3000",
+                "eta_lambda_pilot_default": 3000.0,
+                "damage_epsilon_pilot_default": 0.0001,
+                "default_status": "numeric_values_inherited_with_declared_task_and_probe_stream_adaptations",
+            },
+            "native recipe RP schedule differs from the freeze",
+        )
+    else:
+        _require(
+            "progress_logging" not in training,
+            "Protocol A must not declare native-recipe progress logging",
+        )
+        _require(training.get("batch_size") == 64, "Protocol A batch size must be 64")
+        _require(training.get("optimizer_updates") == 5000, "Protocol A updates must be 5000")
+        _require(optimizer.get("name") == "Adam", "Protocol A optimizer must be Adam")
+        _require(optimizer.get("betas") == [0.9, 0.999], "Adam betas must be frozen")
+        _require(
+            learning_rate.get("pilot_grid") == [0.01, 0.001, 0.0001, 0.00001],
+            "Protocol A LR grid must be preserved",
+        )
+        _require(
+            learning_rate.get("active_launch_values") == [0.01],
+            "initial pilot launch must use only 1e-2",
+        )
+        _require(
+            learning_rate.get("frozen_pilot_default") == 0.01,
+            "1e-2 must be marked as the frozen pilot default",
+        )
+        _require(
+            learning_rate.get("selection_status")
+            == "pilot_default_not_selected_from_current_results",
+            "pilot LR must not be described as result-selected",
+        )
+        _require(
+            learning_rate.get("future_grid_sweep_enabled") is False,
+            "LR grid sweep must not be launched in this freeze",
+        )
+        _require(noise.get("enabled") is True, "Protocol A state noise must be enabled")
+        _require(noise.get("coordinate_standard_deviation") == 0.1, "noise std must be 0.1")
+        _require(noise.get("analysis_noise_enabled") is False, "analysis noise must be disabled")
+        _require(rp.get("warmup_updates") == 1500, "Protocol A RP warm-up must be 1500")
+        _require(rp.get("interval_updates") == 50, "Protocol A RP interval must be 50")
+        _require(rp.get("calls_after_warmup") == 70, "Protocol A must make 70 RP calls")
+        _require(rp.get("probe_batch_size") == 256, "RP probe batch must be 256")
+        _require(rp.get("probe_horizon") == 256, "RP probe horizon must be 256")
+        _require(rp.get("eta_lambda_pilot_default") == 3000.0, "pilot eta_lambda must be explicit")
+        _require(rp.get("damage_epsilon_pilot_default") == 0.00003, "pilot damage epsilon must be explicit")
 
     run_matrix = _require_mapping(phase1.get("run_matrix"), "phase1.run_matrix")
     expected_runs = len(model_ids) * len(pilot_seeds) * len(learning_rate["active_launch_values"])

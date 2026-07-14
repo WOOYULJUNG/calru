@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,12 +16,23 @@ class ProtocolFreezeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.protocol = config.load_protocol()
+        cls.native_protocol = config.load_protocol(config.NATIVE_RECIPE_PROTOCOL_PATH)
 
     def test_protocol_file_is_json_compatible_yaml(self) -> None:
         raw = config.DEFAULT_PROTOCOL_PATH.read_text(encoding="utf-8")
         parsed = json.loads(raw)
         self.assertEqual(parsed["schema_version"], "1.0.0")
         self.assertEqual(parsed["freeze_status"], "pilot_only")
+
+    def test_loader_rejects_duplicate_json_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "duplicate.yaml"
+            path.write_text(
+                '{"schema_version":"1.0.0","schema_version":"1.0.0"}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(config.ProtocolConfigError, "duplicate JSON key"):
+                config.load_protocol(path)
 
     def test_only_phase0_and_phase1_pilot_are_active(self) -> None:
         scope = self.protocol["scope"]
@@ -50,6 +62,95 @@ class ProtocolFreezeTests(unittest.TestCase):
         self.assertEqual({run["learning_rate"] for run in runs}, {0.01})
         self.assertEqual({run["width"] for run in runs}, {96})
         self.assertTrue(all(run["phase0_gate_required"] for run in runs))
+        self.assertTrue(all(not run["confirmatory"] for run in runs))
+
+    def test_native_recipe_freeze_is_separate_and_exact(self) -> None:
+        protocol = self.native_protocol
+        self.assertEqual(protocol["freeze_id"], "calru_native_sagodi_ring_pilot_v1")
+        self.assertEqual(
+            protocol["phase1_ring_pilot"]["protocol_track"],
+            config.NATIVE_RECIPE_TRACK,
+        )
+        self.assertEqual(
+            protocol["reporting"],
+            {
+                "training_track": "calru_native_recipe_transfer",
+                "display_label": "CA-LRU native training on Ságodi ring task",
+                "protocol_A_eligible": False,
+                "protocol_B_confirmatory_eligible": False,
+            },
+        )
+        self.assertEqual(
+            protocol["phase1_ring_pilot"]["launch_policy"],
+            {
+                "mode": "sentinel_then_remaining",
+                "sentinel_model": "ca_lru",
+                "sentinel_seed": 100,
+                "gate": "verified_training_completion_receipt",
+            },
+        )
+        task = protocol["phase1_ring_pilot"]["task"]
+        self.assertEqual(task["sequence_steps"], 256)
+        self.assertEqual(task["initialization_mode"], "hidden_init")
+        self.assertEqual(task["input_feature"], "raw_angular_velocity")
+        self.assertEqual(task["velocity_process"]["gp_cholesky_jitter"], 1e-6)
+        training = protocol["phase1_ring_pilot"]["training"]
+        self.assertEqual(training["batch_size"], 256)
+        self.assertEqual(training["optimizer_updates"], 10000)
+        self.assertEqual(
+            training["optimizer"],
+            {
+                "name": "AdamW",
+                "betas": [0.9, 0.999],
+                "epsilon": 1e-8,
+                "weight_decay": 1e-5,
+            },
+        )
+        self.assertEqual(training["learning_rate"]["active_launch_values"], [0.001])
+        self.assertFalse(training["state_noise"]["enabled"])
+        self.assertEqual(
+            training["gradient_clipping"],
+            {"policy": "global_norm", "frozen_numeric_value": 1.0},
+        )
+        self.assertEqual(
+            training["progress_logging"],
+            {
+                "interval_updates": 100,
+                "atomic_json_path": "progress.json",
+                "record_pre_clip_global_gradient_norm": True,
+            },
+        )
+        self.assertEqual(
+            training["architecture"]["initial_state_encoder"]["weight_initialization"],
+            {
+                "distribution": "normal",
+                "mean": 0.0,
+                "standard_deviation": "1_over_sqrt_primary_state_dimension",
+                "source": "Sagodi_official_W_otr",
+            },
+        )
+        self.assertFalse(
+            training["architecture"]["initial_state_encoder"]["bias"]
+        )
+        rp = training["rp_schedule_for_ca_lru"]
+        self.assertEqual(rp["warmup_updates"], 3000)
+        self.assertEqual(rp["interval_updates"], 100)
+        self.assertEqual(rp["calls_after_warmup"], 70)
+        self.assertEqual(rp["probe_batch_size"], 96)
+        self.assertEqual(rp["probe_horizon"], 256)
+        self.assertEqual(rp["blank_ablation_horizon"], 500)
+        self.assertEqual(rp["eta_lambda_pilot_default"], 3000.0)
+        self.assertEqual(rp["damage_epsilon_pilot_default"], 1e-4)
+
+    def test_native_recipe_matrix_uses_only_pilot_seeds_and_inherited_lr(self) -> None:
+        runs = config.expand_phase1_runs(self.native_protocol)
+        self.assertEqual(len(runs), 15)
+        self.assertEqual({run["model_seed"] for run in runs}, {100, 101, 102, 103, 104})
+        self.assertEqual({run["learning_rate"] for run in runs}, {0.001})
+        self.assertEqual(
+            {run["protocol_track"] for run in runs},
+            {config.NATIVE_RECIPE_TRACK},
+        )
         self.assertTrue(all(not run["confirmatory"] for run in runs))
 
     def test_training_freeze_matches_requested_protocol_a_pilot(self) -> None:
@@ -180,6 +281,56 @@ class ProtocolFreezeTests(unittest.TestCase):
             "ca_lru_and_no_rp"
         ]["carry_stream"] = True
         with self.assertRaisesRegex(config.ProtocolConfigError, "resolved scaffold"):
+            config.validate_protocol(mutated)
+
+    def test_native_validator_rejects_protocol_a_label_or_wotr_drift(self) -> None:
+        mislabeled = copy.deepcopy(self.native_protocol)
+        mislabeled["reporting"]["protocol_A_eligible"] = True
+        with self.assertRaisesRegex(config.ProtocolConfigError, "reporting labels"):
+            config.validate_protocol(mislabeled)
+
+        biased = copy.deepcopy(self.native_protocol)
+        biased["phase1_ring_pilot"]["training"]["architecture"][
+            "initial_state_encoder"
+        ]["bias"] = True
+        with self.assertRaisesRegex(config.ProtocolConfigError, "initial-state encoder"):
+            config.validate_protocol(biased)
+
+    def test_protocol_a_rejects_native_identity_and_execution_fields(self) -> None:
+        mislabeled = copy.deepcopy(self.protocol)
+        mislabeled["reporting"] = copy.deepcopy(self.native_protocol["reporting"])
+        with self.assertRaisesRegex(config.ProtocolConfigError, "reporting labels"):
+            config.validate_protocol(mislabeled)
+
+        staged = copy.deepcopy(self.protocol)
+        staged["phase1_ring_pilot"]["launch_policy"] = copy.deepcopy(
+            self.native_protocol["phase1_ring_pilot"]["launch_policy"]
+        )
+        with self.assertRaisesRegex(config.ProtocolConfigError, "sentinel launch policy"):
+            config.validate_protocol(staged)
+
+        instrumented = copy.deepcopy(self.protocol)
+        instrumented["phase1_ring_pilot"]["training"]["progress_logging"] = (
+            copy.deepcopy(
+                self.native_protocol["phase1_ring_pilot"]["training"][
+                    "progress_logging"
+                ]
+            )
+        )
+        with self.assertRaisesRegex(config.ProtocolConfigError, "progress logging"):
+            config.validate_protocol(instrumented)
+
+        renamed = copy.deepcopy(self.protocol)
+        renamed["freeze_id"] = "calru_native_sagodi_ring_pilot_v1"
+        with self.assertRaisesRegex(config.ProtocolConfigError, "dedicated freeze_id"):
+            config.validate_protocol(renamed)
+
+    def test_native_validator_rejects_gp_jitter_drift(self) -> None:
+        mutated = copy.deepcopy(self.native_protocol)
+        mutated["phase1_ring_pilot"]["task"]["velocity_process"][
+            "gp_cholesky_jitter"
+        ] = 1e-5
+        with self.assertRaisesRegex(config.ProtocolConfigError, "Cholesky jitter"):
             config.validate_protocol(mutated)
 
 

@@ -104,6 +104,15 @@ def _validate_complete_marker(
     for key, value in expected.items():
         if marker.get(key) != value:
             return False, f"COMPLETE marker mismatch for {key}"
+    reporting = manifest.get("reporting")
+    if isinstance(reporting, dict):
+        expected_scope = f"phase0_and_{reporting['training_track']}_pilot_only"
+        if marker.get("scope") != expected_scope:
+            return False, "COMPLETE marker mismatch for scope"
+        if marker.get("reporting") != reporting:
+            return False, "COMPLETE marker mismatch for reporting"
+    elif marker.get("scope") != "phase0_and_nonconfirmatory_phase1_ring_pilot_only":
+        return False, "COMPLETE marker mismatch for legacy scope"
     return True, "verified against all current receipts"
 
 

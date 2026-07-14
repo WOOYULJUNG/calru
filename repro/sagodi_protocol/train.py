@@ -155,6 +155,30 @@ def _normalize_campaign_identity(value: str | None, *, required: bool) -> str | 
     return normalized
 
 
+def _build_optimizer(
+    model: ProtocolModel,
+    optimizer_config: dict[str, Any],
+    *,
+    learning_rate: float,
+) -> torch.optim.Optimizer:
+    """Construct exactly the optimizer declared by the active freeze."""
+
+    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    kwargs: dict[str, Any] = {
+        "lr": float(learning_rate),
+        "betas": tuple(float(value) for value in optimizer_config["betas"]),
+        "weight_decay": float(optimizer_config["weight_decay"]),
+    }
+    if "epsilon" in optimizer_config:
+        kwargs["eps"] = float(optimizer_config["epsilon"])
+    name = str(optimizer_config["name"])
+    if name == "Adam":
+        return torch.optim.Adam(parameters, **kwargs)
+    if name == "AdamW":
+        return torch.optim.AdamW(parameters, **kwargs)
+    raise ValueError(f"unsupported frozen optimizer {name!r}")
+
+
 def _load_and_validate_state_spec(
     path: Path | None,
     model: ProtocolModel,
@@ -411,11 +435,10 @@ def train_one(spec: TrainSpec) -> Path:
         device=device,
         smoke=spec.smoke,
     )
-    optimizer = torch.optim.Adam(
-        [parameter for parameter in model.parameters() if parameter.requires_grad],
-        lr=float(spec.learning_rate),
-        betas=tuple(float(value) for value in training["optimizer"]["betas"]),
-        weight_decay=float(training["optimizer"]["weight_decay"]),
+    optimizer = _build_optimizer(
+        model,
+        dict(training["optimizer"]),
+        learning_rate=float(spec.learning_rate),
     )
     steps = int(spec.steps_override or training["optimizer_updates"])
     batch_size = int(spec.batch_override or training["batch_size"])
@@ -424,7 +447,12 @@ def train_one(spec: TrainSpec) -> Path:
         batch_size = min(batch_size, 4)
     elif steps != int(training["optimizer_updates"]) or batch_size != int(training["batch_size"]):
         raise RuntimeError("full run dimensions differ from the validated protocol freeze")
-    noise_std = float(training["state_noise"]["coordinate_standard_deviation"])
+    state_noise_enabled = bool(training["state_noise"]["enabled"])
+    noise_std = (
+        float(training["state_noise"]["coordinate_standard_deviation"])
+        if state_noise_enabled
+        else 0.0
+    )
     rp = training["rp_schedule_for_ca_lru"]
     # These are inherited pilot defaults from the preceding CA-LRU study and
     # are recorded explicitly.  They are not confirmatory values.
@@ -432,6 +460,8 @@ def train_one(spec: TrainSpec) -> Path:
     damage_epsilon = float(rp.get("damage_epsilon_pilot_default", 3e-5))
     rp_probe_batch = min(int(rp["probe_batch_size"]), 4) if spec.smoke else int(rp["probe_batch_size"])
     rp_probe_horizon = min(int(rp["probe_horizon"]), 8) if spec.smoke else int(rp["probe_horizon"])
+    configured_blank_horizon = int(rp.get("blank_ablation_horizon", rp["probe_horizon"]))
+    rp_blank_horizon = min(configured_blank_horizon, 8) if spec.smoke else configured_blank_horizon
     expected_rp_steps = _expected_rp_steps(
         model,
         steps=steps,
@@ -440,13 +470,20 @@ def train_one(spec: TrainSpec) -> Path:
         smoke=spec.smoke,
     )
     if not spec.smoke and model.rp_enabled:
-        frozen_expected = tuple(range(1550, 5001, 50))
+        frozen_expected = tuple(
+            range(
+                int(rp["warmup_updates"]) + int(rp["interval_updates"]),
+                steps + 1,
+                int(rp["interval_updates"]),
+            )
+        )
         if expected_rp_steps != frozen_expected or len(expected_rp_steps) != int(
             rp["calls_after_warmup"]
         ):
-            raise RuntimeError("full CA-LRU RP schedule is not exactly steps 1550..5000 by 50")
+            raise RuntimeError("full CA-LRU RP schedule differs from the active freeze")
     if not model.rp_enabled and expected_rp_steps:
         raise RuntimeError("No-RP and GRU must have zero RP calls")
+    progress_config = training.get("progress_logging")
 
     serialized_spec = asdict(spec)
     for key in ("output_dir", "protocol_path", "evaluation_bank", "state_spec"):
@@ -457,6 +494,8 @@ def train_one(spec: TrainSpec) -> Path:
         "protocol_freeze_id": protocol["freeze_id"],
         "protocol_file_sha256": protocol_file_sha256,
         "protocol_canonical_fingerprint": protocol_canonical_fingerprint,
+        "protocol_track": phase["protocol_track"],
+        "reporting": protocol.get("reporting"),
         "campaign_identity": campaign_identity,
         "train_spec": {**serialized_spec, "output_dir": str(output_dir)},
         "model": model.metadata(),
@@ -472,11 +511,17 @@ def train_one(spec: TrainSpec) -> Path:
         "training": {
             "steps": steps,
             "batch_size": batch_size,
+            "optimizer": dict(training["optimizer"]),
+            "learning_rate": float(spec.learning_rate),
+            "gradient_clipping": dict(training["gradient_clipping"]),
+            "progress_logging": progress_config,
+            "state_noise_enabled": state_noise_enabled,
             "state_noise_coordinate_std": noise_std,
             "rp_eta_lambda_pilot_default": eta_lambda,
             "rp_damage_epsilon_pilot_default": damage_epsilon,
             "rp_probe_batch": rp_probe_batch,
             "rp_probe_horizon": rp_probe_horizon,
+            "rp_blank_ablation_horizon": rp_blank_horizon,
             "expected_rp_steps": list(expected_rp_steps),
         },
         "seeds": {
@@ -490,11 +535,24 @@ def train_one(spec: TrainSpec) -> Path:
     atomic_json(output_dir / "config.json", config_payload)
 
     loss_trace: list[float] = []
+    gradient_norm_trace: list[float] = []
     rp_trace: list[dict[str, Any]] = []
     retention_steps: list[int] = [0]
     initial_retention = model.retention_values().detach().cpu().numpy().astype(np.float32)
     retention_trace: list[np.ndarray] = [initial_retention]
     started = time.time()
+    progress_interval = (
+        int(progress_config["interval_updates"])
+        if progress_config is not None
+        else max(1, steps // 4)
+    )
+    progress_path = (
+        output_dir / str(progress_config["atomic_json_path"])
+        if progress_config is not None
+        else None
+    )
+    if progress_interval <= 0:
+        raise ValueError("progress logging interval must be positive")
     model.train()
     for step in range(1, steps + 1):
         batch = angular_integration(
@@ -506,8 +564,12 @@ def train_one(spec: TrainSpec) -> Path:
             device=device,
         )
         initial = _initial_embedding(batch, device)
-        noise_seed = derived_seed(int(seed_policy["data_stream_seed"]), "training_noise", model_seed, step)
-        generator = torch.Generator(device=device).manual_seed(noise_seed)
+        generator = None
+        if state_noise_enabled:
+            noise_seed = derived_seed(
+                int(seed_policy["data_stream_seed"]), "training_noise", model_seed, step
+            )
+            generator = torch.Generator(device=device).manual_seed(noise_seed)
         prediction = model.forward_sequence(
             batch.inputs,
             initial_memory=initial,
@@ -521,12 +583,22 @@ def train_one(spec: TrainSpec) -> Path:
         loss.backward()
         _require_finite_model(model, f"training.step{step}.post_backward", gradients=True)
         clip_value = training["gradient_clipping"].get("frozen_numeric_value")
+        gradient_norm_value: float
         if clip_value is not None:
             gradient_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), float(clip_value), error_if_nonfinite=True
             )
             _require_finite_tensor(gradient_norm, f"training.step{step}.clipped_gradient_norm")
+            gradient_norm_value = float(gradient_norm.detach().cpu())
             _require_finite_model(model, f"training.step{step}.post_clip", gradients=True)
+        else:
+            squared_norm = torch.zeros((), device=device)
+            for parameter in model.parameters():
+                if parameter.grad is not None:
+                    squared_norm = squared_norm + parameter.grad.detach().square().sum()
+            gradient_norm = torch.sqrt(squared_norm)
+            _require_finite_tensor(gradient_norm, f"training.step{step}.gradient_norm")
+            gradient_norm_value = float(gradient_norm.cpu())
         optimizer.step()
         _require_finite_model(model, f"training.step{step}.post_optimizer")
         _require_finite_optimizer(optimizer, f"training.step{step}.optimizer")
@@ -534,6 +606,7 @@ def train_one(spec: TrainSpec) -> Path:
         if not math.isfinite(loss_value):
             raise NonFiniteTrainingError(f"non-finite scalar detected: training.step{step}.loss")
         loss_trace.append(loss_value)
+        gradient_norm_trace.append(gradient_norm_value)
 
         if step in expected_rp_steps:
             model.eval()
@@ -548,7 +621,7 @@ def train_one(spec: TrainSpec) -> Path:
             details = _retention_plasticity_call(
                 model,
                 probe,
-                blank_horizon=rp_probe_horizon,
+                blank_horizon=rp_blank_horizon,
                 eta_lambda=eta_lambda,
                 damage_epsilon=damage_epsilon,
             )
@@ -558,12 +631,32 @@ def train_one(spec: TrainSpec) -> Path:
             _require_finite_tensor(current_retention, f"training.step{step}.retention")
             retention_trace.append(current_retention.cpu().numpy().astype(np.float32))
             model.train()
-        if step == 1 or step == steps or step % max(1, steps // 4) == 0:
+        should_report_progress = (
+            step == 1 or step == steps or step % progress_interval == 0
+        )
+        if should_report_progress:
             retention = model.retention_values().detach()
             retained = int((retention > 0.99).sum().cpu()) if retention.numel() else 0
+            progress_payload = {
+                "schema_version": 1,
+                "status": "running" if step < steps else "training_updates_complete",
+                "model_id": spec.model_name,
+                "model_seed": model_seed,
+                "completed_updates": step,
+                "total_updates": steps,
+                "masked_mse": loss_trace[-1],
+                "pre_clip_global_gradient_norm": gradient_norm_trace[-1],
+                "retention_gt_0p99": retained,
+                "rp_calls_completed": len(rp_trace),
+                "elapsed_seconds": time.time() - started,
+            }
+            _require_finite_payload(progress_payload, "training_progress")
+            if progress_path is not None:
+                atomic_json(progress_path, progress_payload)
             print(
                 f"[{spec.model_name} seed={model_seed}] {step}/{steps} "
-                f"loss={loss_trace[-1]:.6g} retained_gt_0.99={retained}",
+                f"loss={loss_trace[-1]:.6g} grad_norm={gradient_norm_trace[-1]:.6g} "
+                f"rp_calls={len(rp_trace)} retained_gt_0.99={retained}",
                 flush=True,
             )
 
@@ -587,14 +680,20 @@ def train_one(spec: TrainSpec) -> Path:
         {
             "train_loss_last": loss_trace[-1],
             "train_loss_last100_mean": float(np.mean(loss_trace[-100:])),
+            "pre_clip_gradient_norm_last": gradient_norm_trace[-1],
+            "pre_clip_gradient_norm_max": max(gradient_norm_trace),
             "elapsed_seconds": time.time() - started,
             "rp_calls": len(rp_trace),
             "retention_gt_0p99": int((retention > 0.99).sum()) if retention.size else 0,
         }
     )
     _require_finite_payload(metrics, "final_metrics")
-    if not spec.smoke and model.rp_enabled and metrics["rp_calls"] != 70:
-        raise RuntimeError("full CA-LRU run must complete exactly 70 RP calls")
+    if (
+        not spec.smoke
+        and model.rp_enabled
+        and metrics["rp_calls"] != int(rp["calls_after_warmup"])
+    ):
+        raise RuntimeError("full CA-LRU run completed the wrong number of RP calls")
     if not model.rp_enabled and metrics["rp_calls"] != 0:
         raise RuntimeError("No-RP and GRU must complete exactly zero RP calls")
 
@@ -607,6 +706,8 @@ def train_one(spec: TrainSpec) -> Path:
                 "protocol_freeze_id": protocol["freeze_id"],
                 "protocol_file_sha256": protocol_file_sha256,
                 "protocol_canonical_fingerprint": protocol_canonical_fingerprint,
+                "protocol_track": phase["protocol_track"],
+                "reporting": protocol.get("reporting"),
                 "campaign_identity": campaign_identity,
                 "evaluation_bank_sha256": evaluation_bank_sha256,
                 "state_spec_sha256": state_spec_sha256,
@@ -620,6 +721,7 @@ def train_one(spec: TrainSpec) -> Path:
         output_dir / "training_trace.npz",
         step=np.arange(1, steps + 1, dtype=np.int64),
         masked_mse=np.asarray(loss_trace, dtype=np.float32),
+        pre_clip_global_gradient_norm=np.asarray(gradient_norm_trace, dtype=np.float32),
         retention=np.asarray(retention, dtype=np.float32),
         retention_steps=np.asarray(retention_steps, dtype=np.int64),
         retention_trajectory=np.asarray(retention_trace, dtype=np.float32),
@@ -640,6 +742,8 @@ def train_one(spec: TrainSpec) -> Path:
         "protocol_freeze_id": protocol["freeze_id"],
         "protocol_file_sha256": protocol_file_sha256,
         "protocol_canonical_fingerprint": protocol_canonical_fingerprint,
+        "protocol_track": phase["protocol_track"],
+        "reporting": protocol.get("reporting"),
         "source_protocol_sha256": protocol["source_protocol"]["sha256"],
         "campaign_identity": campaign_identity,
         "code_commit": _git_commit(Path(__file__).resolve().parents[2]),
@@ -672,6 +776,8 @@ def train_one(spec: TrainSpec) -> Path:
     receipt_metadata = {
         "pilot_only": True,
         "freeze_id": protocol["freeze_id"],
+        "protocol_track": phase["protocol_track"],
+        "reporting": protocol.get("reporting"),
         "protocol_canonical_fingerprint": protocol_canonical_fingerprint,
         "campaign_identity": campaign_identity,
         "model_id": spec.model_name,
@@ -683,17 +789,20 @@ def train_one(spec: TrainSpec) -> Path:
         "rp_calls": len(rp_trace),
     }
     _require_finite_payload(receipt_metadata, "receipt_metadata")
+    receipt_artifacts = [
+        output_dir / "config.json",
+        checkpoint,
+        output_dir / "training_trace.npz",
+        output_dir / "task_metrics.json",
+        output_dir / "rp_trace.json",
+        output_dir / "manifest.json",
+    ]
+    if progress_path is not None:
+        receipt_artifacts.append(progress_path)
     write_completion_receipt(
         completion,
         job_id=f"{spec.model_name}-seed{model_seed}-lr{spec.learning_rate:g}",
-        artifacts=[
-            output_dir / "config.json",
-            checkpoint,
-            output_dir / "training_trace.npz",
-            output_dir / "task_metrics.json",
-            output_dir / "rp_trace.json",
-            output_dir / "manifest.json",
-        ],
+        artifacts=receipt_artifacts,
         metadata=receipt_metadata,
     )
     return output_dir

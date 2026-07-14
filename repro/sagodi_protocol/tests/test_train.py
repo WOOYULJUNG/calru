@@ -7,7 +7,8 @@ import pytest
 import torch
 
 from repro.sagodi_protocol import train
-from repro.sagodi_protocol.config import load_protocol
+from repro.sagodi_protocol.artifacts import verify_completion_receipt
+from repro.sagodi_protocol.config import NATIVE_RECIPE_PROTOCOL_PATH, load_protocol
 from repro.sagodi_protocol.models import ModelConfig, build_protocol_model
 from repro.sagodi_protocol.tasks import sample_angular_integration, save_fixed_bank
 
@@ -38,6 +39,40 @@ def test_full_rp_schedule_is_exact_and_controls_have_no_calls():
         assert train._expected_rp_steps(
             control, steps=5000, warmup=1500, interval=50, smoke=False
         ) == ()
+
+
+def test_native_rp_schedule_is_exactly_3100_through_10000():
+    ca_lru = build_protocol_model(ModelConfig("ca_lru", 1, 2, width=8))
+    expected = tuple(range(3100, 10001, 100))
+    assert train._expected_rp_steps(
+        ca_lru, steps=10000, warmup=3000, interval=100, smoke=False
+    ) == expected
+    assert len(expected) == 70
+
+
+def test_optimizer_factory_supports_legacy_adam_and_native_adamw():
+    model = build_protocol_model(ModelConfig("gru", 1, 2, width=8))
+    legacy = train._build_optimizer(
+        model,
+        {"name": "Adam", "betas": [0.9, 0.999], "weight_decay": 0.0},
+        learning_rate=0.01,
+    )
+    assert isinstance(legacy, torch.optim.Adam)
+    assert legacy.param_groups[0]["lr"] == 0.01
+    native = train._build_optimizer(
+        model,
+        {
+            "name": "AdamW",
+            "betas": [0.9, 0.999],
+            "epsilon": 1e-8,
+            "weight_decay": 1e-5,
+        },
+        learning_rate=0.001,
+    )
+    assert isinstance(native, torch.optim.AdamW)
+    assert native.param_groups[0]["lr"] == 0.001
+    assert native.param_groups[0]["weight_decay"] == 1e-5
+    assert native.param_groups[0]["eps"] == 1e-8
 
 
 def test_shared_evaluation_bank_is_verified_and_returned_exactly(tmp_path: Path):
@@ -123,3 +158,55 @@ def test_gru_smoke_receipt_records_zero_rp_calls(tmp_path: Path):
     assert manifest["model_id"] == "gru"
     assert manifest["protocol_canonical_fingerprint"]
     assert manifest["architecture_metadata"]["parameters_total"] > 0
+
+
+def test_native_gru_smoke_records_recipe_transfer_training_config(tmp_path: Path):
+    output = tmp_path / "native_gru_smoke"
+    train.train_one(
+        train.TrainSpec(
+            model_name="gru",
+            model_seed=100,
+            learning_rate=0.001,
+            output_dir=output,
+            protocol_path=NATIVE_RECIPE_PROTOCOL_PATH,
+            device="cpu",
+            steps_override=1,
+            batch_override=2,
+            smoke=True,
+        )
+    )
+    payload = json.loads((output / "config.json").read_text())
+    manifest = json.loads((output / "manifest.json").read_text())
+    frozen = payload["training"]
+    assert frozen["optimizer"] == {
+        "name": "AdamW",
+        "betas": [0.9, 0.999],
+        "epsilon": 1e-8,
+        "weight_decay": 1e-5,
+    }
+    assert frozen["learning_rate"] == 0.001
+    assert frozen["gradient_clipping"] == {
+        "policy": "global_norm",
+        "frozen_numeric_value": 1.0,
+    }
+    assert frozen["state_noise_enabled"] is False
+    assert frozen["state_noise_coordinate_std"] == 0.0
+    assert frozen["rp_probe_horizon"] == 8
+    assert frozen["rp_blank_ablation_horizon"] == 8
+    progress = json.loads((output / "progress.json").read_text())
+    receipt = json.loads((output / "completion_receipt.json").read_text())
+    assert progress["completed_updates"] == 1
+    assert progress["total_updates"] == 1
+    assert progress["status"] == "training_updates_complete"
+    assert progress["pre_clip_global_gradient_norm"] >= 0.0
+    assert manifest["protocol_track"] == "calru_native_recipe_transfer"
+    assert manifest["reporting"]["protocol_A_eligible"] is False
+    assert "progress.json" in receipt["artifacts"]
+    valid, reason = verify_completion_receipt(output / "completion_receipt.json")
+    assert valid, reason
+
+    progress["completed_updates"] = 0
+    (output / "progress.json").write_text(json.dumps(progress))
+    valid, reason = verify_completion_receipt(output / "completion_receipt.json")
+    assert not valid
+    assert "hash mismatch" in reason

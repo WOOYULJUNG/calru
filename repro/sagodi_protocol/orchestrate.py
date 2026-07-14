@@ -24,7 +24,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, IO, Sequence
+from typing import Any, IO, Mapping, Sequence
 
 import numpy as np
 
@@ -52,7 +52,17 @@ from .tasks import load_fixed_bank, sample_angular_integration, save_fixed_bank
 
 
 ROOT_MARKER = ".calru_sagodi_protocol_root_v1"
+SCIENTIFIC_ROOT_MARKER = ".calru_scientific_root_identity_v1.json"
 OUTPUT_DIR_TOKEN = "__CALRU_ATTEMPT_OUTPUT_DIR__"
+
+SENTINEL_LAUNCH_MODE = "sentinel_then_remaining"
+SENTINEL_RECEIPT_GATE = "verified_training_completion_receipt"
+REPORTING_KEYS = (
+    "training_track",
+    "display_label",
+    "protocol_A_eligible",
+    "protocol_B_confirmatory_eligible",
+)
 
 
 @dataclass(frozen=True)
@@ -221,12 +231,75 @@ def _validated_gpu_ids(gpus: Sequence[int]) -> tuple[int, ...]:
     return values
 
 
+def _protocol_reporting(protocol: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the optional, protocol-owned reporting labels.
+
+    Older freezes predate this object.  Their manifest and aggregation bytes
+    must remain unchanged, so absence is represented by ``None`` rather than
+    by injecting new defaults into the signed campaign identity.
+    """
+
+    raw = protocol.get("reporting")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("protocol reporting must be an object")
+    missing = [key for key in REPORTING_KEYS if key not in raw]
+    if missing:
+        raise ValueError(f"protocol reporting is missing required keys: {missing}")
+    if not isinstance(raw["training_track"], str) or not raw["training_track"].strip():
+        raise ValueError("reporting.training_track must be a non-empty string")
+    if not isinstance(raw["display_label"], str) or not raw["display_label"].strip():
+        raise ValueError("reporting.display_label must be a non-empty string")
+    for key in ("protocol_A_eligible", "protocol_B_confirmatory_eligible"):
+        if type(raw[key]) is not bool:
+            raise ValueError(f"reporting.{key} must be boolean")
+    return dict(raw)
+
+
+def _protocol_launch_policy(protocol: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Read the optional launch policy, defaulting old freezes to parallel."""
+
+    phase = protocol.get("phase1_ring_pilot")
+    if not isinstance(phase, Mapping):
+        raise ValueError("protocol phase1_ring_pilot must be an object")
+    raw = phase.get("launch_policy")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("phase1 launch_policy must be an object")
+    mode = raw.get("mode")
+    if mode == "all_parallel":
+        return dict(raw)
+    if mode != SENTINEL_LAUNCH_MODE:
+        raise ValueError(f"unsupported Phase-1 launch mode: {mode!r}")
+    expected_types = {
+        "sentinel_model": str,
+        "sentinel_seed": int,
+        "gate": str,
+    }
+    for key, expected_type in expected_types.items():
+        if key not in raw or not isinstance(raw[key], expected_type):
+            raise ValueError(f"launch_policy.{key} must be {expected_type.__name__}")
+    if isinstance(raw["sentinel_seed"], bool):
+        raise ValueError("launch_policy.sentinel_seed must be an integer, not boolean")
+    if raw["gate"] != SENTINEL_RECEIPT_GATE:
+        raise ValueError(
+            "sentinel launch requires gate=verified_training_completion_receipt"
+        )
+    return dict(raw)
+
+
 def _single_orchestrator_locked(function: Any) -> Any:
     @functools.wraps(function)
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         kwargs["gpus"] = _validated_gpu_ids(kwargs["gpus"])
         root = Path(kwargs["artifact_root"]).resolve()
+        protocol = load_protocol(Path(kwargs["protocol_path"]).resolve())
+        fingerprint = protocol_fingerprint(protocol)
+        root_identity = _root_identity_specification(protocol, fingerprint)
         _prepare_root(root)
+        _require_fresh_or_matching_scientific_root(root, root_identity)
         lock = _acquire_campaign_lock(root)
         previous_term = signal.getsignal(signal.SIGTERM)
         previous_int = signal.getsignal(signal.SIGINT)
@@ -276,6 +349,104 @@ def _prepare_root(root: Path) -> None:
     if any(root.iterdir()):
         raise RuntimeError(f"artifact root is nonempty and has no safety marker: {root}")
     atomic_bytes(marker, b"CA-LRU Sagodi protocol artifacts; do not mix with legacy runs.\n")
+
+
+def _root_identity_specification(
+    protocol: Mapping[str, Any], protocol_canonical_fingerprint: str
+) -> dict[str, Any] | None:
+    """Build a protocol-specific root marker for newly labelled tracks.
+
+    The generic marker remains for backward compatibility and deletion safety.
+    A track that declares reporting or staged launch policy additionally gets a
+    scientific marker tied to its protocol fingerprint.  This makes reuse of a
+    failed root from a different freeze fail closed before any job can launch.
+    """
+
+    reporting = _protocol_reporting(protocol)
+    launch_policy = _protocol_launch_policy(protocol)
+    if reporting is None and launch_policy is None:
+        return None
+    return {
+        "schema_version": 1,
+        "marker_file": SCIENTIFIC_ROOT_MARKER,
+        "freeze_id": str(protocol["freeze_id"]),
+        "protocol_canonical_fingerprint": str(protocol_canonical_fingerprint),
+        "reporting": reporting,
+        "launch_policy": launch_policy,
+        "cross_campaign_resume_allowed": False,
+    }
+
+
+def _require_fresh_or_matching_scientific_root(
+    root: Path, specification: Mapping[str, Any] | None
+) -> None:
+    """Reject old/partial campaign roots before materializing shared banks."""
+
+    if specification is None:
+        return
+    marker = root / SCIENTIFIC_ROOT_MARKER
+    if marker.exists():
+        try:
+            observed = strict_json_load(marker)
+        except (OSError, ValueError, TypeError) as exc:
+            raise RuntimeError(f"scientific campaign root marker is unreadable: {exc}") from exc
+        if not isinstance(observed, Mapping) or observed.get(
+            "root_identity"
+        ) != dict(specification):
+            raise RuntimeError(
+                "scientific campaign root marker differs; choose a new artifact root"
+            )
+        return
+    allowed_setup_files = {
+        ROOT_MARKER,
+        ".orchestrator.guard",
+        ".orchestrator.lock",
+    }
+    unexpected = sorted(
+        path.name for path in root.iterdir() if path.name not in allowed_setup_files
+    )
+    if unexpected:
+        raise RuntimeError(
+            "new protocol track requires a fresh artifact root; existing campaign "
+            f"content was found without its scientific marker: {unexpected}"
+        )
+
+
+def _write_or_check_scientific_root_marker(
+    root: Path,
+    manifest: Mapping[str, Any],
+    *,
+    create_if_missing: bool = True,
+) -> None:
+    specification = manifest.get("root_identity")
+    if specification is None:
+        return
+    if not isinstance(specification, Mapping):
+        raise RuntimeError("manifest root_identity must be an object")
+    if specification.get("marker_file") != SCIENTIFIC_ROOT_MARKER:
+        raise RuntimeError("manifest requests an unsupported scientific root marker")
+    expected = {
+        "schema_version": 1,
+        "campaign_id": str(manifest["campaign_id"]),
+        "campaign_scientific_identity": str(manifest["scientific_identity"]),
+        "root_identity": dict(specification),
+    }
+    marker = root / SCIENTIFIC_ROOT_MARKER
+    if marker.exists():
+        if not marker.is_file():
+            raise RuntimeError(f"scientific campaign root marker is not a file: {marker}")
+        try:
+            observed = strict_json_load(marker)
+        except (OSError, ValueError, TypeError) as exc:
+            raise RuntimeError(f"scientific campaign root marker is unreadable: {exc}") from exc
+        if observed != expected:
+            raise RuntimeError(
+                "scientific campaign root marker differs; choose a new artifact root"
+            )
+        return
+    if not create_if_missing:
+        raise RuntimeError("scientific campaign root marker is missing")
+    atomic_json(marker, expected)
 
 
 def _write_or_check_manifest(root: Path, manifest: dict[str, Any]) -> None:
@@ -687,6 +858,9 @@ def _verify_campaign_inputs(
             raise RuntimeError(
                 f"manifest field {key!r} differs from the signed scientific payload"
             )
+    _write_or_check_scientific_root_marker(
+        root, manifest, create_if_missing=False
+    )
     protocol_path = Path(manifest["protocol_file"]).resolve()
     if sha256_file(protocol_path) != manifest["protocol_file_sha256"]:
         raise RuntimeError("frozen protocol file changed after campaign creation")
@@ -718,7 +892,9 @@ def _verify_campaign_inputs(
         raise RuntimeError("fixed perturbation bank sidecar changed after campaign creation")
     if canonical_hash(perturbation["specification"]) != perturbation["specification_sha256"]:
         raise RuntimeError("perturbation-bank specification hash mismatch")
-    if manifest.get("pilot_aggregation") != aggregation_specification():
+    if manifest.get("pilot_aggregation") != aggregation_specification(
+        manifest.get("reporting")
+    ):
         raise RuntimeError("pilot aggregation specification differs from frozen implementation")
 
 
@@ -776,6 +952,42 @@ def _training_jobs(
         )
         jobs.append(Job(run["run_id"], "training", output, tuple(command), receipt_job_id))
     return jobs
+
+
+def _training_launch_stages(
+    protocol: Mapping[str, Any], training_jobs: Sequence[Job]
+) -> tuple[tuple[str, tuple[Job, ...]], ...]:
+    """Partition training jobs according to the signed protocol launch policy."""
+
+    jobs = tuple(training_jobs)
+    if len({job.job_id for job in jobs}) != len(jobs):
+        raise ValueError("training job ids must be unique")
+    policy = _protocol_launch_policy(protocol)
+    if policy is None or policy["mode"] == "all_parallel":
+        return (("training", jobs),)
+
+    runs = tuple(expand_phase1_runs(protocol))
+    sentinel_runs = [
+        run
+        for run in runs
+        if str(run["model"]["id"]) == str(policy["sentinel_model"])
+        and int(run["model_seed"]) == int(policy["sentinel_seed"])
+    ]
+    if len(sentinel_runs) != 1:
+        raise ValueError(
+            "sentinel policy must select exactly one expanded run; "
+            f"selected {len(sentinel_runs)}"
+        )
+    sentinel_run_id = str(sentinel_runs[0]["run_id"])
+    by_id = {job.job_id: job for job in jobs}
+    if sentinel_run_id not in by_id:
+        raise ValueError(f"sentinel training job is missing: {sentinel_run_id}")
+    sentinel = by_id[sentinel_run_id]
+    remaining = tuple(job for job in jobs if job.job_id != sentinel_run_id)
+    return (
+        ("sentinel_training", (sentinel,)),
+        ("training_remaining", remaining),
+    )
 
 
 def _analysis_jobs(
@@ -1177,6 +1389,50 @@ def _run_jobs(
         signal.signal(signal.SIGINT, previous_int)
 
 
+def _run_training_stages(
+    protocol: Mapping[str, Any],
+    training_jobs: Sequence[Job],
+    *,
+    gpus: Sequence[int],
+    root: Path,
+    repo_root: Path,
+    manifest: dict[str, Any],
+    status: dict[str, Any],
+) -> None:
+    """Run training, enforcing the optional sentinel receipt barrier."""
+
+    stages = _training_launch_stages(protocol, training_jobs)
+    for stage_name, stage_jobs in stages:
+        status["stage"] = stage_name
+        atomic_json(root / "status.json", status)
+        _run_jobs(
+            stage_jobs,
+            gpus=gpus,
+            root=root,
+            repo_root=repo_root,
+            manifest=manifest,
+            status=status,
+        )
+        if stage_name != "sentinel_training":
+            continue
+        sentinel = stage_jobs[0]
+        key = f"training:{sentinel.job_id}"
+        valid, reason = verify_campaign_output_receipt(root, manifest, key)
+        status["sentinel_gate"] = {
+            "gate": SENTINEL_RECEIPT_GATE,
+            "run_id": sentinel.job_id,
+            "passed": bool(valid),
+            "reason": reason,
+            "verified_at": time.time(),
+        }
+        atomic_json(root / "status.json", status)
+        if not valid:
+            raise RuntimeError(
+                "sentinel training completion receipt failed verification; "
+                f"refusing to launch remaining jobs: {reason}"
+            )
+
+
 def _run_phase0(
     *,
     root: Path,
@@ -1364,7 +1620,7 @@ def _aggregation_paths(root: Path, manifest: dict[str, Any]) -> tuple[Path, Path
     specification = manifest.get("pilot_aggregation")
     if not isinstance(specification, dict):
         raise ValueError("campaign manifest lacks a pilot aggregation specification")
-    if specification != aggregation_specification():
+    if specification != aggregation_specification(manifest.get("reporting")):
         raise ValueError("pilot aggregation specification mismatch")
     directory = root / str(specification["directory"])
     return (
@@ -1461,19 +1717,21 @@ def _write_complete_marker(root: Path, manifest: dict[str, Any]) -> None:
     complete, reasons, hashes = compute_campaign_completion(root, manifest)
     if not complete:
         raise RuntimeError(f"refusing to write COMPLETE for an incomplete campaign: {reasons}")
-    atomic_json(
-        root / "COMPLETE",
-        {
-            "schema_version": 3,
-            "campaign_id": manifest["campaign_id"],
-            "scientific_identity": manifest["scientific_identity"],
-            "protocol_fingerprint": manifest["protocol_canonical_fingerprint"],
-            "receipt_sha256": hashes["receipts"],
-            "pilot_aggregation_sha256": hashes["pilot_aggregation"],
-            "completed_at": time.time(),
-            "scope": "phase0_and_nonconfirmatory_phase1_ring_pilot_only",
-        },
-    )
+    payload = {
+        "schema_version": 3,
+        "campaign_id": manifest["campaign_id"],
+        "scientific_identity": manifest["scientific_identity"],
+        "protocol_fingerprint": manifest["protocol_canonical_fingerprint"],
+        "receipt_sha256": hashes["receipts"],
+        "pilot_aggregation_sha256": hashes["pilot_aggregation"],
+        "completed_at": time.time(),
+        "scope": "phase0_and_nonconfirmatory_phase1_ring_pilot_only",
+    }
+    reporting = manifest.get("reporting")
+    if isinstance(reporting, Mapping):
+        payload["scope"] = f"phase0_and_{reporting['training_track']}_pilot_only"
+        payload["reporting"] = dict(reporting)
+    atomic_json(root / "COMPLETE", payload)
 
 
 @_single_orchestrator_locked
@@ -1492,18 +1750,22 @@ def run_campaign(
     python = _resolve_python(python)
     gpus = _validated_gpu_ids(gpus)
     protocol = load_protocol(protocol_path)
+    fingerprint = protocol_fingerprint(protocol)
+    reporting = _protocol_reporting(protocol)
+    launch_policy = _protocol_launch_policy(protocol)
+    root_identity = _root_identity_specification(protocol, fingerprint)
+    _prepare_root(artifact_root)
+    _require_fresh_or_matching_scientific_root(artifact_root, root_identity)
     git_state = _git_state(repo_root)
     if not smoke and git_state["worktree_dirty"]:
         raise RuntimeError(
             "full campaign requires a clean committed git worktree; commit the frozen code first"
         )
     environment = _environment_fingerprint(python, gpus)
-    _prepare_root(artifact_root)
     evaluation_bank = _materialize_evaluation_bank(artifact_root, protocol)
     perturbation_bank = _materialize_perturbation_bank(artifact_root, protocol)
     source_hashes = _source_hashes(repo_root, Path(__file__).resolve().parent)
     runs = list(expand_phase1_runs(protocol))
-    fingerprint = protocol_fingerprint(protocol)
     campaign_id = f"{protocol['freeze_id']}-{fingerprint[:12]}"
     expectations = _receipt_expectations(runs)
     scientific_payload = {
@@ -1519,9 +1781,15 @@ def run_campaign(
         "smoke": bool(smoke),
         "run_matrix": runs,
         "receipt_expectations": expectations,
-        "pilot_aggregation": aggregation_specification(),
+        "pilot_aggregation": aggregation_specification(reporting),
         "pilot_only": True,
     }
+    if reporting is not None:
+        scientific_payload["reporting"] = reporting
+    if launch_policy is not None:
+        scientific_payload["launch_policy"] = launch_policy
+    if root_identity is not None:
+        scientific_payload["root_identity"] = root_identity
     manifest = {
         "schema_version": 2,
         **scientific_payload,
@@ -1532,6 +1800,7 @@ def run_campaign(
         "scientific_identity": canonical_hash(scientific_payload),
     }
     _write_or_check_manifest(artifact_root, manifest)
+    _write_or_check_scientific_root_marker(artifact_root, manifest)
     _verify_campaign_inputs(artifact_root, manifest, repo_root)
     bank_path = artifact_root / evaluation_bank["path"]
     perturbation_bank_path = artifact_root / perturbation_bank["path"]
@@ -1554,19 +1823,36 @@ def run_campaign(
         campaign_identity=manifest["scientific_identity"],
         smoke=smoke,
     )
+    training_stages = _training_launch_stages(protocol, training)
     if dry_run:
+        dry_payload = {
+            "campaign_id": manifest["campaign_id"],
+            "scientific_identity": manifest["scientific_identity"],
+            "evaluation_bank": evaluation_bank,
+            "perturbation_bank": perturbation_bank,
+            "pilot_aggregation": manifest["pilot_aggregation"],
+            "phase0": str(artifact_root / "phase0"),
+            "training_jobs": [job.job_id for job in training],
+            "analysis_jobs": [job.job_id for job in analyses],
+        }
+        if reporting is not None or launch_policy is not None:
+            dry_payload.update(
+                {
+                    "reporting": reporting,
+                    "launch_policy": launch_policy,
+                    "root_identity": root_identity,
+                    "training_stages": [
+                        {
+                            "stage": stage,
+                            "jobs": [job.job_id for job in jobs],
+                        }
+                        for stage, jobs in training_stages
+                    ],
+                }
+            )
         print(
             json.dumps(
-                {
-                    "campaign_id": manifest["campaign_id"],
-                    "scientific_identity": manifest["scientific_identity"],
-                    "evaluation_bank": evaluation_bank,
-                    "perturbation_bank": perturbation_bank,
-                    "pilot_aggregation": manifest["pilot_aggregation"],
-                    "phase0": str(artifact_root / "phase0"),
-                    "training_jobs": [job.job_id for job in training],
-                    "analysis_jobs": [job.job_id for job in analyses],
-                },
+                dry_payload,
                 indent=2,
                 sort_keys=True,
             )
@@ -1582,6 +1868,8 @@ def run_campaign(
         "jobs": {},
         "started_at": time.time(),
     }
+    if reporting is not None:
+        status["reporting"] = reporting
     atomic_json(artifact_root / "status.json", status)
     _run_phase0(
         root=artifact_root,
@@ -1593,9 +1881,8 @@ def run_campaign(
         status=status,
     )
 
-    status["stage"] = "training"
-    atomic_json(artifact_root / "status.json", status)
-    _run_jobs(
+    _run_training_stages(
+        protocol,
         training,
         gpus=gpus,
         root=artifact_root,
@@ -1620,6 +1907,8 @@ def run_campaign(
         "sha256": aggregation_hashes,
         "inference": "descriptive_nonconfirmatory_no_p_values",
     }
+    if reporting is not None:
+        status["pilot_aggregation"]["reporting"] = reporting
     atomic_json(artifact_root / "status.json", status)
     _write_complete_marker(artifact_root, manifest)
     status["stage"] = "complete"

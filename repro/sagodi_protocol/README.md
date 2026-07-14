@@ -15,11 +15,16 @@ Phase 2–4: disabled
 핵심 파일:
 
 - `analysis_protocol.yaml`: 실행 가능한 단일 freeze와 claim/QA threshold
+- `calru_native_sagodi_ring_pilot_v1.yaml`: 기존 성공 CA-LRU recipe를
+  Ságodi ring task에 이식한 별도 pilot freeze (sentinel 1 + 자동 fan-out 14)
 - `EXPERIMENT_RECONSTRUCTION_ko.md`: 범위와 해석 규칙
+- `CALRU_NATIVE_RECIPE.md`: Exp88 성공 recipe를 Ságodi task에 이식하는
+  별도 pilot의 provenance, Protocol-A/B 경계, sentinel-first 실행 규칙
 - `tasks.py`: Ságodi MGS 및 single/double angular-integration bank
 - `models.py`, `state.py`: 모델 registry와 최소 Markov-state adapter
 - `audit.py`, `phase0.py`: 실제 `step(0,state)` 선행 감사
-- `train.py`: online paired batches, Protocol-A noise, RP schedule
+- `train.py`: freeze-driven Adam/AdamW, paired online batches, optional state
+  noise, gradient clipping, RP schedule와 atomic progress telemetry
 - `phase1_analysis.py`: Track-A slow-state reconstruction, 8-path settling/fiber,
   독립 8-path known-q projection QA, local-SVD C1 rank, 매-step projected-normal
   cocycle와 C1–C3 pilot 분석

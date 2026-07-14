@@ -14,6 +14,8 @@ from repro.sagodi_protocol.artifacts import (
     atomic_json,
     canonical_hash,
     sha256_file,
+    strict_json_load,
+    strict_json_loads,
     verify_completion_receipt,
     write_completion_receipt,
 )
@@ -28,20 +30,42 @@ from repro.sagodi_protocol.orchestrate import (
     _materialize_perturbation_bank,
     _acquire_campaign_lock,
     _prepare_root,
+    _require_fresh_or_matching_scientific_root,
+    _root_identity_specification,
     _preserve_invalid_output,
     _receipt_metadata,
+    _run_training_stages,
+    _training_launch_stages,
     _training_jobs,
     _analysis_jobs,
     _terminate_active,
     _validated_gpu_ids,
+    _write_or_check_manifest,
+    _write_or_check_scientific_root_marker,
     _write_pilot_aggregation,
     compute_campaign_completion,
     run_campaign,
     verify_campaign_output_receipt,
 )
-from repro.sagodi_protocol.config import DEFAULT_PROTOCOL_PATH, load_protocol
+from repro.sagodi_protocol.config import (
+    DEFAULT_PROTOCOL_PATH,
+    NATIVE_RECIPE_PROTOCOL_PATH,
+    load_protocol,
+)
 from repro.sagodi_protocol.status import main as status_main
 from repro.sagodi_protocol.status import summarize
+
+
+NATIVE_REPORTING = {
+    "training_track": "calru_native_recipe_transfer",
+    "display_label": "CA-LRU native training on Ságodi ring task",
+    "protocol_A_eligible": False,
+    "protocol_B_confirmatory_eligible": False,
+}
+
+
+def _native_staged_protocol() -> dict:
+    return load_protocol(NATIVE_RECIPE_PROTOCOL_PATH)
 
 
 def _manifest() -> dict:
@@ -153,6 +177,29 @@ def test_status_rejects_nonstandard_nonfinite_json(tmp_path: Path):
     assert status_main([str(tmp_path)]) == 2
 
 
+def test_strict_artifact_json_rejects_duplicate_keys_at_any_depth(tmp_path: Path):
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        strict_json_loads('{"outer":{"value":1,"value":2}}')
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"schema_version":2,"schema_version":1}\n')
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        strict_json_load(manifest)
+
+
+def test_receipt_verifier_rejects_duplicate_keys(tmp_path: Path):
+    artifact = tmp_path / "data.bin"
+    artifact.write_bytes(b"payload")
+    receipt = tmp_path / "completion_receipt.json"
+    receipt.write_text(
+        '{"schema_version":2,"job_id":"job","job_id":"shadow",'
+        '"metadata":{},"artifacts":{"data.bin":"ignored"}}\n'
+    )
+    valid, reason = verify_completion_receipt(receipt, expected_job_id="shadow")
+    assert not valid
+    assert "duplicate JSON key" in reason
+
+
 def test_schema2_receipt_survives_atomic_directory_move_and_checks_identity(tmp_path: Path):
     attempt = tmp_path / "attempt"
     attempt.mkdir()
@@ -259,6 +306,135 @@ def test_child_commands_receive_frozen_banks_and_full_only_state_spec(tmp_path: 
     assert "--campaign-identity" in analyses[0].command
 
 
+def test_legacy_freeze_keeps_single_parallel_training_stage(tmp_path: Path):
+    protocol = load_protocol(DEFAULT_PROTOCOL_PATH)
+    jobs = _training_jobs(
+        protocol,
+        root=tmp_path,
+        python="/python",
+        protocol_path=DEFAULT_PROTOCOL_PATH,
+        evaluation_bank=tmp_path / "evaluation.npz",
+        campaign_identity="identity",
+        smoke=True,
+    )
+    stages = _training_launch_stages(protocol, jobs)
+    assert stages == (("training", tuple(jobs)),)
+    assert aggregation_specification() == {
+        "schema_version": 1,
+        "directory": "pilot_aggregation",
+        "summary": "pilot_summary.json",
+        "run_matrix_csv": "pilot_run_matrix.csv",
+        "denominator": "all_preregistered_pilot_runs_that_reached_valid_analysis_receipts",
+        "inference": "descriptive_nonconfirmatory_no_p_values",
+    }
+
+
+def test_native_launch_policy_partitions_ca_seed100_before_remaining_14(tmp_path: Path):
+    protocol = _native_staged_protocol()
+    jobs = _training_jobs(
+        protocol,
+        root=tmp_path,
+        python="/python",
+        protocol_path=NATIVE_RECIPE_PROTOCOL_PATH,
+        evaluation_bank=tmp_path / "evaluation.npz",
+        campaign_identity="identity",
+        smoke=True,
+    )
+    stages = _training_launch_stages(protocol, jobs)
+    assert [stage for stage, _ in stages] == [
+        "sentinel_training",
+        "training_remaining",
+    ]
+    sentinel = stages[0][1]
+    remaining = stages[1][1]
+    assert len(sentinel) == 1
+    assert len(remaining) == 14
+    command = sentinel[0].command
+    assert command[command.index("--model") + 1] == "ca_lru"
+    assert command[command.index("--model-seed") + 1] == "100"
+    assert sentinel[0].job_id not in {job.job_id for job in remaining}
+
+
+def test_sentinel_receipt_is_verified_before_remaining_jobs_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    protocol = _native_staged_protocol()
+    jobs = _training_jobs(
+        protocol,
+        root=tmp_path,
+        python="/python",
+        protocol_path=NATIVE_RECIPE_PROTOCOL_PATH,
+        evaluation_bank=tmp_path / "evaluation.npz",
+        campaign_identity="identity",
+        smoke=True,
+    )
+    calls: list[tuple[str, object]] = []
+
+    def fake_run_jobs(stage_jobs, **_kwargs):
+        calls.append(("launch", tuple(job.job_id for job in stage_jobs)))
+
+    def fake_verify(_root, _manifest, key):
+        calls.append(("verify", key))
+        return True, "verified sentinel receipt"
+
+    monkeypatch.setattr("repro.sagodi_protocol.orchestrate._run_jobs", fake_run_jobs)
+    monkeypatch.setattr(
+        "repro.sagodi_protocol.orchestrate.verify_campaign_output_receipt",
+        fake_verify,
+    )
+    _run_training_stages(
+        protocol,
+        jobs,
+        gpus=(0, 1),
+        root=tmp_path,
+        repo_root=tmp_path,
+        manifest={},
+        status={"jobs": {}},
+    )
+    assert calls[0][0] == "launch" and len(calls[0][1]) == 1
+    assert calls[1][0] == "verify"
+    assert calls[1][1] == f"training:{calls[0][1][0]}"
+    assert calls[2][0] == "launch" and len(calls[2][1]) == 14
+
+
+def test_failed_sentinel_receipt_blocks_every_remaining_training_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    protocol = _native_staged_protocol()
+    jobs = _training_jobs(
+        protocol,
+        root=tmp_path,
+        python="/python",
+        protocol_path=NATIVE_RECIPE_PROTOCOL_PATH,
+        evaluation_bank=tmp_path / "evaluation.npz",
+        campaign_identity="identity",
+        smoke=True,
+    )
+    launched: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        "repro.sagodi_protocol.orchestrate._run_jobs",
+        lambda stage_jobs, **_kwargs: launched.append(
+            tuple(job.job_id for job in stage_jobs)
+        ),
+    )
+    monkeypatch.setattr(
+        "repro.sagodi_protocol.orchestrate.verify_campaign_output_receipt",
+        lambda *_args, **_kwargs: (False, "missing or invalid completion receipt"),
+    )
+    with pytest.raises(RuntimeError, match="refusing to launch remaining jobs"):
+        _run_training_stages(
+            protocol,
+            jobs,
+            gpus=(0, 1),
+            root=tmp_path,
+            repo_root=tmp_path,
+            manifest={},
+            status={"jobs": {}},
+        )
+    assert len(launched) == 1
+    assert len(launched[0]) == 1
+
+
 def test_status_marks_dead_recorded_pid_stale_and_returns_nonzero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -335,6 +511,7 @@ def test_complete_marker_is_valid_only_for_current_gate_and_all_receipts(
             "receipt_sha256": completion_hashes["receipts"],
             "pilot_aggregation_sha256": completion_hashes["pilot_aggregation"],
             "completed_at": 1.0,
+            "scope": "phase0_and_nonconfirmatory_phase1_ring_pilot_only",
         },
     )
     monkeypatch.setattr(
@@ -471,7 +648,52 @@ def test_campaign_lock_guard_blocks_during_delayed_payload_write(
     acquired[0].release()
 
 
-def _pilot_aggregation_manifest(tmp_path: Path, *, models=("ca_lru", "no_rp", "gru")):
+def test_scientific_root_marker_is_bound_to_new_track_identity(tmp_path: Path):
+    protocol = _native_staged_protocol()
+    specification = _root_identity_specification(protocol, "a" * 64)
+    assert specification is not None
+    manifest = {
+        "campaign_id": "native-campaign",
+        "scientific_identity": "b" * 64,
+        "root_identity": specification,
+    }
+    _prepare_root(tmp_path)
+    _write_or_check_scientific_root_marker(tmp_path, manifest)
+    marker = tmp_path / specification["marker_file"]
+    observed = json.loads(marker.read_text())
+    assert observed["campaign_scientific_identity"] == "b" * 64
+    assert observed["root_identity"]["reporting"] == NATIVE_REPORTING
+    _write_or_check_scientific_root_marker(tmp_path, manifest)
+
+    observed["campaign_scientific_identity"] = "c" * 64
+    atomic_json(marker, observed)
+    with pytest.raises(RuntimeError, match="choose a new artifact root"):
+        _write_or_check_scientific_root_marker(tmp_path, manifest)
+
+
+def test_existing_failed_campaign_manifest_cannot_be_reused_for_new_identity(
+    tmp_path: Path,
+):
+    _prepare_root(tmp_path)
+    old_manifest = {"campaign_id": "failed-old", "scientific_identity": "a" * 64}
+    new_manifest = {"campaign_id": "native-new", "scientific_identity": "b" * 64}
+    _write_or_check_manifest(tmp_path, old_manifest)
+    specification = _root_identity_specification(
+        _native_staged_protocol(), "c" * 64
+    )
+    with pytest.raises(RuntimeError, match="requires a fresh artifact root"):
+        _require_fresh_or_matching_scientific_root(tmp_path, specification)
+    with pytest.raises(RuntimeError, match="choose a new artifact root"):
+        _write_or_check_manifest(tmp_path, new_manifest)
+    assert strict_json_load(tmp_path / "manifest.json") == old_manifest
+
+
+def _pilot_aggregation_manifest(
+    tmp_path: Path,
+    *,
+    models=("ca_lru", "no_rp", "gru"),
+    reporting: dict | None = None,
+):
     runs = []
     expectations = {
         "phase0": {
@@ -509,8 +731,10 @@ def _pilot_aggregation_manifest(tmp_path: Path, *, models=("ca_lru", "no_rp", "g
         "protocol_canonical_fingerprint": "a" * 64,
         "run_matrix": runs,
         "receipt_expectations": expectations,
-        "pilot_aggregation": aggregation_specification(),
+        "pilot_aggregation": aggregation_specification(reporting),
     }
+    if reporting is not None:
+        payload["reporting"] = dict(reporting)
     manifest = {
         "schema_version": 2,
         **payload,
@@ -581,6 +805,57 @@ def test_pilot_aggregation_uses_all_15_denominators_and_no_inference(tmp_path: P
         assert task_numeric["iqr"] == pytest.approx(2.0)
 
 
+def test_native_aggregation_scope_and_labels_come_from_signed_reporting(
+    tmp_path: Path,
+):
+    manifest = _pilot_aggregation_manifest(tmp_path, reporting=NATIVE_REPORTING)
+    summary, _ = build_pilot_aggregation(tmp_path, manifest)
+    assert manifest["reporting"] == NATIVE_REPORTING
+    assert manifest["pilot_aggregation"]["reporting"] == NATIVE_REPORTING
+    assert summary["scope"] == "nonconfirmatory_phase1_ring_pilot"
+    assert summary["training_track"] == "calru_native_recipe_transfer"
+    assert summary["display_label"] == "CA-LRU native training on Ságodi ring task"
+    assert summary["protocol_A_eligible"] is False
+    assert summary["protocol_B_confirmatory_eligible"] is False
+    assert summary["reporting"] == NATIVE_REPORTING
+    assert summary["inference"]["confirmatory"] is False
+
+
+def test_native_complete_marker_binds_reporting_and_track_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    manifest = _pilot_aggregation_manifest(
+        tmp_path, models=("gru",), reporting=NATIVE_REPORTING
+    )
+    atomic_json(tmp_path / "manifest.json", manifest)
+    atomic_json(tmp_path / "phase0" / "phase0_gate.json", {"passed": True})
+    for key in manifest["receipt_expectations"]:
+        _write_identity_receipt(tmp_path, manifest, key)
+    aggregation_hashes = _write_pilot_aggregation(tmp_path, manifest)
+    complete, reasons, completion_hashes = compute_campaign_completion(tmp_path, manifest)
+    assert complete, reasons
+    marker = {
+        "schema_version": 3,
+        "campaign_id": manifest["campaign_id"],
+        "scientific_identity": manifest["scientific_identity"],
+        "protocol_fingerprint": manifest["protocol_canonical_fingerprint"],
+        "receipt_sha256": completion_hashes["receipts"],
+        "pilot_aggregation_sha256": aggregation_hashes,
+        "completed_at": 1.0,
+        "scope": "phase0_and_calru_native_recipe_transfer_pilot_only",
+        "reporting": NATIVE_REPORTING,
+    }
+    atomic_json(tmp_path / "COMPLETE", marker)
+    monkeypatch.setattr(
+        "repro.sagodi_protocol.status._verify_campaign_inputs", lambda *args: None
+    )
+    assert summarize(tmp_path)["complete_marker"]["valid"] is True
+
+    marker["reporting"] = {**NATIVE_REPORTING, "protocol_A_eligible": True}
+    atomic_json(tmp_path / "COMPLETE", marker)
+    assert summarize(tmp_path)["complete_marker"]["valid"] is False
+
+
 def test_aggregation_corruption_invalidates_campaign_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -607,6 +882,7 @@ def test_aggregation_corruption_invalidates_campaign_completion(
             "receipt_sha256": completion_hashes["receipts"],
             "pilot_aggregation_sha256": hashes,
             "completed_at": 1.0,
+            "scope": "phase0_and_nonconfirmatory_phase1_ring_pilot_only",
         },
     )
     monkeypatch.setattr(

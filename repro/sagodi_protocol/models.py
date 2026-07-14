@@ -28,6 +28,8 @@ from exp71_pan_block_pulse_hold import build_model_variant  # noqa: E402
 
 
 MODEL_NAMES = ("ca_lru", "no_rp", "gru")
+INITIAL_ENCODER_PYTORCH_DEFAULT = "pytorch_default"
+INITIAL_ENCODER_SAGODI_W_OTR = "sagodi_W_otr_normal_primary_inverse_sqrt"
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ class ModelConfig:
     rank_matched_lambda_high: float = 0.999
     rank_matched_lambda_low: float = 0.0
     initial_encoder_bias: bool = True
+    initial_encoder_weight_init: str = INITIAL_ENCODER_PYTORCH_DEFAULT
 
     def validate(self) -> None:
         if self.name not in MODEL_NAMES:
@@ -74,8 +77,24 @@ class ModelConfig:
                 raise ValueError(f"pilot architecture freezes {key}={expected}, got {actual}")
         if self.init_mode != "hidden_init":
             raise ValueError("the Phase-1 pilot freezes hidden_init")
-        if self.initial_encoder_bias is not True:
-            raise ValueError("the Phase-1 pilot freezes a biased initial-state encoder")
+        if self.initial_encoder_weight_init not in {
+            INITIAL_ENCODER_PYTORCH_DEFAULT,
+            INITIAL_ENCODER_SAGODI_W_OTR,
+        }:
+            raise ValueError(
+                "unsupported initial-state encoder initialization "
+                f"{self.initial_encoder_weight_init!r}"
+            )
+        if (
+            self.initial_encoder_weight_init == INITIAL_ENCODER_PYTORCH_DEFAULT
+            and self.initial_encoder_bias is not True
+        ):
+            raise ValueError("the legacy Phase-1 freeze uses a biased initial-state encoder")
+        if (
+            self.initial_encoder_weight_init == INITIAL_ENCODER_SAGODI_W_OTR
+            and self.initial_encoder_bias is not False
+        ):
+            raise ValueError("Ságodi W_otr initialization requires bias=false")
 
 
 def _legacy_variant(name: str) -> str:
@@ -113,6 +132,12 @@ class ProtocolModel(nn.Module):
                 self.primary_state_size,
                 bias=bool(config.initial_encoder_bias),
             )
+            if config.initial_encoder_weight_init == INITIAL_ENCODER_SAGODI_W_OTR:
+                nn.init.normal_(
+                    self.initial_encoder.weight,
+                    mean=0.0,
+                    std=1.0 / math.sqrt(float(self.primary_state_size)),
+                )
         else:
             self.initial_encoder = None
 
@@ -267,6 +292,17 @@ class ProtocolModel(nn.Module):
             input_conditioned_writer = "standard_GRU_input_conditioning"
         return {
             "model_config": asdict(self.config),
+            "initial_state_encoder_initialization": {
+                "policy": self.config.initial_encoder_weight_init,
+                "bias": bool(self.config.initial_encoder_bias),
+                "weight_distribution": (
+                    "Normal(0, 1/sqrt(primary_state_dimension))"
+                    if self.config.initial_encoder_weight_init
+                    == INITIAL_ENCODER_SAGODI_W_OTR
+                    else "torch.nn.Linear.reset_parameters"
+                ),
+                "primary_state_dimension": self.primary_state_size,
+            },
             "legacy_variant": _legacy_variant(self.config.name),
             "autonomous_primary_map": autonomous_primary_map,
             "input_conditioned_writer": input_conditioned_writer,
@@ -297,6 +333,17 @@ def model_config_from_protocol(
     architecture = training["architecture"]
     shared = architecture["shared_builder_kwargs"]
     initializer = architecture["initial_state_encoder"]
+    weight_initialization = initializer.get("weight_initialization")
+    initial_encoder_weight_init = INITIAL_ENCODER_PYTORCH_DEFAULT
+    if weight_initialization is not None:
+        if weight_initialization != {
+            "distribution": "normal",
+            "mean": 0.0,
+            "standard_deviation": "1_over_sqrt_primary_state_dimension",
+            "source": "Sagodi_official_W_otr",
+        }:
+            raise ValueError("unsupported initial-state encoder initialization block")
+        initial_encoder_weight_init = INITIAL_ENCODER_SAGODI_W_OTR
     return ModelConfig(
         name=str(model_name),
         input_dim=int(task["input_dimension"]),
@@ -314,6 +361,7 @@ def model_config_from_protocol(
         rank_matched_lambda_high=float(shared["rank_matched_lambda_high"]),
         rank_matched_lambda_low=float(shared["rank_matched_lambda_low"]),
         initial_encoder_bias=bool(initializer["bias"]),
+        initial_encoder_weight_init=initial_encoder_weight_init,
     )
 
 
@@ -323,8 +371,10 @@ def _verify_resolved_architecture(model: ProtocolModel) -> None:
     config = model.config
     if model.initial_encoder is None or not isinstance(model.initial_encoder, nn.Linear):
         raise RuntimeError("hidden-init model must expose a linear initial-state encoder")
-    if model.initial_encoder.bias is None:
+    if config.initial_encoder_bias and model.initial_encoder.bias is None:
         raise RuntimeError("initial-state encoder must include its frozen bias")
+    if not config.initial_encoder_bias and model.initial_encoder.bias is not None:
+        raise RuntimeError("initial-state encoder must be bias-free")
     core = model.core
     if config.name in {"ca_lru", "no_rp"}:
         if core.__class__.__name__ != "FullBlockSequenceModel":

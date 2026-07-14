@@ -23,12 +23,42 @@ AGGREGATION_SCHEMA_VERSION = 1
 AGGREGATION_DIRECTORY = "pilot_aggregation"
 SUMMARY_NAME = "pilot_summary.json"
 MATRIX_NAME = "pilot_run_matrix.csv"
+REPORTING_KEYS = (
+    "training_track",
+    "display_label",
+    "protocol_A_eligible",
+    "protocol_B_confirmatory_eligible",
+)
 
 
-def aggregation_specification() -> dict[str, Any]:
+def _normalized_reporting(reporting: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if reporting is None:
+        return None
+    if not isinstance(reporting, Mapping):
+        raise ValueError("aggregation reporting metadata must be an object")
+    missing = [key for key in REPORTING_KEYS if key not in reporting]
+    if missing:
+        raise ValueError(f"aggregation reporting metadata is missing keys: {missing}")
+    if not isinstance(reporting["training_track"], str) or not reporting[
+        "training_track"
+    ].strip():
+        raise ValueError("reporting.training_track must be a non-empty string")
+    if not isinstance(reporting["display_label"], str) or not reporting[
+        "display_label"
+    ].strip():
+        raise ValueError("reporting.display_label must be a non-empty string")
+    for key in ("protocol_A_eligible", "protocol_B_confirmatory_eligible"):
+        if type(reporting[key]) is not bool:
+            raise ValueError(f"reporting.{key} must be boolean")
+    return dict(reporting)
+
+
+def aggregation_specification(
+    reporting: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return the immutable paths and schema signed by the campaign manifest."""
 
-    return {
+    specification = {
         "schema_version": AGGREGATION_SCHEMA_VERSION,
         "directory": AGGREGATION_DIRECTORY,
         "summary": SUMMARY_NAME,
@@ -36,6 +66,10 @@ def aggregation_specification() -> dict[str, Any]:
         "denominator": "all_preregistered_pilot_runs_that_reached_valid_analysis_receipts",
         "inference": "descriptive_nonconfirmatory_no_p_values",
     }
+    normalized = _normalized_reporting(reporting)
+    if normalized is not None:
+        specification["reporting"] = normalized
+    return specification
 
 
 def _claim_path(root: Path, manifest: Mapping[str, Any], run_id: str) -> Path:
@@ -276,6 +310,7 @@ def build_pilot_aggregation(
     for row in rows:
         by_model[row["model"]].append(row)
     task_successful = [row for row in rows if row["task_success"]]
+    reporting = _normalized_reporting(manifest.get("reporting"))
     summary = {
         "schema_version": AGGREGATION_SCHEMA_VERSION,
         "campaign_id": manifest["campaign_id"],
@@ -307,6 +342,16 @@ def build_pilot_aggregation(
             for model, model_rows in sorted(by_model.items())
         },
     }
+    if reporting is not None:
+        # Keep the schema-v1 meaning of ``scope`` stable for downstream
+        # consumers; the training track is an orthogonal, signed label.
+        summary["training_track"] = reporting["training_track"]
+        summary["display_label"] = reporting["display_label"]
+        summary["protocol_A_eligible"] = reporting["protocol_A_eligible"]
+        summary["protocol_B_confirmatory_eligible"] = reporting[
+            "protocol_B_confirmatory_eligible"
+        ]
+        summary["reporting"] = reporting
     return summary, csv_payload
 
 
