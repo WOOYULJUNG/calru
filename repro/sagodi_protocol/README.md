@@ -1,9 +1,61 @@
 # Ságodi-based CA-LRU evaluation protocol
 
-결과 생성에 사용할 현재 경로는 `Ságodi-primary v3`다. Ságodi et al.의
-방법은 CA-LRU의 제안 방법이 아니라 continuous-attractor 특성을
-검사하는 평가 도구로만 사용한다. 정확한 범위·모호성 해소·수치 규칙은
-`SAGODI_PRIMARY_V3_FREEZE_ko.md`에 고정했다.
+결과 생성에 사용할 현재 경로는 **public-code-resolved v5**다. Ságodi
+et al.의 공개 코드를 커밋 `cbd7404e9baca4b2dc291560cfc6576bb7b1f078`로
+고정하고, 128-step variable-sparsity task와 모델별 실제 학습 경로를
+재현한다. 정확한 repair와 해석 규칙은
+`SAGODI_SOURCE_RESOLVED_V1_FREEZE_ko.md`에 고정했다.
+
+```text
+RNN/GRU/LSTM source-resolved smoke
+    ↓
+3 baselines × 1 sentinel seed × 5,000 updates
+    ↓ all final clean held-out MSE < 0.01
+LRU + CA-LRU(no-RP) LR × actual state-noise sentinel grid
+    ↓ passing top-3 cells only
+5-seed fan-out and base-hyperparameter selection
+    ↓
+CA-LRU RP sentinel → passing top-3 → 5-seed fan-out
+```
+
+## Public-code-resolved v5 실행
+
+먼저 공개 baseline 세 개가 모두 실제로 학습되는지 확인한다.
+
+```bash
+python -m repro.sagodi_protocol.source_resolved_baseline_campaign \
+  --stage smoke \
+  --artifact-root /path/to/source_baselines \
+  --gpus 0,1,2
+
+python -m repro.sagodi_protocol.source_resolved_baseline_campaign \
+  --stage sentinel \
+  --artifact-root /path/to/source_baselines \
+  --gpus 0,1,2
+```
+
+baseline gate가 통과한 뒤에만 LRU/CA-LRU 탐색을 실행한다.
+
+```bash
+python -m repro.sagodi_protocol.source_centered_lru_calru_v5 \
+  --stage smoke \
+  --artifact-root /path/to/lru_calru_tuning \
+  --gpus 0,1
+
+python -m repro.sagodi_protocol.source_centered_lru_calru_v5 \
+  --stage tune \
+  --artifact-root /path/to/lru_calru_tuning \
+  --gpus 0,1,2,3,4,5
+```
+
+이 경로는 `Ságodi exact`가 아니라 **code-resolved reproduction with
+documented deterministic repairs**다. Ságodi 방법은 CA-LRU의 제안
+방법이 아니라 continuous-attractor 특성을 검사하는 평가 도구로만
+사용한다.
+
+## Historical v3.1 (provenance only)
+
+아래 v3.1 경로는 과거 artifact의 provenance와 재분석을 위해 보존한다.
 
 ```text
 Phase 0: six-model full-Markov-state / blank-map audit

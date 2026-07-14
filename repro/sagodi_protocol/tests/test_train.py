@@ -84,14 +84,18 @@ def test_native_rp_schedule_is_exactly_3100_through_10000():
     assert len(expected) == 70
 
 
-def test_rp_update_equals_batch_mean_ablation_damage_logit_rule():
-    """Regression-test the paper equation, not only the RP call schedule."""
+def test_rp_update_equals_batch_mean_ablation_damage_logit_rule_with_init_override():
+    """Regression-test both the paper equation and explicit init semantics."""
 
     torch.manual_seed(17)
     model = build_protocol_model(ModelConfig("ca_lru", 1, 2, width=4))
     model.eval()
     batch = sample_angular_integration(3, 4, 23, 29, "hidden-init")
-    initial = train._initial_embedding(batch, batch.inputs.device)
+    # The source-centered comparison initializes from q1, not metadata q0.
+    # Using a deliberately distinct tensor here proves the RP path consumes
+    # the explicit override instead of silently calling _initial_embedding.
+    initial = batch.output_targets[0]
+    assert not torch.equal(initial, train._initial_embedding(batch, batch.inputs.device))
     with torch.no_grad():
         _, states = model.forward_sequence(
             batch.inputs, initial_memory=initial, return_states=True
@@ -126,6 +130,7 @@ def test_rp_update_equals_batch_mean_ablation_damage_logit_rule():
         blank_horizon=3,
         eta_lambda=eta,
         damage_epsilon=epsilon,
+        initial_memory=initial,
     )
 
     torch.testing.assert_close(recurrence.theta, expected_theta, rtol=0.0, atol=0.0)

@@ -398,6 +398,7 @@ def _retention_plasticity_call(
     blank_horizon: int,
     eta_lambda: float,
     damage_epsilon: float,
+    initial_memory: torch.Tensor | None = None,
 ) -> dict[str, float]:
     if not model.rp_enabled:
         raise ValueError("RP call requested for a model with RP disabled")
@@ -406,7 +407,19 @@ def _retention_plasticity_call(
     if not math.isfinite(float(damage_epsilon)):
         raise ValueError("RP damage_epsilon must be finite")
     _require_finite_model(model, "rp_pre_update")
-    initial = _initial_embedding(batch, batch.inputs.device)
+    if initial_memory is None:
+        initial = _initial_embedding(batch, batch.inputs.device)
+    else:
+        initial = initial_memory.to(
+            device=batch.inputs.device, dtype=batch.inputs.dtype
+        )
+        expected_shape = (batch.batch_size, batch.output_targets.shape[-1])
+        if tuple(initial.shape) != expected_shape:
+            raise ValueError(
+                "RP initial_memory shape differs: "
+                f"{tuple(initial.shape)} != {expected_shape}"
+            )
+        _require_finite_tensor(initial, "retention_plasticity.initial_memory")
     _, states = model.forward_sequence(batch.inputs, initial_memory=initial, return_states=True)
     _require_finite_tensor(states, "retention_plasticity.probe_states")
     state = states[-1]

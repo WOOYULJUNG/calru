@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "campaign_id": "source_centered_lru_calru_tuning_v5",
+  "protocol_revision": "source_centered_two_stage_lru_calru_tuning_v1",
+  "upstream_reference": {
+    "repository": "https://github.com/catniplab/back_to_the_continuous_attractor",
+    "commit": "cbd7404e9baca4b2dc291560cfc6576bb7b1f078",
+    "effective_rnn_state_noise_std": 0.03162277660168379
+  },
+  "task": {
+    "name": "angular_integration",
+    "duration": 12.8,
+    "horizon": 128,
+    "dt": 0.1,
+    "gp_length_scale": 1.0,
+    "gp_std": 1.0,
+    "gp_jitter": 1e-06,
+    "input_sparsity": "variable_uniform_0_2",
+    "random_angle_init": true,
+    "target_indexing": "q_t_plus_1_after_velocity_update",
+    "initial_state_target_index": 0,
+    "initial_state_semantics": "source_q1_post_update_target"
+  },
+  "models": [
+    {
+      "id": "lru_n52",
+      "width": 52,
+      "parameter_count": 17058,
+      "role": "parameter_matched_baseline"
+    },
+    {
+      "id": "no_rp_n52",
+      "width": 52,
+      "parameter_count": 17058,
+      "role": "mechanism_control_and_base_tuning_parent"
+    },
+    {
+      "id": "ca_lru_n52",
+      "width": 52,
+      "parameter_count": 17058,
+      "role": "proposed_inherits_no_rp_lr_noise"
+    }
+  ],
+  "training": {
+    "optimizer": "Adam",
+    "betas": [0.9, 0.999],
+    "epsilon": 1e-08,
+    "weight_decay": 0.0,
+    "batch_size": 64,
+    "updates": 5000,
+    "online_batches": true,
+    "validation_interval": 500,
+    "trace_interval": 50,
+    "state_noise_semantics": "post_update_additive_per_coordinate_std"
+  },
+  "stage1_lr_noise": {
+    "learning_rate_grid": [0.01, 0.003, 0.001, 0.0003],
+    "state_noise_std_grid": [0.0, 0.01, 0.03162277660168379, 0.1],
+    "sentinel_seed": 100,
+    "fanout_seeds": [101, 102, 103, 104],
+    "max_fanout_cells_per_model": 3,
+    "success_mse_threshold": 0.01,
+    "screening_metric": "final_heldout_masked_mse",
+    "selection_metric": "five_seed_mean_final_heldout_masked_mse",
+    "ca_lru_inherits_no_rp_pair": true
+  },
+  "stage2_retention_plasticity": {
+    "warmup_updates": 1500,
+    "interval_updates": 50,
+    "probe_batch_size": 96,
+    "probe_horizon": 128,
+    "blank_ablation_horizon": 500,
+    "eta_lambda_grid": [300.0, 1000.0, 3000.0],
+    "damage_epsilon_grid": [1e-05, 3e-05, 0.0001],
+    "sentinel_seed": 100,
+    "fanout_seeds": [101, 102, 103, 104],
+    "max_fanout_cells": 3,
+    "eligibility_id_mse_threshold": 0.01,
+    "selection_metric": "five_seed_mean_heldout_blank_memory_mse",
+    "selection_blank_horizon": 4096,
+    "theta_clip": [-18.0, 18.0]
+  },
+  "evaluation_bank": {
+    "trials": 1024,
+    "task_seed": 0,
+    "stream_key": ["source_centered_lru_calru_v5", "fixed_tuning_bank"]
+  }
+}

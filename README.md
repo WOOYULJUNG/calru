@@ -74,7 +74,17 @@ legacy model tag를 보존한 코드가 있다. 환경 버전과 대표 명령�
 디렉터리에 저장해야 한다. 새 결과가 기존 표를 재현한다고 주장하려면 환경,
 명령, seed, hardware, wall time과 차이를 별도로 보고해야 한다.
 
-### 3. Ságodi-based primary v3.1: 실행 pipeline 제공
+### 3. Ságodi public-code-resolved v5: 현재 실행 경로
+
+현재 재학습 경로는 Ságodi 공개 저장소의 코드를 커밋
+`cbd7404e9baca4b2dc291560cfc6576bb7b1f078`로 고정한다. RNN/GRU/LSTM을
+각 코드 경로의 noise·LR·regularization으로 5,000 updates 재현한 뒤,
+세 모델이 모두 clean held-out MSE `<0.01`을 통과해야 LRU/CA-LRU의
+`LR × state-noise` 탐색과 RP 탐색이 시작된다. 실행 명령과 repair
+내역은 [`repro/sagodi_protocol/README.md`](repro/sagodi_protocol/README.md)와
+[`SAGODI_SOURCE_RESOLVED_V1_FREEZE_ko.md`](repro/sagodi_protocol/SAGODI_SOURCE_RESOLVED_V1_FREEZE_ko.md)에 있다.
+
+### 4. Historical Ságodi-based primary v3.1: provenance only
 
 [`repro/sagodi_protocol/analysis_protocol.yaml`](repro/sagodi_protocol/analysis_protocol.yaml)은
 Phase 0 state/blank-map audit와 Phase 1 ring pilot만 활성화한다. 공통 fixed bank,
