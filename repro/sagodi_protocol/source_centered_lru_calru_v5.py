@@ -809,6 +809,22 @@ def _train_worker(spec: TuningRunSpec, config_path: Path, device_text: str) -> P
                 model.eval()
                 row["validation"] = _evaluate_source(model, bank)
             trace.append(row)
+            atomic_json(
+                output / "progress.json",
+                {
+                    "schema_version": 1,
+                    "status": "running",
+                    "run_id": spec.run_id,
+                    "stage": spec.stage,
+                    "model_id": spec.model_id,
+                    "model_seed": spec.model_seed,
+                    "update": int(update),
+                    "updates_total": int(spec.updates),
+                    "latest": row,
+                    "rp_call_count": len(rp_trace),
+                    "updated_at_utc": _utc_now(),
+                },
+            )
     model.eval()
     final_metrics = _evaluate_source(model, bank)
     blank_mse = None
@@ -833,6 +849,23 @@ def _train_worker(spec: TuningRunSpec, config_path: Path, device_text: str) -> P
     atomic_json(output / "training_trace.json", trace)
     atomic_json(output / "rp_trace.json", rp_trace)
     atomic_json(output / "result.json", result)
+    atomic_json(
+        output / "progress.json",
+        {
+            "schema_version": 1,
+            "status": "complete",
+            "run_id": spec.run_id,
+            "stage": spec.stage,
+            "model_id": spec.model_id,
+            "model_seed": spec.model_seed,
+            "update": int(spec.updates),
+            "updates_total": int(spec.updates),
+            "final_metrics": final_metrics,
+            "heldout_blank_memory_mse": blank_mse,
+            "rp_call_count": len(rp_trace),
+            "updated_at_utc": _utc_now(),
+        },
+    )
     _atomic_torch_save(
         output / "checkpoint_final.pt",
         {
@@ -852,6 +885,7 @@ def _train_worker(spec: TuningRunSpec, config_path: Path, device_text: str) -> P
         job_id=spec.run_id,
         artifacts=[
             output / "run_manifest.json",
+            output / "progress.json",
             output / "training_trace.json",
             output / "rp_trace.json",
             output / "result.json",

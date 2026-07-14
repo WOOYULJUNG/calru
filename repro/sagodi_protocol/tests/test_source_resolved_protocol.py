@@ -204,6 +204,7 @@ def test_single_run_worker_writes_complete_receipt(tmp_path: Path) -> None:
     )
     assert (output / "checkpoint_final.pt").is_file()
     assert (output / "completion_receipt.json").is_file()
+    assert (output / "progress.json").is_file()
     result = json.loads((output / "result.json").read_text(encoding="utf-8"))
     manifest = json.loads(
         (output / "run_manifest.json").read_text(encoding="utf-8")
@@ -211,6 +212,9 @@ def test_single_run_worker_writes_complete_receipt(tmp_path: Path) -> None:
     assert result["status"] == "complete"
     assert result["updates_completed"] == 1
     assert math.isfinite(result["final_metrics"]["masked_mse"])
+    progress = json.loads((output / "progress.json").read_text(encoding="utf-8"))
+    assert progress["status"] == "complete"
+    assert progress["update"] == 1
     assert set(manifest["runtime_code_sha256"]) == {
         "source_resolved_worker.py",
         "source_resolved_models.py",

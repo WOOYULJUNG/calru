@@ -21,6 +21,7 @@ import os
 import random
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -51,6 +52,10 @@ from .source_resolved_protocol import (
     source_recipe,
 )
 from .tasks import Batch, load_fixed_bank
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _configure_determinism(seed: int) -> None:
@@ -277,6 +282,20 @@ def run_source_worker(
             if should_validate:
                 row["validation"] = _evaluate(model, evaluation)
             trace.append(row)
+            atomic_json(
+                output / "progress.json",
+                {
+                    "schema_version": 1,
+                    "status": "running",
+                    "run_id": str(run_id),
+                    "model_id": model_id,
+                    "model_seed": int(model_seed),
+                    "update": int(update),
+                    "updates_total": total_updates,
+                    "latest": row,
+                    "updated_at_utc": _utc_now(),
+                },
+            )
 
     final_metrics = _evaluate(model, evaluation)
     result = {
@@ -292,6 +311,20 @@ def run_source_worker(
     }
     atomic_json(output / "training_trace.json", trace)
     atomic_json(output / "result.json", result)
+    atomic_json(
+        output / "progress.json",
+        {
+            "schema_version": 1,
+            "status": "complete",
+            "run_id": str(run_id),
+            "model_id": model_id,
+            "model_seed": int(model_seed),
+            "update": total_updates,
+            "updates_total": total_updates,
+            "final_metrics": final_metrics,
+            "updated_at_utc": _utc_now(),
+        },
+    )
     checkpoint = output / "checkpoint_final.pt"
     _atomic_torch_save(
         checkpoint,
@@ -321,6 +354,7 @@ def run_source_worker(
         job_id=str(run_id),
         artifacts=[
             output / "run_manifest.json",
+            output / "progress.json",
             output / "training_trace.json",
             output / "result.json",
             checkpoint,

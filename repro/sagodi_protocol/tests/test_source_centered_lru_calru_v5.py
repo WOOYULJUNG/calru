@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
@@ -26,6 +27,22 @@ from repro.sagodi_protocol.source_centered_lru_calru_v5 import (
     select_stage2_hyperparameters,
     source_angular_integration,
 )
+
+
+def test_worker_progress_is_live_and_receipted(tmp_path: Path) -> None:
+    """The CPU smoke worker must leave a final monitorable heartbeat."""
+
+    from repro.sagodi_protocol.source_centered_lru_calru_v5 import run_smoke
+
+    root = tmp_path / "progress_smoke"
+    run_smoke(root, DEFAULT_CONFIG, ("cpu",))
+    for model_id in MODEL_IDS:
+        output = root / "smoke" / "runs" / model_id
+        progress = json.loads(
+            (output / "progress.json").read_text(encoding="utf-8")
+        )
+        assert progress["status"] == "complete"
+        assert progress["update"] == 2
 
 
 def _write_result(spec, id_mse: float, blank_mse: float | None = None) -> None:
