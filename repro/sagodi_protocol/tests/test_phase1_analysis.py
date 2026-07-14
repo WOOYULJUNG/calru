@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import torch
 
+import repro.sagodi_protocol.phase1_analysis as phase1_module
 from repro.sagodi_protocol.artifacts import (
     atomic_json,
     sha256_file,
@@ -36,6 +37,9 @@ from repro.sagodi_protocol.phase1_analysis import (
     _ring_path_velocity_bank,
     _sampled_jvp_gains,
     _slow_state_reconstruction,
+    _track_a_coverage_quality,
+    _track_a_geometry_quality,
+    _verify_parent_bound_bank,
     _verify_checkpoint_identity,
     analyze_checkpoint,
     main,
@@ -81,7 +85,45 @@ def test_primary_plan_freezes_requested_ring_counts_and_horizons():
     assert plan.tangent_shift == 0.01
 
 
-def test_smoke_analysis_emits_primary_carrier_arrays_and_conservative_gates(tmp_path: Path):
+def test_smoke_analysis_emits_primary_carrier_arrays_and_conservative_gates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    def successful_track_a(model, adapter, target_angles, *, horizon, **kwargs):
+        state = torch.stack(
+            (
+                torch.cos(target_angles),
+                torch.sin(target_angles),
+                0.2 * torch.cos(2.0 * target_angles),
+                0.2 * torch.sin(2.0 * target_angles),
+            ),
+            dim=1,
+        )
+        count = int(target_angles.numel())
+        return {
+            "success": True,
+            "failure_reasons": [],
+            "start_state_rule": "test_task_driven_endpoints",
+            "rollout_horizon": int(horizon),
+            "trajectory_count": count,
+            "candidate_threshold": "test_fixture",
+            "candidate_count": count,
+            "candidate_trajectory_coverage": count,
+            "max_speed": np.zeros(count, dtype=np.float32),
+            "candidate_count_per_trajectory": np.ones(count, dtype=np.int64),
+            "selected_time": np.zeros(count, dtype=np.int64),
+            "selected_trajectory": np.arange(count, dtype=np.int64),
+            "selected_decoded_angle": target_angles.detach().cpu().numpy(),
+            "selected_target_error_radians": np.zeros(count),
+            "selected_state": state,
+            "resampled_state": state,
+            "coverage": {"passed": True, "scope": "test_fixture"},
+            "geometry_available": True,
+            "interpolation": "test_periodic_ring",
+        }
+
+    monkeypatch.setattr(
+        phase1_module, "_slow_state_reconstruction", successful_track_a
+    )
     run_dir = _tiny_run(tmp_path / "run")
     output = analyze_checkpoint(
         protocol_path=DEFAULT_PROTOCOL_PATH,
@@ -108,6 +150,8 @@ def test_smoke_analysis_emits_primary_carrier_arrays_and_conservative_gates(tmp_
     assert analysis["sampled_jacobian"]["endpoint_only_J_product_proxy"]["primary"] is False
     assert analysis["finite_kicks"]["clean_paired"] is True
     assert analysis["finite_kicks"]["ambient_directions_per_anchor"] == 2
+    assert analysis["atlas"]["primary_source"] == "track_a_resampled_state"
+    assert analysis["atlas"]["construction"].startswith("Sagodi_Track_A")
     assert analysis["atlas"]["Sagodi_Track_A"]["rollout_horizon"] == 128
     assert analysis["atlas"]["task_conditioned"]["path_count"] == 8
     assert analysis["atlas"]["task_conditioned"]["settle_horizons"] == [0, 5, 20, 100]
@@ -122,8 +166,15 @@ def test_smoke_analysis_emits_primary_carrier_arrays_and_conservative_gates(tmp_
     with np.load(output / "analysis_arrays.npz", allow_pickle=False) as arrays:
         assert arrays["atlas_angles"].shape == (32,)
         assert arrays["atlas_primary_carrier"].shape == (32, 4)
+        np.testing.assert_array_equal(
+            arrays["atlas_primary_carrier"],
+            arrays["track_a_resampled_primary_carrier"],
+        )
         assert arrays["atlas_tangent"].shape == (32, 4)
-        assert arrays["kick_R_N"].shape == (8, 3)  # radial + two sampled ambient
+        assert arrays["diagnostic_legacy_paired_endpoint_R_N"].shape == (
+            8,
+            3,
+        )  # radial + two sampled ambient
         assert arrays["kick_direction_kind"].tolist() == [
             "radial",
             "ambient_sampled",
@@ -138,9 +189,22 @@ def test_smoke_analysis_emits_primary_carrier_arrays_and_conservative_gates(tmp_
         assert arrays["task_path_velocity"].shape == (32, 8, 8)
         assert arrays["task_path_endpoint_primary_carrier"].shape == (32, 8, 4)
         assert arrays["task_path_settled_primary_carrier"].shape == (4, 32, 8, 4)
-        assert arrays["projection_qa_known_q_task_mean_primary_carrier"].shape == (32, 4)
-        assert arrays["projection_qa_known_q_task_settled_path_primary_carrier"].shape == (32, 8, 4)
-        assert np.isfinite(arrays["kick_R_N"]).all()
+        assert arrays["track_a_discovery_source_indices"].shape == (32,)
+        assert np.unique(arrays["track_a_discovery_source_indices"]).size == 32
+        assert arrays["track_a_discovery_endpoint_reported_state"].shape == (32, 4)
+        assert arrays["track_a_discovery_source_selection_error"].shape == (32,)
+        # The synthetic Track-A fixture is deliberately unrelated to the tiny
+        # model's task sheet, so corrected settling rejects the correspondence
+        # bank instead of silently using it as a primary/fallback manifold.
+        assert arrays["projection_qa_known_q_task_mean_primary_carrier"].shape == (0, 4)
+        assert arrays["projection_qa_known_q_task_settled_path_primary_carrier"].shape == (0, 8, 4)
+        assert arrays["manifold_recovery_horizons"].tolist() == [1, 5]
+        assert arrays["manifold_recovery_clean_manifold_distance_over_Rs"].shape == (2, 8)
+        assert arrays["manifold_recovery_manifold_recovery_Q"].shape == (2, 8, 3)
+        assert arrays["task_settling_positive_relative_variance_expansion"].shape == (4, 32)
+        assert np.isfinite(
+            arrays["diagnostic_legacy_paired_endpoint_R_N"]
+        ).all()
         assert np.isfinite(arrays["sampled_projected_cocycle_gamma"]).all()
         assert arrays["kick_radial_tangent_orthogonality_error"].max() <= 1e-6
         assert arrays["jacobian_ambient_tangent_orthogonality_error"].max() <= 1e-6
@@ -152,6 +216,8 @@ def test_smoke_analysis_emits_primary_carrier_arrays_and_conservative_gates(tmp_
     assert "not_exact_worst" in claim["gates"]["sampled_normal_gap"]["scope"]
     assert claim["gates"]["strict_worst_normal"]["status"] == "not_evaluated"
     assert claim["gates"]["strict_worst_normal"]["passed"] is None
+    assert claim["gates"]["task_sheet_settling"]["status"] == "not_evaluated"
+    assert claim["gates"]["c3_clean_adherence"]["status"] == "not_evaluated"
     assert claim["gates"]["c4"]["status"] == "not_evaluated"
     assert claim["gates"]["model_seeds"]["status"] == "not_evaluated"
     assert claim["gates"]["exact_axis"]["status"] == "not_evaluated"
@@ -176,6 +242,58 @@ def test_smoke_analysis_emits_primary_carrier_arrays_and_conservative_gates(tmp_
         assert np.count_nonzero(trace["reset_mask"]) == 0
 
 
+def test_track_a_failure_has_no_task_atlas_fallback_and_projected_gates_are_inconclusive(
+    tmp_path: Path,
+):
+    run_dir = _tiny_run(tmp_path / "run")
+    output = analyze_checkpoint(
+        protocol_path=DEFAULT_PROTOCOL_PATH,
+        run_dir=run_dir,
+        output_dir=tmp_path / "analysis",
+        device="cpu",
+        smoke=True,
+    )
+    analysis = json.loads((output / "analysis.json").read_text())
+    assert analysis["manifold_analysis"] == "inconclusive_track_a_reconstruction_failed"
+    assert analysis["atlas"]["construction"] == "none_no_primary_fallback"
+    assert analysis["atlas"]["primary_eligible"] is False
+    with np.load(output / "analysis_arrays.npz", allow_pickle=False) as arrays:
+        assert arrays["atlas_primary_carrier"].shape[0] == 0
+        np.testing.assert_array_equal(
+            arrays["atlas_primary_carrier"],
+            arrays["track_a_resampled_primary_carrier"],
+        )
+    claim = json.loads((output / "claim_gate.json").read_text())
+    for gate_id in (
+        "c1_decoding",
+        "invariance",
+        "c2_drift",
+        "c3_normal_recovery",
+        "c3_same_memory",
+        "tangent_equivariance",
+        "sampled_normal_gap",
+    ):
+        # Smoke uses the stricter not_evaluated label; a full run with the same
+        # reconstruction failure is inconclusive through primary_atlas_valid.
+        assert claim["gates"][gate_id]["passed"] is None
+        assert claim["gates"][gate_id]["status"] in {"not_evaluated", "inconclusive"}
+
+
+def test_legacy_v1_full_analysis_requires_explicit_v2_analysis_freeze(
+    tmp_path: Path,
+):
+    run_dir = _tiny_run(tmp_path / "run")
+    with pytest.raises(ValueError, match="explicit corrected v2 analysis freeze"):
+        analyze_checkpoint(
+            protocol_path=DEFAULT_PROTOCOL_PATH,
+            run_dir=run_dir,
+            output_dir=tmp_path / "analysis",
+            device="cpu",
+            smoke=False,
+        )
+    assert not (tmp_path / "analysis").exists()
+
+
 def test_periodic_cubic_spline_is_continuous_across_ring_seam():
     dtype = torch.float64
     knots = 0.13 + 2.0 * torch.pi * torch.arange(64, dtype=dtype) / 64.0
@@ -187,6 +305,106 @@ def test_periodic_cubic_spline_is_continuous_across_ring_seam():
     expected = torch.stack((torch.cos(query), torch.sin(query)), dim=1)
     torch.testing.assert_close(observed, expected, atol=2.0e-6, rtol=2.0e-6)
     torch.testing.assert_close(observed[0], observed[-1], atol=3.0e-5, rtol=0.0)
+
+
+def test_track_a_geometry_quality_gates_tangent_floor_and_periodic_seam() -> None:
+    angles = -torch.pi + 2.0 * torch.pi * torch.arange(
+        128, dtype=torch.float64
+    ) / 128.0
+    state = torch.stack((torch.cos(angles), torch.sin(angles)), dim=1)
+    speed = torch.ones_like(angles)
+    quality = _track_a_geometry_quality(
+        angles,
+        state,
+        speed,
+        torch.tensor(1.0, dtype=torch.float64),
+        minimum_normalized_tangent_speed=1e-3,
+        seam_probe_radians=1e-3,
+        seam_c0_over_rs_max=1e-5,
+        seam_c1_relative_max=1e-2,
+    )
+    assert quality["passed"] is True
+    collapsed = _track_a_geometry_quality(
+        angles,
+        state,
+        torch.zeros_like(speed),
+        torch.tensor(1.0, dtype=torch.float64),
+        minimum_normalized_tangent_speed=1e-3,
+        seam_probe_radians=1e-3,
+        seam_c0_over_rs_max=1e-5,
+        seam_c1_relative_max=1e-2,
+    )
+    assert collapsed["passed"] is False
+    assert collapsed["component_passed"]["tangent_speed_floor"] is False
+
+
+def test_track_a_coverage_reports_and_requires_all_coarse_bins() -> None:
+    target = -torch.pi + 2.0 * torch.pi * torch.arange(
+        64, dtype=torch.float64
+    ) / 64.0
+    selected = target.numpy().copy()
+    pair = np.stack((np.zeros(64, dtype=np.int64), np.arange(64)), axis=1)
+    quality, _ = _track_a_coverage_quality(
+        selected,
+        pair,
+        target,
+        coarse_bin_count=32,
+        minimum_coarse_occupancy_fraction=1.0,
+    )
+    assert quality["passed"] is True
+    assert quality["occupied_coarse_bins"] == 32
+
+    missing_sector = selected.copy()
+    missing_sector[:8] = selected[8]
+    quality, _ = _track_a_coverage_quality(
+        missing_sector,
+        pair,
+        target,
+        coarse_bin_count=32,
+        minimum_coarse_occupancy_fraction=1.0,
+    )
+    assert quality["passed"] is False
+    assert quality["coarse_bin_occupancy_fraction"] < 1.0
+
+
+def test_parent_bound_bank_requires_exact_path_bytes_and_sidecar(tmp_path: Path) -> None:
+    parent = tmp_path / "parent"
+    bank_dir = parent / "evaluation_bank"
+    bank_dir.mkdir(parents=True)
+    bank = bank_dir / "bank.npz"
+    bank.write_bytes(b"frozen-bank")
+    sidecar = Path(f"{bank}.sha256")
+    sidecar.write_text(f"{sha256_file(bank)}  {bank.name}\n")
+    manifest = {
+        "evaluation_bank": {
+            "path": str(bank.relative_to(parent)),
+            "sha256": sha256_file(bank),
+            "sidecar_sha256": sha256_file(sidecar),
+        }
+    }
+    _verify_parent_bound_bank(
+        parent_root=parent,
+        parent_manifest=manifest,
+        bank_key="evaluation_bank",
+        supplied_path=bank,
+    )
+    other = tmp_path / "other.npz"
+    other.write_bytes(bank.read_bytes())
+    with pytest.raises(ValueError, match="path differs"):
+        _verify_parent_bound_bank(
+            parent_root=parent,
+            parent_manifest=manifest,
+            bank_key="evaluation_bank",
+            supplied_path=other,
+        )
+    bank.write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="bytes differ"):
+        _verify_parent_bound_bank(
+            parent_root=parent,
+            parent_manifest=manifest,
+            bank_key="evaluation_bank",
+            supplied_path=bank,
+        )
 
 
 def test_dense_spline_projection_refines_radial_points_across_seam():
@@ -323,12 +541,19 @@ def test_normal_qa_failure_makes_dependent_gates_inconclusive_with_null_passed()
         chi_fiber=0.0,
         track_a_success=True,
         settling_valid=True,
+        settling_summary={"passed": [True]},
         primary_atlas_valid=True,
         projection_qa={"passed": True, "q95_max": 0.002},
         invariance_summary=summary,
         drift_summary=summary,
+        clean_adherence={
+            "all_registered_horizons_passed": True,
+            "registered_horizons": [1, 5, 20, 100, 500, 1024],
+            "by_horizon": {},
+        },
         radial_recovery=summary,
         ambient_recovery=summary,
+        recovery_input_valid=True,
         same_memory=summary,
         tangent_equivariance=summary,
         jvp={
@@ -383,12 +608,87 @@ class _ContractingRing(torch.nn.Module):
         return state
 
 
+class _IdentityRing(_ContractingRing):
+    def step(self, input_tensor, state):
+        return state
+
+
+def test_slow_state_reconstruction_accepts_exactly_stationary_ring():
+    model = _IdentityRing().double()
+    adapter = StateAdapter(model)
+    angles = -torch.pi + 2.0 * torch.pi * torch.arange(32, dtype=torch.float64) / 32.0
+    result = _slow_state_reconstruction(model, adapter, angles, horizon=16)
+    assert result["success"] is True
+    assert result["coverage"]["passed"] is True
+    assert result["candidate_trajectory_coverage"] == 32
+    assert np.count_nonzero(result["max_speed"]) == 0
+    assert np.all(result["candidate_count_per_trajectory"] == 1)
+    torch.testing.assert_close(
+        result["resampled_state"],
+        torch.stack((torch.cos(angles), torch.sin(angles)), dim=1),
+        atol=2e-5,
+        rtol=2e-5,
+    )
+
+
+def test_slow_state_reconstruction_replays_the_supplied_task_endpoints():
+    model = _IdentityRing().double()
+    adapter = StateAdapter(model)
+    angles = -torch.pi + 2.0 * torch.pi * torch.arange(32, dtype=torch.float64) / 32.0
+    radius = torch.linspace(1.0, 1.31, 32, dtype=torch.float64)
+    endpoint = radius[:, None] * torch.stack(
+        (torch.cos(angles), torch.sin(angles)), dim=1
+    )
+    result = _slow_state_reconstruction(
+        model,
+        adapter,
+        angles,
+        horizon=16,
+        initial_reported_states=endpoint,
+        start_state_rule="test_supplied_task_endpoints",
+    )
+    assert result["success"] is True
+    assert result["start_state_rule"] == "test_supplied_task_endpoints"
+    assert np.all(result["selected_time"] == 0)
+    assert np.array_equal(result["selected_trajectory"], np.arange(32))
+    # This exact equality guards the second-pass replay: the selected state
+    # must come from the supplied endpoint bank, not a canonical re-init.
+    torch.testing.assert_close(result["selected_state"], endpoint, rtol=0.0, atol=0.0)
+
+
+def test_slow_state_reconstruction_rejects_clustered_arc_coverage():
+    model = _IdentityRing().double()
+    adapter = StateAdapter(model)
+    target = -torch.pi + 2.0 * torch.pi * torch.arange(32, dtype=torch.float64) / 32.0
+    clustered_angles = torch.linspace(-0.6, 0.6, 32, dtype=torch.float64)
+    clustered_state = torch.stack(
+        (torch.cos(clustered_angles), torch.sin(clustered_angles)), dim=1
+    )
+    result = _slow_state_reconstruction(
+        model,
+        adapter,
+        target,
+        horizon=8,
+        initial_reported_states=clustered_state,
+        start_state_rule="test_clustered_task_endpoints",
+    )
+    assert result["geometry_available"] is True
+    assert result["coverage"]["passed"] is False
+    assert result["success"] is False
+    assert "full_ring_candidate_coverage_failed" in result["failure_reasons"]
+    assert (
+        result["coverage"]["maximum_circular_knot_gap_radians"]
+        > result["coverage"]["thresholds"]["maximum_circular_knot_gap_radians"]
+    )
+
+
 def test_slow_state_reconstruction_uses_relative_speed_and_periodic_resampling():
     model = _ContractingRing().double()
     adapter = StateAdapter(model)
     angles = -torch.pi + 2.0 * torch.pi * torch.arange(32, dtype=torch.float64) / 32.0
     result = _slow_state_reconstruction(model, adapter, angles, horizon=128)
     assert result["success"] is True
+    assert result["coverage"]["passed"] is True
     assert result["candidate_trajectory_coverage"] == 32
     assert result["resampled_state"].shape == (32, 2)
     assert np.all(result["candidate_count_per_trajectory"] > 0)

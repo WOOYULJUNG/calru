@@ -333,6 +333,48 @@ class ProtocolFreezeTests(unittest.TestCase):
         with self.assertRaisesRegex(config.ProtocolConfigError, "Cholesky jitter"):
             config.validate_protocol(mutated)
 
+    def test_resolved_angular_task_spec_binds_both_v1_freezes(self) -> None:
+        legacy = config.AngularTaskSpec.from_protocol(self.protocol)
+        native = config.AngularTaskSpec.from_protocol(self.native_protocol)
+        self.assertEqual(legacy.delta_t, 0.1)
+        self.assertEqual(legacy.gp_length_scale, 1.0)
+        self.assertEqual(legacy.gp_marginal_standard_deviation, 1.0)
+        self.assertEqual(legacy.gp_cholesky_jitter, 1e-6)
+        self.assertEqual(
+            legacy.gp_cholesky_jitter_source,
+            "legacy_v1_implementation_default",
+        )
+        self.assertEqual(native.gp_cholesky_jitter_source, "protocol_explicit")
+        self.assertNotEqual(legacy.fingerprint(), native.fingerprint())
+        self.assertEqual(len(native.fingerprint()), 64)
+        self.assertEqual(
+            native.generator_kwargs()["resolved_task_spec_sha256"],
+            native.fingerprint(),
+        )
+
+    def test_validator_rejects_task_fields_that_used_to_be_dead_yaml(self) -> None:
+        mutations = (
+            (("delta_t",), 0.2, "delta_t"),
+            (("velocity_process", "length_scale"), 2.0, "gp_length_scale"),
+            (
+                ("velocity_process", "marginal_standard_deviation"),
+                2.0,
+                "gp_marginal_standard_deviation",
+            ),
+            (("theta0_distribution",), "normal", "q0_distribution"),
+            (("loss_mask",), "last_step", "loss_mask"),
+        )
+        for path, value, message in mutations:
+            mutated = copy.deepcopy(self.native_protocol)
+            cursor = mutated["phase1_ring_pilot"]["task"]
+            for key in path[:-1]:
+                cursor = cursor[key]
+            cursor[path[-1]] = value
+            with self.subTest(path=path), self.assertRaisesRegex(
+                config.ProtocolConfigError, message
+            ):
+                config.validate_protocol(mutated)
+
 
 if __name__ == "__main__":
     unittest.main()

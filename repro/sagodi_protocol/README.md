@@ -17,6 +17,11 @@ Phase 2–4: disabled
 - `analysis_protocol.yaml`: 실행 가능한 단일 freeze와 claim/QA threshold
 - `calru_native_sagodi_ring_pilot_v1.yaml`: 기존 성공 CA-LRU recipe를
   Ságodi ring task에 이식한 별도 pilot freeze (sentinel 1 + 자동 fan-out 14)
+- `calru_native_sagodi_ring_analysis_v2.yaml`: immutable v1 checkpoint를
+  별도 artifact root에서 교정된 진단으로만 재분석하는 parent-bound freeze
+- `sagodi_ring_lr_selection_v2.yaml`: Ságodi paper-aligned 100-update
+  learning-rate selection 전용 freeze (4 models x 5 seeds x 4 LRs = 80 runs)
+- `CORRECTIVE_ACTION_PLAN_V2_ko.md`: 외부 검토 항목과 v1/v2 실행 경계
 - `EXPERIMENT_RECONSTRUCTION_ko.md`: 범위와 해석 규칙
 - `CALRU_NATIVE_RECIPE.md`: Exp88 성공 recipe를 Ságodi task에 이식하는
   별도 pilot의 provenance, Protocol-A/B 경계, sentinel-first 실행 규칙
@@ -25,9 +30,16 @@ Phase 2–4: disabled
 - `audit.py`, `phase0.py`: 실제 `step(0,state)` 선행 감사
 - `train.py`: freeze-driven Adam/AdamW, paired online batches, optional state
   noise, gradient clipping, RP schedule와 atomic progress telemetry
-- `phase1_analysis.py`: Track-A slow-state reconstruction, 8-path settling/fiber,
-  독립 8-path known-q projection QA, local-SVD C1 rank, 매-step projected-normal
-  cocycle와 C1–C3 pilot 분석
+- `phase1_analysis.py`: task endpoint에서 시작하는 Track-A slow-state
+  reconstruction을 primary manifold로 사용하고, 8-path settling/fiber를 독립
+  correspondence QA로 유지하며, multi-horizon manifold-distance C3와
+  매-step projected-normal cocycle를 계산
+- `manifold_diagnostics.py`: `D_clean`, `Q_recovery`, same-memory와 양방향
+  settling/expansion/manifold-adherence의 순수 진단 함수
+- `analysis_freeze.py`: v2 분석 freeze의 strict loader와 canonical fingerprint
+- `reanalyze.py`: 완료된 immutable v1 checkpoint만 별도 root에서 교정 진단
+- `lr_selection.py`: Phase 0 뒤 80개 training-only selector run을 GPU queue로
+  실행하고 update 100 loss의 5-seed 산술평균으로 모델별 LR을 freeze
 - `orchestrate.py`, `status.py`: GPU queue, source lock, atomic attempt,
   checkpoint-bound receipt와 독립 상태 검증
 - `aggregation.py`: 15개 pilot run의 all-started/task-success-conditional 기술통계
@@ -88,6 +100,43 @@ publish한다. `pilot_summary.json`은 모델별 all-started 분모와 task-succ
 strict worst-normal operator와 전체 radius/horizon sensitivity sweep을 수행하지 않는다.
 따라서 `claim_gate.json`의 L3는 명시적으로 false이며, pilot 수치만으로
 approximate-CA 최종 주장을 하지 않는다.
+
+v2 C3의 primary 값은 고정된 Track-A manifold까지의 거리다. 등록 horizon
+`1,5,20,100,500,1024`에서 clean adherence를 확인하고, H=500에서 radial 및
+ambient-normal `Q_recovery`를 따로 gate한다. 과거 clean-paired endpoint-normal
+deviation은 diagnostic으로만 저장되며 C3를 만족시킬 수 없다.
+
+## v2 실행 명령
+
+LR selection은 manifold 분석이나 CA evidence를 만들지 않는다. smoke는 80개
+경로와 receipt를 검증하지만 winner를 선택하지 않고 `freeze_eligible=false`로
+기록한다. 정식 선택에서도 CA-LRU의 RP는 100-update selector 동안 0회로
+고정한다. 모델 4종, 선택 seed 5개, LR 4개의 80개 run 모두가 검증된 성공
+receipt를 가져야만 모델별 winner를 선택한다. nonzero exit, OOM, kill 또는
+손상된 receipt는 과학적 LR 실패로 세지 않고 캠페인을 중단한 뒤 재개 대상으로
+남긴다.
+
+```bash
+python -m repro.sagodi_protocol.lr_selection \
+  --protocol repro/sagodi_protocol/sagodi_ring_lr_selection_v2.yaml \
+  --artifact-root /path/to/calru_sagodi_lr_selection_v2 \
+  --python /path/to/python \
+  --gpus 0,1,2,3,4,5
+```
+
+v1 checkpoint 재분석은 parent campaign을 수정하지 않으며, 기본 모드는 frozen
+15-run matrix가 모두 완료되어야 시작한다. 진행 중인 parent를 점검하는
+`--available-only` 결과는 부분 결과이고 `COMPLETE`를 만들 수 없다.
+
+```bash
+python -m repro.sagodi_protocol.reanalyze \
+  --parent-root /path/to/calru_native_sagodi_ring_pilot_v1-668867dfa36a \
+  --artifact-root /path/to/calru_native_sagodi_ring_analysis_v2 \
+  --protocol repro/sagodi_protocol/calru_native_sagodi_ring_pilot_v1.yaml \
+  --analysis-freeze repro/sagodi_protocol/calru_native_sagodi_ring_analysis_v2.yaml \
+  --python /path/to/python \
+  --gpus 0,1,2,3,4,5
+```
 
 Sampled normal gate의 primary 값은 actual clean rollout의 projector frame에서 매 step
 `P_N`을 적용한 radial+ambient cocycle이다. Tangent 값은 endpoint block

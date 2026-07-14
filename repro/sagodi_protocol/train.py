@@ -25,7 +25,13 @@ from .artifacts import (
     sha256_file,
     write_completion_receipt,
 )
-from .config import DEFAULT_PROTOCOL_PATH, load_protocol, protocol_fingerprint
+from .config import (
+    DEFAULT_PROTOCOL_PATH,
+    SAGODI_LR_SELECTION_TRACK,
+    AngularTaskSpec,
+    load_protocol,
+    protocol_fingerprint,
+)
 from .metrics import masked_mse, task_metrics
 from .models import (
     ProtocolModel,
@@ -33,7 +39,7 @@ from .models import (
     checkpoint_payload,
     model_config_from_protocol,
 )
-from .tasks import Batch, angular_integration, load_fixed_bank
+from .tasks import Batch, angular_integration, load_fixed_bank, metadata_payload
 
 
 @dataclass(frozen=True)
@@ -54,6 +60,30 @@ class TrainSpec:
 
 class NonFiniteTrainingError(RuntimeError):
     """Raised before a corrupt run can be checkpointed or receipted."""
+
+
+def _frozen_training_model_seeds(protocol: dict[str, Any]) -> tuple[int, ...]:
+    """Return the seed set authorized by the protocol's executable track.
+
+    The LR-selection freeze deliberately has no ``pilot_model_seeds`` field.
+    Keeping this resolution next to the trainer prevents a validated selector
+    run from falling back to the legacy pilot seed namespace.
+    """
+
+    track = protocol["phase1_ring_pilot"]["protocol_track"]
+    seed_key = (
+        "selection_model_seeds"
+        if track == SAGODI_LR_SELECTION_TRACK
+        else "pilot_model_seeds"
+    )
+    raw = protocol["seed_policy"].get(seed_key)
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            f"validated protocol track {track!r} has no nonempty {seed_key!r}"
+        )
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in raw):
+        raise ValueError(f"{seed_key} must contain only integer model seeds")
+    return tuple(int(value) for value in raw)
 
 
 def _require_finite_tensor(value: torch.Tensor, label: str) -> None:
@@ -99,7 +129,10 @@ def _require_finite_payload(value: Any, label: str = "payload") -> None:
 
 
 def _configure_determinism(seed: int) -> None:
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    # The campaign provenance freezes this exact cuBLAS workspace contract.
+    # ``setdefault`` would allow a caller's ambient value to silently change
+    # determinism while leaving otherwise identical receipts.
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     random.seed(int(seed))
     np.random.seed(int(seed) % (2**32 - 1))
     torch.manual_seed(int(seed))
@@ -220,36 +253,71 @@ def _validate_evaluation_batch(
     *,
     require_full_protocol_shape: bool,
 ) -> None:
-    phase = protocol["phase1_ring_pilot"]
-    task = phase["task"]
+    task_spec = AngularTaskSpec.from_protocol(protocol)
     evaluation = protocol["evaluation"]
     metadata = batch.metadata
     expected_metadata = {
         "task_name": "angular_integration",
         "task_seed": int(protocol["seed_policy"]["task_seed"]),
         "sample_seed": int(protocol["seed_policy"]["evaluation_bank_seed"]),
-        "init_mode": "hidden-init",
-        "horizon": int(task["sequence_steps"]),
-        "input_dimension": int(task["input_dimension"]),
-        "output_dimension": int(task["output_dimension"]),
+        "init_mode": task_spec.init_mode_for_generator,
+        "horizon": task_spec.sequence_steps,
+        "input_dimension": task_spec.input_dimension,
+        "output_dimension": task_spec.output_dimension,
         "target_indexing": "post_velocity_update",
+        "delta_t": task_spec.delta_t,
+        "gp_grid": "linspace(-1,1,T)",
+        "gp_grid_start": task_spec.gp_grid_start,
+        "gp_grid_stop": task_spec.gp_grid_stop,
+        "gp_grid_endpoint": task_spec.gp_grid_endpoint,
+        "gp_length_scale": task_spec.gp_length_scale,
+        "gp_std": task_spec.gp_marginal_standard_deviation,
+        "gp_cholesky_jitter": task_spec.gp_cholesky_jitter,
+        "q0_distribution": task_spec.q0_distribution,
+        "q0_low": task_spec.q0_low,
+        "q0_high": task_spec.q0_high,
+        "q0_high_inclusive": task_spec.q0_high_inclusive,
+        "target_indexing_contract": task_spec.velocity_token_target,
+        "loss_mask_mode": task_spec.loss_mask,
+    }
+    legacy_metadata = "resolved_task_spec_sha256" not in metadata
+    legacy_optional = {
+        "gp_grid_start",
+        "gp_grid_stop",
+        "gp_grid_endpoint",
+        "q0_distribution",
+        "q0_low",
+        "q0_high",
+        "q0_high_inclusive",
+        "target_indexing_contract",
+        "loss_mask_mode",
     }
     for key, expected in expected_metadata.items():
+        if legacy_metadata and key in legacy_optional and key not in metadata:
+            continue
         if metadata.get(key) != expected:
             raise ValueError(
                 f"evaluation bank metadata mismatch for {key}: "
                 f"{metadata.get(key)!r} != {expected!r}"
             )
+    if legacy_metadata:
+        if metadata.get("task_version") != "sagodi-protocol-v1":
+            raise ValueError("unbound evaluation bank is not a recognized legacy v1 bank")
+    else:
+        if metadata.get("resolved_task_spec_sha256") != task_spec.fingerprint():
+            raise ValueError("evaluation bank resolved task spec SHA-256 mismatch")
+        if metadata_payload(metadata.get("resolved_task_spec")) != task_spec.resolved_payload():
+            raise ValueError("evaluation bank resolved task spec payload mismatch")
     if require_full_protocol_shape and batch.batch_size != int(evaluation["id_test_trials"]):
         raise ValueError(
             f"evaluation bank has {batch.batch_size} trials, expected "
             f"{evaluation['id_test_trials']}"
         )
     expected_shapes = {
-        "inputs": (batch.time_steps, batch.batch_size, int(task["input_dimension"])),
-        "output_targets": (batch.time_steps, batch.batch_size, int(task["output_dimension"])),
-        "latent_targets": (batch.time_steps, batch.batch_size, int(task["latent_dimension"])),
-        "mask": (batch.time_steps, batch.batch_size, int(task["output_dimension"])),
+        "inputs": (batch.time_steps, batch.batch_size, task_spec.input_dimension),
+        "output_targets": (batch.time_steps, batch.batch_size, task_spec.output_dimension),
+        "latent_targets": (batch.time_steps, batch.batch_size, task_spec.latent_dimension),
+        "mask": (batch.time_steps, batch.batch_size, task_spec.output_dimension),
     }
     for name, expected in expected_shapes.items():
         value = getattr(batch, name)
@@ -276,13 +344,12 @@ def _load_evaluation_bank(
         return batch, digest, str(source)
     if not smoke:
         raise ValueError("full pilot runs require --evaluation-bank")
-    phase = protocol["phase1_ring_pilot"]
     seeds = protocol["seed_policy"]
+    task_spec = AngularTaskSpec.from_protocol(protocol)
     batch = angular_integration(
         32,
         int(seeds["task_seed"]),
-        init_mode="hidden-init",
-        horizon=int(phase["task"]["sequence_steps"]),
+        **task_spec.generator_kwargs(),
         stream_key=("fixed_evaluation", int(seeds["evaluation_bank_seed"])),
         device=device,
     )
@@ -298,8 +365,9 @@ def _expected_rp_steps(
     warmup: int,
     interval: int,
     smoke: bool,
+    enabled_by_protocol: bool = True,
 ) -> tuple[int, ...]:
-    if not model.rp_enabled:
+    if not model.rp_enabled or not enabled_by_protocol:
         return ()
     effective_warmup = 0 if smoke else int(warmup)
     effective_interval = 1 if smoke else int(interval)
@@ -395,13 +463,17 @@ def train_one(spec: TrainSpec) -> Path:
     protocol_file_sha256 = sha256_file(spec.protocol_path)
     protocol_canonical_fingerprint = protocol_fingerprint(protocol)
     phase = protocol["phase1_ring_pilot"]
+    task_spec = AngularTaskSpec.from_protocol(protocol)
+    task_spec_payload = task_spec.resolved_payload()
+    task_spec_sha256 = task_spec.fingerprint()
     training = phase["training"]
     seed_policy = protocol["seed_policy"]
     model_ids = [item["id"] for item in phase["models"]]
     if spec.model_name not in model_ids:
         raise ValueError(f"model {spec.model_name!r} is outside the frozen pilot")
-    if int(spec.model_seed) not in seed_policy["pilot_model_seeds"] and not spec.smoke:
-        raise ValueError("model seed is outside the frozen pilot set")
+    allowed_model_seeds = _frozen_training_model_seeds(protocol)
+    if int(spec.model_seed) not in allowed_model_seeds and not spec.smoke:
+        raise ValueError("model seed is outside the frozen training set")
     if float(spec.learning_rate) not in training["learning_rate"]["active_launch_values"] and not spec.smoke:
         raise ValueError("learning rate is outside active frozen values")
     if not spec.smoke and (spec.steps_override is not None or spec.batch_override is not None):
@@ -454,6 +526,7 @@ def train_one(spec: TrainSpec) -> Path:
         else 0.0
     )
     rp = training["rp_schedule_for_ca_lru"]
+    rp_enabled_by_protocol = bool(rp.get("enabled_during_selector", True))
     # These are inherited pilot defaults from the preceding CA-LRU study and
     # are recorded explicitly.  They are not confirmatory values.
     eta_lambda = float(rp.get("eta_lambda_pilot_default", 3000.0))
@@ -468,17 +541,26 @@ def train_one(spec: TrainSpec) -> Path:
         warmup=int(rp["warmup_updates"]),
         interval=int(rp["interval_updates"]),
         smoke=spec.smoke,
+        enabled_by_protocol=rp_enabled_by_protocol,
     )
     if not spec.smoke and model.rp_enabled:
-        frozen_expected = tuple(
-            range(
-                int(rp["warmup_updates"]) + int(rp["interval_updates"]),
-                steps + 1,
-                int(rp["interval_updates"]),
+        frozen_expected = (
+            ()
+            if not rp_enabled_by_protocol
+            else tuple(
+                range(
+                    int(rp["warmup_updates"]) + int(rp["interval_updates"]),
+                    steps + 1,
+                    int(rp["interval_updates"]),
+                )
             )
         )
-        if expected_rp_steps != frozen_expected or len(expected_rp_steps) != int(
-            rp["calls_after_warmup"]
+        frozen_call_count = (
+            0 if not rp_enabled_by_protocol else int(rp["calls_after_warmup"])
+        )
+        if (
+            expected_rp_steps != frozen_expected
+            or len(expected_rp_steps) != frozen_call_count
         ):
             raise RuntimeError("full CA-LRU RP schedule differs from the active freeze")
     if not model.rp_enabled and expected_rp_steps:
@@ -497,9 +579,12 @@ def train_one(spec: TrainSpec) -> Path:
         "protocol_track": phase["protocol_track"],
         "reporting": protocol.get("reporting"),
         "campaign_identity": campaign_identity,
+        "physical_gpu_id": os.environ.get("CALRU_PHYSICAL_GPU_ID"),
         "train_spec": {**serialized_spec, "output_dir": str(output_dir)},
         "model": model.metadata(),
         "architecture_freeze": training["architecture"],
+        "resolved_task_spec": task_spec_payload,
+        "resolved_task_spec_sha256": task_spec_sha256,
         "phase0_state_spec_sha256": state_spec_sha256,
         "phase0_state_spec": state_spec_payload,
         "evaluation_bank": {
@@ -507,6 +592,13 @@ def train_one(spec: TrainSpec) -> Path:
             "sha256": evaluation_bank_sha256,
             "trials": evaluation_batch.batch_size,
             "time_steps": evaluation_batch.time_steps,
+            "resolved_task_spec_sha256": task_spec_sha256,
+            "bank_metadata_task_spec_sha256": evaluation_batch.metadata.get(
+                "resolved_task_spec_sha256"
+            ),
+            "legacy_v1_metadata_binding": (
+                "resolved_task_spec_sha256" not in evaluation_batch.metadata
+            ),
         },
         "training": {
             "steps": steps,
@@ -522,6 +614,7 @@ def train_one(spec: TrainSpec) -> Path:
             "rp_probe_batch": rp_probe_batch,
             "rp_probe_horizon": rp_probe_horizon,
             "rp_blank_ablation_horizon": rp_blank_horizon,
+            "rp_enabled_by_protocol": rp_enabled_by_protocol,
             "expected_rp_steps": list(expected_rp_steps),
         },
         "seeds": {
@@ -555,11 +648,12 @@ def train_one(spec: TrainSpec) -> Path:
         raise ValueError("progress logging interval must be positive")
     model.train()
     for step in range(1, steps + 1):
+        online_task_kwargs = task_spec.generator_kwargs()
+        online_task_kwargs["horizon"] = 8 if spec.smoke else task_spec.sequence_steps
         batch = angular_integration(
             batch_size,
             int(seed_policy["task_seed"]),
-            init_mode="hidden-init",
-            horizon=8 if spec.smoke else int(phase["task"]["sequence_steps"]),
+            **online_task_kwargs,
             stream_key=("online_train", int(seed_policy["data_stream_seed"]), step),
             device=device,
         )
@@ -610,11 +704,12 @@ def train_one(spec: TrainSpec) -> Path:
 
         if step in expected_rp_steps:
             model.eval()
+            rp_task_kwargs = task_spec.generator_kwargs()
+            rp_task_kwargs["horizon"] = rp_probe_horizon
             probe = angular_integration(
                 rp_probe_batch,
                 int(seed_policy["task_seed"]),
-                init_mode="hidden-init",
-                horizon=rp_probe_horizon,
+                **rp_task_kwargs,
                 stream_key=("rp_probe", len(rp_trace)),
                 device=device,
             )
@@ -691,7 +786,8 @@ def train_one(spec: TrainSpec) -> Path:
     if (
         not spec.smoke
         and model.rp_enabled
-        and metrics["rp_calls"] != int(rp["calls_after_warmup"])
+        and metrics["rp_calls"]
+        != (0 if not rp_enabled_by_protocol else int(rp["calls_after_warmup"]))
     ):
         raise RuntimeError("full CA-LRU run completed the wrong number of RP calls")
     if not model.rp_enabled and metrics["rp_calls"] != 0:
@@ -710,6 +806,7 @@ def train_one(spec: TrainSpec) -> Path:
                 "reporting": protocol.get("reporting"),
                 "campaign_identity": campaign_identity,
                 "evaluation_bank_sha256": evaluation_bank_sha256,
+                "resolved_task_spec_sha256": task_spec_sha256,
                 "state_spec_sha256": state_spec_sha256,
                 "model_seed": model_seed,
                 "learning_rate": float(spec.learning_rate),
@@ -745,7 +842,10 @@ def train_one(spec: TrainSpec) -> Path:
         "protocol_track": phase["protocol_track"],
         "reporting": protocol.get("reporting"),
         "source_protocol_sha256": protocol["source_protocol"]["sha256"],
+        "resolved_task_spec": task_spec_payload,
+        "resolved_task_spec_sha256": task_spec_sha256,
         "campaign_identity": campaign_identity,
+        "physical_gpu_id": os.environ.get("CALRU_PHYSICAL_GPU_ID"),
         "code_commit": _git_commit(Path(__file__).resolve().parents[2]),
         "checkpoint_sha256": sha256_file(checkpoint),
         "environment": environment,
@@ -760,6 +860,12 @@ def train_one(spec: TrainSpec) -> Path:
         "data_stream_seed": int(seed_policy["data_stream_seed"]),
         "model_seed": model_seed,
         "evaluation_bank_sha256": evaluation_bank_sha256,
+        "evaluation_bank_task_spec_sha256": evaluation_batch.metadata.get(
+            "resolved_task_spec_sha256"
+        ),
+        "evaluation_bank_legacy_v1_metadata_binding": (
+            "resolved_task_spec_sha256" not in evaluation_batch.metadata
+        ),
         "perturbation_bank_sha256": None,
         "perturbation_bank_status": "not_applicable_to_training_stage",
         "threshold_version": canonical_hash(protocol["claim_gates"]),
@@ -780,11 +886,16 @@ def train_one(spec: TrainSpec) -> Path:
         "reporting": protocol.get("reporting"),
         "protocol_canonical_fingerprint": protocol_canonical_fingerprint,
         "campaign_identity": campaign_identity,
+        "physical_gpu_id": os.environ.get("CALRU_PHYSICAL_GPU_ID"),
         "model_id": spec.model_name,
         "model_seed": model_seed,
         "parameter_count": int(architecture_metadata["parameters_total"]),
         "architecture_metadata": architecture_metadata,
         "evaluation_bank_sha256": evaluation_bank_sha256,
+        "resolved_task_spec_sha256": task_spec_sha256,
+        "evaluation_bank_task_spec_sha256": evaluation_batch.metadata.get(
+            "resolved_task_spec_sha256"
+        ),
         "state_spec_sha256": state_spec_sha256,
         "rp_calls": len(rp_trace),
     }

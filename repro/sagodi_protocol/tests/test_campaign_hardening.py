@@ -243,15 +243,15 @@ def test_partial_final_is_preserved_and_no_longer_blocks_retry(tmp_path: Path):
 
 
 def test_campaign_evaluation_bank_is_single_immutable_artifact(tmp_path: Path):
-    protocol = {
-        "phase1_ring_pilot": {"task": {"sequence_steps": 8}},
-        "seed_policy": {"task_seed": 3, "evaluation_bank_seed": 7},
-        "evaluation": {"id_test_trials": 4},
-    }
+    protocol = load_protocol(NATIVE_RECIPE_PROTOCOL_PATH)
+    protocol["evaluation"]["id_test_trials"] = 4
     first = _materialize_evaluation_bank(tmp_path, protocol)
     second = _materialize_evaluation_bank(tmp_path, protocol)
     assert first == second
-    assert first["trials"] == 4 and first["horizon"] == 8
+    assert first["trials"] == 4 and first["horizon"] == 256
+    assert first["resolved_task_spec_sha256"]
+    assert first["bank_metadata_task_spec_sha256"] == first["resolved_task_spec_sha256"]
+    assert first["legacy_v1_metadata_binding"] is False
     assert (tmp_path / first["path"]).is_file()
     assert Path(f"{tmp_path / first['path']}.sha256").is_file()
 

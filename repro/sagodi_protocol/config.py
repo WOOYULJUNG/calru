@@ -11,6 +11,8 @@ import argparse
 import copy
 import hashlib
 import json
+import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -19,9 +21,14 @@ DEFAULT_PROTOCOL_PATH = Path(__file__).with_name("analysis_protocol.yaml")
 NATIVE_RECIPE_PROTOCOL_PATH = Path(__file__).with_name(
     "calru_native_sagodi_ring_pilot_v1.yaml"
 )
+SAGODI_LR_SELECTION_PROTOCOL_PATH = Path(__file__).with_name(
+    "sagodi_ring_lr_selection_v2.yaml"
+)
 
 PROTOCOL_A_TRACK = "A_sagodi_training_rules"
 NATIVE_RECIPE_TRACK = "calru_native_recipe_transfer"
+SAGODI_LR_SELECTION_TRACK = "sagodi_paper_aligned_lr_selection"
+SAGODI_LR_SELECTION_FREEZE_ID = "sagodi_ring_lr_selection_v2"
 
 REQUIRED_CLAIM_GATES = frozenset(
     {
@@ -46,6 +53,16 @@ REQUIRED_CLAIM_GATES = frozenset(
 ACTIVE_PHASES = ("phase0_state_audit", "phase1_ring_pilot")
 PILOT_MODELS = ("ca_lru", "no_rp", "gru")
 PILOT_MODEL_SEEDS = (100, 101, 102, 103, 104)
+SAGODI_LR_SELECTION_MODELS = (
+    "ca_lru",
+    "no_rp",
+    "gru_sagodi_width96",
+    "gru_sagodi_param135",
+)
+SAGODI_LR_SELECTION_SEEDS = (1100, 1101, 1102, 1103, 1104)
+SAGODI_LR_SELECTION_GRID = (0.01, 0.001, 0.0001, 0.00001)
+
+LEGACY_ANGULAR_GP_CHOLESKY_JITTER = 1e-6
 
 
 class ProtocolConfigError(ValueError):
@@ -87,6 +104,238 @@ def _unique(values: Iterable[Any], label: str) -> tuple[Any, ...]:
     return result
 
 
+@dataclass(frozen=True)
+class AngularTaskSpec:
+    """Fully resolved executable contract for the Phase-1 angular task.
+
+    The v1 protocol files deliberately remain immutable.  Protocol A omitted
+    the numerical Cholesky jitter, so that one legacy value is resolved here
+    and labelled explicitly.  Every other task field is read from the freeze;
+    callers must use :meth:`generator_kwargs` rather than Python defaults.
+    """
+
+    task_id: str
+    topology: str
+    latent_dimension: int
+    sequence_steps: int
+    delta_t: float
+    input_dimension: int
+    output_dimension: int
+    input_feature: str
+    initialization_mode: str
+    initial_state_encoder_input: tuple[str, ...]
+    q0_distribution: str
+    q0_low: float
+    q0_high: float
+    q0_high_inclusive: bool
+    gp_family: str
+    gp_grid: str
+    gp_grid_start: float
+    gp_grid_stop: float
+    gp_grid_endpoint: bool
+    gp_length_scale: float
+    gp_marginal_standard_deviation: float
+    gp_cholesky_jitter: float
+    gp_cholesky_jitter_source: str
+    training_sampling: str
+    initial_state_represents: str
+    velocity_token_target: str
+    loss_mask: str
+    target: tuple[str, ...]
+
+    @classmethod
+    def from_protocol(cls, protocol: Mapping[str, Any]) -> "AngularTaskSpec":
+        phase = _require_mapping(
+            protocol.get("phase1_ring_pilot"), "phase1_ring_pilot"
+        )
+        task = _require_mapping(phase.get("task"), "phase1.task")
+        velocity = _require_mapping(
+            task.get("velocity_process"), "phase1.task.velocity_process"
+        )
+        indexing = _require_mapping(task.get("indexing"), "phase1.task.indexing")
+
+        jitter_is_explicit = "gp_cholesky_jitter" in velocity
+        jitter = (
+            velocity.get("gp_cholesky_jitter")
+            if jitter_is_explicit
+            else LEGACY_ANGULAR_GP_CHOLESKY_JITTER
+        )
+        spec = cls(
+            task_id=str(task.get("id")),
+            topology=str(task.get("topology")),
+            latent_dimension=int(task.get("latent_dimension", -1)),
+            sequence_steps=int(task.get("sequence_steps", -1)),
+            delta_t=float(task.get("delta_t", float("nan"))),
+            input_dimension=int(task.get("input_dimension", -1)),
+            output_dimension=int(task.get("output_dimension", -1)),
+            input_feature=str(task.get("input_feature")),
+            initialization_mode=str(task.get("initialization_mode")),
+            initial_state_encoder_input=tuple(
+                _require_sequence(
+                    task.get("initial_state_encoder_input"),
+                    "phase1.task.initial_state_encoder_input",
+                )
+            ),
+            q0_distribution=str(task.get("theta0_distribution")),
+            q0_low=-math.pi,
+            q0_high=math.pi,
+            q0_high_inclusive=False,
+            gp_family=str(velocity.get("family")),
+            gp_grid=str(velocity.get("normalized_time_grid")),
+            gp_grid_start=-1.0,
+            gp_grid_stop=1.0,
+            gp_grid_endpoint=True,
+            gp_length_scale=float(velocity.get("length_scale", float("nan"))),
+            gp_marginal_standard_deviation=float(
+                velocity.get("marginal_standard_deviation", float("nan"))
+            ),
+            gp_cholesky_jitter=float(jitter),
+            gp_cholesky_jitter_source=(
+                "protocol_explicit"
+                if jitter_is_explicit
+                else "legacy_v1_implementation_default"
+            ),
+            training_sampling=str(velocity.get("training_sampling")),
+            initial_state_represents=str(indexing.get("initial_state_represents")),
+            velocity_token_target=str(indexing.get("velocity_token_t_target")),
+            loss_mask=str(task.get("loss_mask")),
+            target=tuple(
+                _require_sequence(task.get("target"), "phase1.task.target")
+            ),
+        )
+        spec._validate()
+        return spec
+
+    def _validate(self) -> None:
+        expected = {
+            "task_id": (self.task_id, "angular_velocity_integration"),
+            "topology": (self.topology, "S1"),
+            "latent_dimension": (self.latent_dimension, 1),
+            "sequence_steps": (self.sequence_steps, 256),
+            "delta_t": (self.delta_t, 0.1),
+            "input_dimension": (self.input_dimension, 1),
+            "output_dimension": (self.output_dimension, 2),
+            "input_feature": (self.input_feature, "raw_angular_velocity"),
+            "initialization_mode": (self.initialization_mode, "hidden_init"),
+            "initial_state_encoder_input": (
+                self.initial_state_encoder_input,
+                ("cos_theta0", "sin_theta0"),
+            ),
+            "q0_distribution": (self.q0_distribution, "uniform_minus_pi_pi"),
+            "gp_family": (self.gp_family, "gaussian_process"),
+            "gp_grid": (
+                self.gp_grid,
+                "linspace_minus1_plus1_inclusive",
+            ),
+            "gp_length_scale": (self.gp_length_scale, 1.0),
+            "gp_marginal_standard_deviation": (
+                self.gp_marginal_standard_deviation,
+                1.0,
+            ),
+            "training_sampling": (self.training_sampling, "online_fresh"),
+            "initial_state_represents": (
+                self.initial_state_represents,
+                "q0_before_velocity",
+            ),
+            "velocity_token_target": (
+                self.velocity_token_target,
+                "q_t_plus_1_after_velocity_update",
+            ),
+            "loss_mask": (self.loss_mask, "all_256_velocity_steps"),
+            "target": (self.target, ("cos_theta", "sin_theta")),
+        }
+        for label, (actual, required) in expected.items():
+            _require(actual == required, f"angular task {label} must be {required!r}")
+        _require(
+            math.isfinite(self.gp_cholesky_jitter)
+            and self.gp_cholesky_jitter > 0.0,
+            "angular task GP Cholesky jitter must be finite and positive",
+        )
+        _require(
+            self.gp_cholesky_jitter == LEGACY_ANGULAR_GP_CHOLESKY_JITTER,
+            "angular task GP Cholesky jitter must remain 1e-6",
+        )
+
+    @property
+    def init_mode_for_generator(self) -> str:
+        return self.initialization_mode.replace("_", "-")
+
+    def generator_kwargs(self) -> dict[str, Any]:
+        """Return every non-random generator argument, without defaults."""
+
+        return {
+            "dimensions": self.latent_dimension,
+            "init_mode": self.init_mode_for_generator,
+            "horizon": self.sequence_steps,
+            "dt": self.delta_t,
+            "gp_length_scale": self.gp_length_scale,
+            "gp_std": self.gp_marginal_standard_deviation,
+            "gp_jitter": self.gp_cholesky_jitter,
+            "gp_grid_start": self.gp_grid_start,
+            "gp_grid_stop": self.gp_grid_stop,
+            "gp_grid_endpoint": self.gp_grid_endpoint,
+            "q0_distribution": self.q0_distribution,
+            "q0_low": self.q0_low,
+            "q0_high": self.q0_high,
+            "q0_high_inclusive": self.q0_high_inclusive,
+            "target_indexing": self.velocity_token_target,
+            "loss_mask_mode": self.loss_mask,
+            "resolved_task_spec": self.resolved_payload(),
+            "resolved_task_spec_sha256": self.fingerprint(),
+        }
+
+    def resolved_payload(self) -> dict[str, Any]:
+        """Canonical JSON-compatible scientific task contract."""
+
+        return {
+            "schema_version": 1,
+            "task_id": self.task_id,
+            "topology": self.topology,
+            "latent_dimension": self.latent_dimension,
+            "sequence_steps": self.sequence_steps,
+            "delta_t": self.delta_t,
+            "input_dimension": self.input_dimension,
+            "output_dimension": self.output_dimension,
+            "input_feature": self.input_feature,
+            "initialization_mode": self.initialization_mode,
+            "initial_state_encoder_input": list(self.initial_state_encoder_input),
+            "q0": {
+                "distribution": self.q0_distribution,
+                "low": self.q0_low,
+                "high": self.q0_high,
+                "high_inclusive": self.q0_high_inclusive,
+            },
+            "velocity_process": {
+                "family": self.gp_family,
+                "grid": self.gp_grid,
+                "grid_start": self.gp_grid_start,
+                "grid_stop": self.gp_grid_stop,
+                "grid_endpoint": self.gp_grid_endpoint,
+                "length_scale": self.gp_length_scale,
+                "marginal_standard_deviation": self.gp_marginal_standard_deviation,
+                "gp_cholesky_jitter": self.gp_cholesky_jitter,
+                "gp_cholesky_jitter_source": self.gp_cholesky_jitter_source,
+                "training_sampling": self.training_sampling,
+            },
+            "indexing": {
+                "initial_state_represents": self.initial_state_represents,
+                "velocity_token_t_target": self.velocity_token_target,
+            },
+            "loss_mask": self.loss_mask,
+            "target": list(self.target),
+        }
+
+    def fingerprint(self) -> str:
+        payload = json.dumps(
+            self.resolved_payload(),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+
 def load_protocol(path: str | Path | None = None) -> dict[str, Any]:
     """Load and validate the JSON-compatible YAML protocol freeze."""
 
@@ -106,11 +355,560 @@ def load_protocol(path: str | Path | None = None) -> dict[str, Any]:
     return data
 
 
+def _validate_sagodi_lr_selection_protocol(protocol: Mapping[str, Any]) -> None:
+    """Fail-closed validation for the 100-update Ságodi LR selector.
+
+    This freeze is deliberately not an attractor-analysis or confirmatory
+    freeze.  It exists only to select one learning rate per model from the
+    paper's four-value grid using the paper's update-100 training-loss rule.
+    Keeping it on a dedicated validation branch prevents later selector
+    conveniences from weakening either immutable v1 protocol.
+    """
+
+    _require(
+        protocol.get("freeze_id") == SAGODI_LR_SELECTION_FREEZE_ID,
+        "Ságodi LR selector must use its dedicated freeze_id",
+    )
+    _require(
+        protocol.get("frozen_at_utc") == "2026-07-14",
+        "Ságodi LR selector frozen date changed",
+    )
+    source = _require_mapping(protocol.get("source_protocol"), "source_protocol")
+    _require(
+        source
+        == {
+            "path": "CA_LRU_Sagodi_Experimental_Protocol_ko.md",
+            "version": "1.0",
+            "sha256": "39487213422eafdd071b541680662fd9b417be0342081c435785fd406f05b4f4",
+            "normative_claim_gate_section": "3.13.2",
+        },
+        "Ságodi LR selector source protocol binding changed",
+    )
+
+    reporting = _require_mapping(protocol.get("reporting"), "reporting")
+    _require(
+        reporting
+        == {
+            "training_track": SAGODI_LR_SELECTION_TRACK,
+            "display_label": (
+                "Ságodi paper-aligned task/training shell + method-specific "
+                "CA-LRU RP"
+            ),
+            "protocol_A_eligible": False,
+            "protocol_B_confirmatory_eligible": False,
+            "paper_alignment": "task_and_100_update_learning_rate_selection_shell",
+            "method_specific_component": "CA-LRU_Retention_Plasticity",
+            "bit_exact_official_implementation": False,
+        },
+        "Ságodi LR selector reporting labels changed",
+    )
+
+    scope = _require_mapping(protocol.get("scope"), "scope")
+    _require(
+        tuple(_require_sequence(scope.get("active_phase_ids"), "active_phase_ids"))
+        == ACTIVE_PHASES,
+        f"active phases must be {ACTIVE_PHASES!r}",
+    )
+    for key in (
+        "pilot_results_are_confirmatory",
+        "pilot_results_may_support_l3_claim",
+        "selection_results_are_approximate_ca_evidence",
+        "old_campaign_results_may_be_pooled",
+    ):
+        _require(scope.get(key) is False, f"selector scope {key} must be false")
+    _require(
+        scope.get("later_phases")
+        == [
+            {
+                "id": "phase1_ring_main_training",
+                "enabled": False,
+                "activation_gate": (
+                    "modelwise_learning_rate_selection_receipt_and_new_training_freeze"
+                ),
+            }
+        ],
+        "selector must not authorize main training",
+    )
+
+    seeds = _require_mapping(protocol.get("seed_policy"), "seed_policy")
+    selection_seeds = tuple(
+        _require_sequence(
+            seeds.get("selection_model_seeds"), "selection_model_seeds"
+        )
+    )
+    _require(
+        selection_seeds == SAGODI_LR_SELECTION_SEEDS,
+        f"selection seeds must be {SAGODI_LR_SELECTION_SEEDS!r}",
+    )
+    _unique(selection_seeds, "selection_model_seeds")
+    _require(seeds.get("main_model_seeds") == [], "main seeds must be empty")
+    _require(
+        {key: seeds.get(key) for key in (
+            "task_seed",
+            "data_stream_seed",
+            "evaluation_bank_seed",
+            "perturbation_bank_seed",
+        )}
+        == {
+            "task_seed": 0,
+            "data_stream_seed": 0,
+            "evaluation_bank_seed": 0,
+            "perturbation_bank_seed": 0,
+        },
+        "selector shared task/data/evaluation seeds changed",
+    )
+    _require(
+        seeds.get("independent_statistical_unit") == "trained_model_seed",
+        "selector statistical unit must be the trained model seed",
+    )
+    _require(
+        seeds.get("same_online_batch_key_across_models")
+        == [
+            "task",
+            "latent_dimension",
+            "geometry",
+            "initialization_mode",
+            "task_seed",
+            "update_index",
+        ],
+        "selector common-random-number batch key changed",
+    )
+
+    phase0 = _require_mapping(protocol.get("phase0_state_audit"), "phase0_state_audit")
+    _require(phase0.get("enabled") is True, "selector Phase 0 must be enabled")
+    _require(
+        phase0.get("blocks_dependents_on_failure") is True,
+        "selector Phase 0 must block dependent training",
+    )
+    _require(
+        tuple(phase0.get("models", [])) == SAGODI_LR_SELECTION_MODELS,
+        f"selector Phase 0 models must be {SAGODI_LR_SELECTION_MODELS!r}",
+    )
+    _require(
+        phase0.get("primary_state_rule") == "minimum_full_markov_recurrent_state",
+        "selector Phase 0 primary-state rule changed",
+    )
+    _require(
+        phase0.get("required_maps") == [
+            "F0_primary",
+            "F0_carrier_if_applicable",
+            "F0_reported_full",
+        ],
+        "selector Phase 0 map inventory changed",
+    )
+    _require(
+        phase0.get("required_artifacts")
+        == [
+            "state_spec.json",
+            "state_transition_audit.json",
+            "blank_map_trace.npz",
+            "blank_map_trace_metadata.json",
+            "exactness_screen.json",
+            "determinism_check.json",
+            "jacobian_check.json",
+            "float64_subset_check.json",
+            "hidden_cache_check.json",
+            "phase0_gate.json",
+        ],
+        "selector Phase 0 artifact contract changed",
+    )
+    declared_checks = tuple(
+        _require_mapping(item, "phase0 required check").get("id")
+        for item in _require_sequence(
+            phase0.get("required_checks"), "phase0.required_checks"
+        )
+    )
+    _require(
+        declared_checks
+        == (
+            "state_transition_inventory",
+            "pack_unpack_round_trip",
+            "actual_blank_map",
+            "blank_input_trace",
+            "determinism",
+            "analysis_mode",
+            "float64_subset",
+            "jacobian_finite_difference",
+            "hidden_cache_audit",
+        ),
+        "selector Phase 0 check inventory changed",
+    )
+
+    phase1 = _require_mapping(protocol.get("phase1_ring_pilot"), "phase1_ring_pilot")
+    _require(phase1.get("enabled") is True, "selector Phase 1 must be enabled")
+    _require(phase1.get("confirmatory") is False, "selector is not confirmatory")
+    _require(
+        tuple(phase1.get("depends_on", [])) == ("phase0_state_audit",),
+        "selector Phase 1 must depend on Phase 0",
+    )
+    _require(
+        phase1.get("protocol_track") == SAGODI_LR_SELECTION_TRACK,
+        "selector protocol_track changed",
+    )
+    _require(
+        phase1.get("purpose") == "modelwise_learning_rate_selection_only",
+        "selector purpose must remain LR selection only",
+    )
+
+    task = _require_mapping(phase1.get("task"), "phase1.task")
+    AngularTaskSpec.from_protocol(protocol)
+    _require(
+        task
+        == {
+            "id": "angular_velocity_integration",
+            "topology": "S1",
+            "latent_dimension": 1,
+            "sequence_steps": 256,
+            "delta_t": 0.1,
+            "input_dimension": 1,
+            "output_dimension": 2,
+            "input_feature": "raw_angular_velocity",
+            "initialization_mode": "hidden_init",
+            "initial_state_encoder_input": ["cos_theta0", "sin_theta0"],
+            "theta0_distribution": "uniform_minus_pi_pi",
+            "velocity_process": {
+                "family": "gaussian_process",
+                "normalized_time_grid": "linspace_minus1_plus1_inclusive",
+                "length_scale": 1.0,
+                "marginal_standard_deviation": 1.0,
+                "gp_cholesky_jitter": 0.000001,
+                "training_sampling": "online_fresh",
+            },
+            "indexing": {
+                "initial_state_represents": "q0_before_velocity",
+                "velocity_token_t_target": "q_t_plus_1_after_velocity_update",
+            },
+            "loss_mask": "all_256_velocity_steps",
+            "target": ["cos_theta", "sin_theta"],
+        },
+        "selector angular task contract changed",
+    )
+
+    model_specs = _require_sequence(phase1.get("models"), "phase1.models")
+    model_ids = tuple(
+        _require_mapping(item, "selector model spec").get("id")
+        for item in model_specs
+    )
+    _require(
+        model_ids == SAGODI_LR_SELECTION_MODELS,
+        f"selector models must be {SAGODI_LR_SELECTION_MODELS!r}",
+    )
+    _unique(model_ids, "selector model ids")
+    expected_model_specs = [
+        {
+            "id": "ca_lru",
+            "role": "proposed",
+            "variant": "PAN-RNW-full",
+            "hidden_width": 96,
+            "parameter_count": 56834,
+            "trainable_parameter_count": 56738,
+            "retention_plasticity": True,
+            "retention_plasticity_calls_during_selector": 0,
+            "state_noise_target": "primary_markov_state",
+        },
+        {
+            "id": "no_rp",
+            "role": "mechanism_control",
+            "base_model": "ca_lru",
+            "variant": "PAN-RNW-full",
+            "hidden_width": 96,
+            "parameter_count": 56834,
+            "trainable_parameter_count": 56738,
+            "retention_plasticity": False,
+            "outer_scaffold_identical_to_base": True,
+            "state_noise_target": "primary_markov_state",
+        },
+        {
+            "id": "gru_sagodi_width96",
+            "role": "official_style_width_matched_baseline",
+            "variant": "Sagodi_official_style_GRU",
+            "hidden_width": 96,
+            "parameter_count": 28898,
+            "state_noise_target": "recurrent_hidden_state",
+        },
+        {
+            "id": "gru_sagodi_param135",
+            "role": "official_style_parameter_matched_baseline",
+            "variant": "Sagodi_official_style_GRU",
+            "hidden_width": 135,
+            "parameter_count": 56432,
+            "state_noise_target": "recurrent_hidden_state",
+        },
+    ]
+    _require(list(model_specs) == expected_model_specs, "selector model specs changed")
+
+    training = _require_mapping(phase1.get("training"), "phase1.training")
+    _require(training.get("width") == 96, "selector CA/default width must be 96")
+    architecture = _require_mapping(training.get("architecture"), "training.architecture")
+    _require(
+        architecture.get("initial_state_encoder")
+        == {
+            "input_dimension": 2,
+            "output_dimension": "primary_state_dimension",
+            "module": "torch.nn.Linear",
+            "bias": False,
+            "weight_initialization": {
+                "distribution": "normal",
+                "mean": 0.0,
+                "standard_deviation": "1_over_sqrt_primary_state_dimension",
+                "source": "Sagodi_official_W_otr",
+            },
+            "activation_by_model": {
+                "ca_lru": "identity",
+                "no_rp": "identity",
+                "gru_sagodi_width96": "tanh",
+                "gru_sagodi_param135": "tanh",
+            },
+        },
+        "selector bias-free W_otr initializer contract changed",
+    )
+    _require(
+        architecture.get("shared_builder_kwargs")
+        == {
+            "rank": 2,
+            "d_model": "width",
+            "rec_dim": "width",
+            "layers": 1,
+            "dropout": 0.0,
+            "plru_tau": 0.001,
+            "plru_c": 50.0,
+            "pan_lambda_min": 0.90,
+            "pan_lambda_max": 0.999,
+            "rank_matched_lambda_high": 0.999,
+            "rank_matched_lambda_low": 0.0,
+        },
+        "selector shared model-builder kwargs changed",
+    )
+    _require(
+        architecture.get("ca_lru_and_no_rp")
+        == {
+            "legacy_variant": "PAN-RNW-full",
+            "resolved_recurrence_variant": "PAN-RNW-Block",
+            "writer_mode": "recurrent",
+            "writer_hidden": "max_d_model_rec_dim",
+            "writer_formula": "g_h_u_minus_g_h_zero",
+            "writer_activation": "GELU",
+            "writer_linear_bias": True,
+            "blank_primary_map": "homogeneous_diagonal_linear_F0_h_equals_Lambda_h",
+            "retention_initialization": "linear_lambda_max_to_lambda_min",
+            "theta_requires_grad": False,
+            "gamma_free": True,
+            "gamma_raw_initial_value": 0.0,
+            "recurrence_output_projection_bias": True,
+            "encoder_bias": False,
+            "use_norm_in": False,
+            "norm_in_affine": True,
+            "use_norm_out": True,
+            "norm_out_affine": True,
+            "update_mode": "glu",
+            "glu_projection_bias": True,
+            "use_residual": True,
+            "decode_mode": "stream",
+            "carry_stream": False,
+            "head_layer_norm_affine": True,
+            "head_linear_bias": True,
+        },
+        "selector CA-LRU scaffold changed",
+    )
+    expected_gru_common = {
+        "source_code_commit": "cbd7404e9baca4b2dc291560cfc6576bb7b1f078",
+        "recurrence": "one_layer_torch_GRUCell_step_equivalent_to_nn_GRU",
+        "input_dimension": 1,
+        "gru_bias": True,
+        "bias_convention": "two_PyTorch_default_random_bias_vectors",
+        "initial_state": "tanh_of_bias_free_W_otr_times_y0",
+        "readout": "direct_biased_linear",
+        "output_to_hidden_initialization_repair": (
+            "Normal_0_1_over_sqrt_hidden_because_pinned_gru_py_left_W_otr_uninitialized"
+        ),
+    }
+    _require(
+        architecture.get("gru_sagodi_width96")
+        == {
+            **expected_gru_common,
+            "hidden_width": 96,
+            "parameter_count": 28898,
+            "matching_role": "width_matched_to_CA_LRU_96",
+        },
+        "width-matched official-style GRU architecture changed",
+    )
+    _require(
+        architecture.get("gru_sagodi_param135")
+        == {
+            **expected_gru_common,
+            "hidden_width": 135,
+            "parameter_count": 56432,
+            "matching_role": "nearest_parameter_match_to_CA_LRU_56834",
+        },
+        "parameter-matched official-style GRU architecture changed",
+    )
+
+    _require(training.get("batch_size") == 64, "selector batch size must be 64")
+    _require(
+        training.get("optimizer_updates") == 100,
+        "selector must stop at update 100",
+    )
+    _require(
+        training.get("optimizer")
+        == {
+            "name": "Adam",
+            "betas": [0.9, 0.999],
+            "epsilon": 0.00000001,
+            "weight_decay": 0.0,
+        },
+        "selector Adam contract changed",
+    )
+    learning_rate = _require_mapping(training.get("learning_rate"), "learning_rate")
+    _require(
+        tuple(learning_rate.get("grid", [])) == SAGODI_LR_SELECTION_GRID,
+        f"selector LR grid must be {SAGODI_LR_SELECTION_GRID!r}",
+    )
+    _require(
+        tuple(learning_rate.get("active_launch_values", []))
+        == SAGODI_LR_SELECTION_GRID,
+        "all four selector learning rates must be active",
+    )
+    _unique(learning_rate["grid"], "selector LR grid")
+    _require(
+        learning_rate.get("selection_status") == "pending_frozen_selection",
+        "selector results must remain pending before execution",
+    )
+    _require(
+        learning_rate.get("selection_rule")
+        == {
+            "primary_metric": "mean_online_training_loss_at_update_100",
+            "seed_aggregation": "arithmetic_mean_across_five_selection_model_seeds",
+            "selection_scope": "separately_per_model",
+            "winner": "minimum_primary_metric",
+            "validation_metrics_role": "secondary_non_selecting",
+            "tie_policy": "smaller_numeric_learning_rate",
+            "failed_run_policy": (
+                "no_scientific_failure_inference_from_nonzero_exit_oom_kill_or_invalid_receipt"
+            ),
+            "failed_run_retry_policy": (
+                "infrastructure_or_unknown_failure_aborts_campaign_and_is_resume_eligible"
+            ),
+            "campaign_completion": "all_80_runs_must_have_verified_success_receipts",
+        },
+        "selector learning-rate decision rule changed",
+    )
+    _require(
+        training.get("state_noise")
+        == {
+            "enabled": True,
+            "distribution": "normal",
+            "coordinate_standard_deviation": 0.1,
+            "coordinate_variance": 0.01,
+            "target": "primary_markov_state",
+            "analysis_noise_enabled": False,
+        },
+        "selector state-noise contract changed",
+    )
+    _require(
+        training.get("gradient_clipping")
+        == {"policy": "none", "frozen_numeric_value": None},
+        "selector must not use gradient clipping",
+    )
+    _require(
+        training.get("checkpoint_selection")
+        == "final_update_100_for_lr_selection_only",
+        "selector checkpoint semantics changed",
+    )
+    _require(
+        training.get("rp_schedule_for_ca_lru")
+        == {
+            "enabled_during_selector": False,
+            "selector_policy": "disabled_during_100_update_lr_selection",
+            "warmup_updates": 100,
+            "interval_updates": 1,
+            "calls_after_warmup": 0,
+            "probe_batch_size": 256,
+            "probe_horizon": 256,
+            "probe_noise_enabled": False,
+            "probe_bank": "not_materialized_during_selector",
+            "eta_lambda_pilot_default": 3000.0,
+            "damage_epsilon_pilot_default": 0.00003,
+            "numeric_values_status": "inactive_method_specific_metadata_only",
+        },
+        "selector must make exactly zero RP calls",
+    )
+
+    run_matrix = _require_mapping(phase1.get("run_matrix"), "phase1.run_matrix")
+    _require(
+        run_matrix
+        == {
+            "cross_product": [
+                "models",
+                "selection_model_seeds",
+                "active_launch_values",
+            ],
+            "expected_training_runs": 80,
+            "task_seed_fixed": 0,
+            "data_stream_seed_fixed": 0,
+        },
+        "selector run matrix changed",
+    )
+    _require(
+        len(model_ids) * len(selection_seeds) * len(learning_rate["active_launch_values"])
+        == 80,
+        "selector run count must be exactly 80",
+    )
+
+    evaluation = _require_mapping(protocol.get("evaluation"), "evaluation")
+    _require(
+        evaluation
+        == {
+            "validation_trials": 2048,
+            "id_test_trials": 2048,
+            "analysis_enabled": False,
+            "selection_results_are_approximate_ca_evidence": False,
+            "finite_kick_horizons": [1, 5, 20, 100, 500, 1024],
+            "primary_recovery_horizon": 500,
+            "primary_manifold_reconstruction": (
+                "track_a_task_reachable_endpoint_then_blank_periodic_spline"
+            ),
+            "task_conditioned_atlas_role": "correspondence_only_not_primary_projector",
+            "c3_metric_labels": {
+                "clean_adherence": "D_clean(H)=d_M(F0^H(m))/R_s",
+                "manifold_recovery": (
+                    "Q(H)=d_M(F0^H(m+delta))/max(d_M(m+delta),floor)"
+                ),
+            },
+            "disabled_reason": "learning_rate_selection_only_not_CA_analysis",
+        },
+        "selector evaluation declaration changed",
+    )
+    _require(
+        protocol.get("claim_gates")
+        == {
+            "status": "disabled_for_learning_rate_selection",
+            "all_approximate_ca_claims_enabled": False,
+            "selection_artifacts_may_be_reused_as_ca_evidence": False,
+        },
+        "selector must not expose approximate-CA claim gates",
+    )
+    _require(
+        protocol.get("statistics")
+        == {
+            "selection": {
+                "confirmatory_tests_enabled": False,
+                "unit": "trained_model_seed",
+                "primary_summary": "mean_online_training_loss_at_update_100",
+                "validation_metrics_role": "secondary_non_selecting",
+            }
+        },
+        "selector statistics declaration changed",
+    )
+
+
 def validate_protocol(protocol: Mapping[str, Any]) -> None:
     """Validate the frozen scope and conservative ambiguity resolutions."""
 
     _require(protocol.get("schema_version") == "1.0.0", "unsupported schema_version")
     _require(protocol.get("freeze_status") == "pilot_only", "freeze must be pilot_only")
+    if protocol.get("freeze_id") == SAGODI_LR_SELECTION_FREEZE_ID:
+        _validate_sagodi_lr_selection_protocol(protocol)
+        return
 
     scope = _require_mapping(protocol.get("scope"), "scope")
     active = tuple(_require_sequence(scope.get("active_phase_ids"), "active_phase_ids"))
@@ -233,6 +1031,10 @@ def validate_protocol(protocol: Mapping[str, Any]) -> None:
         )
 
     task = _require_mapping(phase1.get("task"), "phase1.task")
+    # Resolve and validate the complete executable task contract.  This closes
+    # the v1 gap where dt/GP fields changed the protocol fingerprint without
+    # changing the actual Python generator defaults.
+    AngularTaskSpec.from_protocol(protocol)
     _require(task.get("id") == "angular_velocity_integration", "Phase 1 task must be angular integration")
     _require(task.get("topology") == "S1", "Phase 1 must be a ring task")
     _require(task.get("latent_dimension") == 1, "Phase 1 latent dimension must be one")
@@ -642,21 +1444,26 @@ def source_protocol_matches(
 
 
 def expand_phase1_runs(protocol: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
-    """Expand the only training matrix authorized by this freeze (15 runs)."""
+    """Expand the exact training matrix authorized by the selected freeze."""
 
     validate_protocol(protocol)
     phase1 = protocol["phase1_ring_pilot"]
     training = phase1["training"]
     seed_policy = protocol["seed_policy"]
+    selection_freeze = phase1["protocol_track"] == SAGODI_LR_SELECTION_TRACK
+    model_seeds = seed_policy[
+        "selection_model_seeds" if selection_freeze else "pilot_model_seeds"
+    ]
     runs: list[dict[str, Any]] = []
 
     for model_spec in phase1["models"]:
-        for model_seed in seed_policy["pilot_model_seeds"]:
+        width = int(model_spec.get("hidden_width", training["width"]))
+        for model_seed in model_seeds:
             for learning_rate in training["learning_rate"]["active_launch_values"]:
                 lr_token = _float_token(float(learning_rate))
                 run_id = (
                     f"phase1__angle_integrate__{model_spec['id']}__"
-                    f"w{training['width']:03d}__seed{model_seed:03d}__lr{lr_token}"
+                    f"w{width:03d}__seed{model_seed:03d}__lr{lr_token}"
                 )
                 runs.append(
                     {
@@ -673,7 +1480,7 @@ def expand_phase1_runs(protocol: Mapping[str, Any]) -> tuple[dict[str, Any], ...
                         "data_stream_seed": seed_policy["data_stream_seed"],
                         "evaluation_bank_seed": seed_policy["evaluation_bank_seed"],
                         "perturbation_bank_seed": seed_policy["perturbation_bank_seed"],
-                        "width": training["width"],
+                        "width": width,
                         "batch_size": training["batch_size"],
                         "optimizer_updates": training["optimizer_updates"],
                         "optimizer": copy.deepcopy(training["optimizer"]),

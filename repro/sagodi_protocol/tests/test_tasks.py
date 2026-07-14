@@ -7,6 +7,12 @@ from pathlib import Path
 import pytest
 import torch
 
+from repro.sagodi_protocol.config import (
+    NATIVE_RECIPE_PROTOCOL_PATH,
+    AngularTaskSpec,
+    load_protocol,
+)
+
 from repro.sagodi_protocol.tasks import (
     ANGULAR_DT,
     ANGULAR_HORIZON,
@@ -17,6 +23,7 @@ from repro.sagodi_protocol.tasks import (
     keyed_seed,
     load_fixed_bank,
     memory_guided_saccade,
+    metadata_payload,
     sample_angular_integration,
     sample_double_angular_integration,
     sample_memory_guided_saccade,
@@ -129,6 +136,62 @@ def test_hidden_init_angular_targets_are_post_update():
         (torch.cos(batch.latent_targets), torch.sin(batch.latent_targets)), dim=-1
     )
     torch.testing.assert_close(batch.output_targets, expected_output, rtol=0, atol=1e-14)
+
+
+def test_protocol_task_spec_is_embedded_and_hash_bound_in_generated_batch():
+    spec = AngularTaskSpec.from_protocol(load_protocol(NATIVE_RECIPE_PROTOCOL_PATH))
+    batch = angular_integration(
+        3,
+        71,
+        **spec.generator_kwargs(),
+        stream_key=("bound", 0),
+    )
+    assert metadata_payload(batch.metadata["resolved_task_spec"]) == spec.resolved_payload()
+    assert batch.metadata["resolved_task_spec_sha256"] == spec.fingerprint()
+    assert batch.metadata["delta_t"] == spec.delta_t
+    assert batch.metadata["gp_length_scale"] == spec.gp_length_scale
+    assert batch.metadata["gp_std"] == spec.gp_marginal_standard_deviation
+    assert batch.metadata["gp_cholesky_jitter"] == spec.gp_cholesky_jitter
+    assert batch.metadata["gp_grid_start"] == -1.0
+    assert batch.metadata["gp_grid_stop"] == 1.0
+    assert batch.metadata["gp_grid_endpoint"] is True
+    assert batch.metadata["q0_distribution"] == "uniform_minus_pi_pi"
+    assert batch.metadata["target_indexing_contract"] == (
+        "q_t_plus_1_after_velocity_update"
+    )
+    assert batch.metadata["loss_mask_mode"] == "all_256_velocity_steps"
+
+
+def test_resolved_task_spec_hash_tampering_is_rejected():
+    spec = AngularTaskSpec.from_protocol(load_protocol(NATIVE_RECIPE_PROTOCOL_PATH))
+    kwargs = spec.generator_kwargs()
+    kwargs["resolved_task_spec_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="SHA-256"):
+        angular_integration(2, 1, **kwargs)
+
+
+def test_explicit_gp_grid_and_q0_parameters_reach_generator():
+    baseline = angular_integration(4, 99, horizon=16, dtype=torch.float64)
+    changed_grid = angular_integration(
+        4,
+        99,
+        horizon=16,
+        gp_grid_start=-2.0,
+        gp_grid_stop=2.0,
+        dtype=torch.float64,
+    )
+    narrowed_q0 = angular_integration(
+        4,
+        99,
+        horizon=16,
+        q0_low=-0.25,
+        q0_high=0.25,
+        dtype=torch.float64,
+    )
+    assert not torch.equal(baseline.inputs, changed_grid.inputs)
+    q0 = torch.as_tensor(narrowed_q0.metadata["initial_latents"])
+    assert float(q0.min()) >= -0.25
+    assert float(q0.max()) < 0.25
 
 
 def test_cue_driven_is_paired_view_of_hidden_init_path():

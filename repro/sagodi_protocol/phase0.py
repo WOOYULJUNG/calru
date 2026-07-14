@@ -16,7 +16,7 @@ import torch
 from .artifacts import atomic_json, sha256_file, write_completion_receipt
 from .audit import AuditConfig, run_phase0_audit
 from .config import DEFAULT_PROTOCOL_PATH, load_protocol, protocol_fingerprint
-from .models import build_protocol_model, model_config_from_protocol
+from .models import SAGODI_GRU_NAMES, build_protocol_model, model_config_from_protocol
 from .state import StateAdapter
 
 
@@ -34,6 +34,14 @@ def _atomic_npz(path: Path, **arrays: np.ndarray) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _phase0_width_override(model_name: str, *, smoke: bool) -> int | None:
+    """Keep architecture-locked Ságodi GRUs at their frozen dimensions."""
+
+    if not smoke or model_name in SAGODI_GRU_NAMES:
+        return None
+    return 8
 
 
 @torch.no_grad()
@@ -149,7 +157,7 @@ def run_phase0(
             model_config_from_protocol(
                 protocol,
                 model_name,
-                width_override=8 if smoke else None,
+                width_override=_phase0_width_override(model_name, smoke=smoke),
             )
         ).to(device)
         adapter = StateAdapter(protocol_model.core)

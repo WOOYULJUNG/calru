@@ -1,0 +1,128 @@
+{
+  "schema_version": "1.0.0",
+  "freeze_id": "calru_native_sagodi_ring_analysis_v2",
+  "freeze_status": "pilot_reanalysis_only",
+  "purpose": {
+    "operation": "reanalyse_existing_immutable_checkpoints",
+    "creates_training_runs": false,
+    "artifact_root_policy": "separate_from_parent_campaign",
+    "may_mutate_parent_artifacts": false
+  },
+  "parent_training": {
+    "freeze_id": "calru_native_sagodi_ring_pilot_v1",
+    "protocol_canonical_fingerprint": "668867dfa36a4d6b4eb57fb63b61236f91c29756334f885f182bc9ed83ce1e1a",
+    "protocol_file_sha256": "49c000690fb0a2be14188fe4281264181e5195f194e17ced8530af9fc8005891",
+    "campaign_id": "calru_native_sagodi_ring_pilot_v1-668867dfa36a",
+    "scientific_identity": "93f3466a7b978dece3e0b09d743f0ef2fbe421d9fd3ea48fdfb897099a6543c9",
+    "manifest_sha256": "204ec47c9b40105955a5697bade32974ac6c7ef0ebd401d9caa83365eced77fb"
+  },
+  "claim_scope": {
+    "claim": "finite_time_approximate_continuous_attractor_only",
+    "confirmatory": false,
+    "may_support_l3_claim": false,
+    "may_support_c4_claim": false,
+    "may_support_main_seed_claim": false,
+    "seed_scope": "parent_pilot_seeds_only",
+    "causal_interpretation": "none"
+  },
+  "manifold": {
+    "primary": {
+      "track": "track_A",
+      "source_states": "task_reachable_trajectory_endpoints",
+      "blank_relaxation_steps": "16_times_task_horizon",
+      "interpolation": "periodic_cubic_spline",
+      "role": "primary_for_projection_based_gates",
+      "failure_policy": "projection_based_gates_inconclusive",
+      "quality_gates": {
+        "coarse_coverage_bin_count": 32,
+        "minimum_coarse_bin_occupancy_fraction": 1.0,
+        "minimum_normalized_tangent_speed": 0.001,
+        "seam_probe_radians": 0.001,
+        "seam_C0_distance_over_Rs_max": 1e-05,
+        "seam_C1_relative_difference_max": 0.01
+      }
+    },
+    "task_atlas": {
+      "track": "task_conditioned_atlas",
+      "role": "correspondence_only",
+      "may_be_primary": false,
+      "comparisons": [
+        "state_distance_to_track_A",
+        "decoded_angle_correspondence",
+        "fiber_spread",
+        "bidirectional_hausdorff_distance"
+      ]
+    }
+  },
+  "c3_normal_recovery": {
+    "manifold_distance": "d_M(x)=norm(x-Pi_M(x))",
+    "clean_adherence": "D_clean(H)=d_M(F0^H(m))/R_s",
+    "recovery_ratio": "Q(H)=d_M(F0^H(m+delta))/max(d_M(m+delta),floor)",
+    "registered_horizons": [1, 5, 20, 100, 500, 1024],
+    "primary_horizon": 500,
+    "perturbation_families": ["radial", "ambient_normal"],
+    "aggregation": {
+      "radial": "summarize_all_registered_radial_perturbations",
+      "ambient_normal": "per_anchor_worst_direction_then_summarize_anchors"
+    },
+    "thresholds": {
+      "clean_adherence_all_horizons": {
+        "statistic": "q95",
+        "operator": "<=",
+        "value": 0.01
+      },
+      "primary_horizon_recovery": {
+        "horizon": 500,
+        "apply_separately_to": ["radial", "ambient_normal"],
+        "median": {
+          "statistic": "median",
+          "operator": "<=",
+          "value": 0.5
+        },
+        "q95": {
+          "statistic": "q95",
+          "operator": "<",
+          "value": 1.0
+        }
+      }
+    },
+    "same_memory": {
+      "separate_gate": true,
+      "part_of_recovery_ratio": false,
+      "metric": "decoded_memory_displacement_after_recovery"
+    },
+    "legacy_paired_endpoint_metric": {
+      "name": "paired_endpoint_normal_deviation_over_rho",
+      "role": "diagnostic_only",
+      "may_satisfy_c3_gate": false
+    }
+  },
+  "settling": {
+    "variance_definition": "V_i=mean_path(norm(h_i_path-mean_path(h_i_path))^2)",
+    "absolute_symmetric_relative_change": {
+      "formula": "A_i=abs(V_next-V_i)/max(V_i,V_next,(100*eps*R_s)^2)",
+      "threshold": {
+        "statistic": "q95",
+        "operator": "<=",
+        "value": 0.01
+      }
+    },
+    "positive_expansion": {
+      "formula": "E_i=max(V_next-V_i,0)/max(V_i,(100*eps*R_s)^2)",
+      "threshold": {
+        "statistic": "q95",
+        "operator": "<=",
+        "value": 0.01
+      }
+    },
+    "mean_sheet_rollout": {
+      "map": "actual_F0_power_5",
+      "distance": "d_M(F0^5(mean_sheet_state))/R_s",
+      "threshold": {
+        "statistic": "q95",
+        "operator": "<=",
+        "value": 0.01
+      }
+    }
+  }
+}

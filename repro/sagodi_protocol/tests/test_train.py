@@ -8,9 +8,19 @@ import torch
 
 from repro.sagodi_protocol import train
 from repro.sagodi_protocol.artifacts import verify_completion_receipt
-from repro.sagodi_protocol.config import NATIVE_RECIPE_PROTOCOL_PATH, load_protocol
+from repro.sagodi_protocol.config import (
+    NATIVE_RECIPE_PROTOCOL_PATH,
+    SAGODI_LR_SELECTION_PROTOCOL_PATH,
+    AngularTaskSpec,
+    load_protocol,
+)
 from repro.sagodi_protocol.models import ModelConfig, build_protocol_model
-from repro.sagodi_protocol.tasks import sample_angular_integration, save_fixed_bank
+from repro.sagodi_protocol.tasks import (
+    Batch,
+    metadata_payload,
+    sample_angular_integration,
+    save_fixed_bank,
+)
 
 
 def test_nonfinite_guards_reject_tensor_and_nested_metric():
@@ -35,6 +45,14 @@ def test_full_rp_schedule_is_exact_and_controls_have_no_calls():
         ca_lru, steps=5000, warmup=1500, interval=50, smoke=False
     ) == expected
     assert len(expected) == 70
+    assert train._expected_rp_steps(
+        ca_lru,
+        steps=100,
+        warmup=100,
+        interval=1,
+        smoke=False,
+        enabled_by_protocol=False,
+    ) == ()
     for control in (no_rp, gru):
         assert train._expected_rp_steps(
             control, steps=5000, warmup=1500, interval=50, smoke=False
@@ -90,6 +108,34 @@ def test_shared_evaluation_bank_is_verified_and_returned_exactly(tmp_path: Path)
     assert torch.equal(loaded.inputs, batch.inputs)
 
 
+def test_evaluation_bank_rejects_task_metadata_drift():
+    protocol = load_protocol(NATIVE_RECIPE_PROTOCOL_PATH)
+    spec = AngularTaskSpec.from_protocol(protocol)
+    batch = sample_angular_integration(
+        3,
+        256,
+        0,
+        0,
+        "hidden-init",
+        task_spec=spec,
+    )
+    metadata = metadata_payload(batch.metadata)
+    metadata["delta_t"] = 0.2
+    tampered = Batch(
+        inputs=batch.inputs,
+        output_targets=batch.output_targets,
+        latent_targets=batch.latent_targets,
+        mask=batch.mask,
+        metadata=metadata,
+    )
+    with pytest.raises(ValueError, match="delta_t"):
+        train._validate_evaluation_batch(
+            tampered,
+            protocol,
+            require_full_protocol_shape=False,
+        )
+
+
 def test_full_run_rejects_training_overrides_before_writing(tmp_path: Path):
     output = tmp_path / "run"
     with pytest.raises(ValueError, match="smoke-only"):
@@ -101,6 +147,36 @@ def test_full_run_rejects_training_overrides_before_writing(tmp_path: Path):
                 output_dir=output,
                 device="cpu",
                 steps_override=2,
+                smoke=False,
+            )
+        )
+    assert not output.exists()
+
+
+def test_trainer_resolves_track_specific_frozen_model_seeds() -> None:
+    native = load_protocol(NATIVE_RECIPE_PROTOCOL_PATH)
+    selector = load_protocol(SAGODI_LR_SELECTION_PROTOCOL_PATH)
+    assert train._frozen_training_model_seeds(native) == (100, 101, 102, 103, 104)
+    assert train._frozen_training_model_seeds(selector) == (
+        1100,
+        1101,
+        1102,
+        1103,
+        1104,
+    )
+
+
+def test_selector_rejects_nonselection_seed_before_writing(tmp_path: Path) -> None:
+    output = tmp_path / "selection_bad_seed"
+    with pytest.raises(ValueError, match="frozen training set"):
+        train.train_one(
+            train.TrainSpec(
+                model_name="gru_sagodi_width96",
+                model_seed=100,
+                learning_rate=0.01,
+                output_dir=output,
+                protocol_path=SAGODI_LR_SELECTION_PROTOCOL_PATH,
+                device="cpu",
                 smoke=False,
             )
         )
@@ -160,6 +236,38 @@ def test_gru_smoke_receipt_records_zero_rp_calls(tmp_path: Path):
     assert manifest["architecture_metadata"]["parameters_total"] > 0
 
 
+def test_selector_ca_lru_smoke_executes_zero_rp_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    output = tmp_path / "selector_ca_lru_smoke"
+    monkeypatch.setenv("CALRU_PHYSICAL_GPU_ID", "0")
+    train.train_one(
+        train.TrainSpec(
+            model_name="ca_lru",
+            model_seed=1100,
+            learning_rate=0.01,
+            output_dir=output,
+            protocol_path=SAGODI_LR_SELECTION_PROTOCOL_PATH,
+            device="cpu",
+            steps_override=1,
+            batch_override=2,
+            smoke=True,
+        )
+    )
+    config_payload = json.loads((output / "config.json").read_text())
+    manifest = json.loads((output / "manifest.json").read_text())
+    receipt = json.loads((output / "completion_receipt.json").read_text())
+    assert config_payload["training"]["rp_enabled_by_protocol"] is False
+    assert config_payload["training"]["expected_rp_steps"] == []
+    assert manifest["rp_schedule"] == {
+        "actual_steps": [],
+        "calls": 0,
+        "expected_steps": [],
+    }
+    assert json.loads((output / "rp_trace.json").read_text()) == []
+    assert receipt["metadata"]["rp_calls"] == 0
+
+
 def test_native_gru_smoke_records_recipe_transfer_training_config(tmp_path: Path):
     output = tmp_path / "native_gru_smoke"
     train.train_one(
@@ -201,6 +309,13 @@ def test_native_gru_smoke_records_recipe_transfer_training_config(tmp_path: Path
     assert progress["pre_clip_global_gradient_norm"] >= 0.0
     assert manifest["protocol_track"] == "calru_native_recipe_transfer"
     assert manifest["reporting"]["protocol_A_eligible"] is False
+    assert payload["resolved_task_spec_sha256"] == manifest["resolved_task_spec_sha256"]
+    assert receipt["metadata"]["resolved_task_spec_sha256"] == manifest[
+        "resolved_task_spec_sha256"
+    ]
+    assert manifest["evaluation_bank_task_spec_sha256"] == manifest[
+        "resolved_task_spec_sha256"
+    ]
     assert "progress.json" in receipt["artifacts"]
     valid, reason = verify_completion_receipt(output / "completion_receipt.json")
     assert valid, reason

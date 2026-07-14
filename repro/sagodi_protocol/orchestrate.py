@@ -44,11 +44,13 @@ from .aggregation import (
 )
 from .config import (
     DEFAULT_PROTOCOL_PATH,
+    AngularTaskSpec,
     expand_phase1_runs,
     load_protocol,
     protocol_fingerprint,
 )
 from .tasks import load_fixed_bank, sample_angular_integration, save_fixed_bank
+from .train import _validate_evaluation_batch
 
 
 ROOT_MARKER = ".calru_sagodi_protocol_root_v1"
@@ -568,32 +570,36 @@ def _preserve_invalid_output(root: Path, stage: str, job_id: str, output: Path) 
 
 
 def _materialize_evaluation_bank(root: Path, protocol: dict[str, Any]) -> dict[str, Any]:
-    phase = protocol["phase1_ring_pilot"]
-    task = phase["task"]
+    task_spec = AngularTaskSpec.from_protocol(protocol)
+    task_spec_payload = task_spec.resolved_payload()
+    task_spec_sha256 = task_spec.fingerprint()
     seeds = protocol["seed_policy"]
     count = int(protocol["evaluation"]["id_test_trials"])
-    horizon = int(task["sequence_steps"])
+    horizon = task_spec.sequence_steps
     bank_dir = root / "evaluation_bank"
     bank_path = bank_dir / "angular_integration_id.npz"
     sidecar = Path(f"{bank_path}.sha256")
 
-    def validate() -> str:
+    def validate() -> dict[str, Any]:
         batch = load_fixed_bank(bank_path)
-        if batch.batch_size != count or batch.time_steps != horizon:
-            raise ValueError(
-                f"evaluation bank shape mismatch: expected T={horizon}, B={count}, "
-                f"got T={batch.time_steps}, B={batch.batch_size}"
-            )
-        metadata = batch.metadata
-        if int(metadata.get("task_seed", -1)) != int(seeds["task_seed"]):
-            raise ValueError("evaluation bank task_seed mismatch")
-        if int(metadata.get("sample_seed", -1)) != int(seeds["evaluation_bank_seed"]):
-            raise ValueError("evaluation bank sample_seed mismatch")
-        return sha256_file(bank_path)
+        _validate_evaluation_batch(
+            batch,
+            protocol,
+            require_full_protocol_shape=True,
+        )
+        return {
+            "sha256": sha256_file(bank_path),
+            "bank_metadata_task_spec_sha256": batch.metadata.get(
+                "resolved_task_spec_sha256"
+            ),
+            "legacy_v1_metadata_binding": (
+                "resolved_task_spec_sha256" not in batch.metadata
+            ),
+        }
 
     if bank_dir.exists():
         try:
-            digest = validate()
+            validation = validate()
         except Exception:
             if (root / "manifest.json").exists():
                 raise RuntimeError("manifested evaluation bank is missing, corrupt, or incompatible")
@@ -601,12 +607,20 @@ def _materialize_evaluation_bank(root: Path, protocol: dict[str, Any]) -> dict[s
         else:
             return {
                 "path": str(bank_path.relative_to(root)),
-                "sha256": digest,
+                "sha256": validation["sha256"],
                 "sidecar_sha256": sha256_file(sidecar),
                 "trials": count,
                 "horizon": horizon,
                 "task_seed": int(seeds["task_seed"]),
                 "sample_seed": int(seeds["evaluation_bank_seed"]),
+                "resolved_task_spec": task_spec_payload,
+                "resolved_task_spec_sha256": task_spec_sha256,
+                "bank_metadata_task_spec_sha256": validation[
+                    "bank_metadata_task_spec_sha256"
+                ],
+                "legacy_v1_metadata_binding": validation[
+                    "legacy_v1_metadata_binding"
+                ],
             }
 
     attempt = _unique_attempt_path(root, "campaign_setup", "evaluation_bank")
@@ -616,21 +630,28 @@ def _materialize_evaluation_bank(root: Path, protocol: dict[str, Any]) -> dict[s
         horizon,
         int(seeds["task_seed"]),
         int(seeds["evaluation_bank_seed"]),
-        "hidden-init",
+        task_spec.init_mode_for_generator,
+        task_spec=task_spec,
     )
     save_fixed_bank(staged_bank, batch)
     load_fixed_bank(staged_bank)
     bank_dir.parent.mkdir(parents=True, exist_ok=True)
     os.replace(attempt, bank_dir)
-    digest = validate()
+    validation = validate()
     return {
         "path": str(bank_path.relative_to(root)),
-        "sha256": digest,
+        "sha256": validation["sha256"],
         "sidecar_sha256": sha256_file(sidecar),
         "trials": count,
         "horizon": horizon,
         "task_seed": int(seeds["task_seed"]),
         "sample_seed": int(seeds["evaluation_bank_seed"]),
+        "resolved_task_spec": task_spec_payload,
+        "resolved_task_spec_sha256": task_spec_sha256,
+        "bank_metadata_task_spec_sha256": validation[
+            "bank_metadata_task_spec_sha256"
+        ],
+        "legacy_v1_metadata_binding": validation["legacy_v1_metadata_binding"],
     }
 
 
@@ -867,6 +888,7 @@ def _verify_campaign_inputs(
     protocol = load_protocol(protocol_path)
     if protocol_fingerprint(protocol) != manifest["protocol_canonical_fingerprint"]:
         raise RuntimeError("canonical protocol fingerprint changed after campaign creation")
+    task_spec = AngularTaskSpec.from_protocol(protocol)
     current_sources = _source_hashes(repo_root, Path(__file__).resolve().parent)
     if current_sources != manifest["source_hashes"]:
         raise RuntimeError("campaign source code changed after campaign creation")
@@ -882,7 +904,16 @@ def _verify_campaign_inputs(
     sidecar = Path(f"{bank_path}.sha256")
     if sha256_file(sidecar) != bank["sidecar_sha256"]:
         raise RuntimeError("fixed evaluation bank sidecar changed after campaign creation")
-    load_fixed_bank(bank_path)
+    if bank.get("resolved_task_spec_sha256") != task_spec.fingerprint():
+        raise RuntimeError("fixed evaluation bank task-spec binding changed")
+    if bank.get("resolved_task_spec") != task_spec.resolved_payload():
+        raise RuntimeError("fixed evaluation bank resolved task spec changed")
+    evaluation_batch = load_fixed_bank(bank_path)
+    _validate_evaluation_batch(
+        evaluation_batch,
+        protocol,
+        require_full_protocol_shape=True,
+    )
     perturbation = manifest["perturbation_bank"]
     perturbation_path = root / perturbation["path"]
     if sha256_file(perturbation_path) != perturbation["sha256"]:

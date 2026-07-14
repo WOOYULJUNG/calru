@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import torch
+import pytest
 
 from repro.sagodi_protocol.config import NATIVE_RECIPE_PROTOCOL_PATH, load_protocol
 from repro.sagodi_protocol.models import (
+    INITIAL_ENCODER_IDENTITY,
     INITIAL_ENCODER_PYTORCH_DEFAULT,
     INITIAL_ENCODER_SAGODI_W_OTR,
+    INITIAL_ENCODER_TANH,
     ModelConfig,
+    SAGODI_GRU_PARAM135,
+    SAGODI_GRU_WIDTH96,
+    SagodiGRUBaseline,
     build_protocol_model,
     model_config_from_protocol,
 )
+from repro.sagodi_protocol.state import StateAdapter
 
 
 def test_ca_lru_primary_excludes_overwritten_stream():
@@ -100,6 +107,7 @@ def test_native_hidden_initializer_uses_bias_free_sagodi_w_otr_policy():
         "policy": INITIAL_ENCODER_SAGODI_W_OTR,
         "bias": False,
         "weight_distribution": "Normal(0, 1/sqrt(primary_state_dimension))",
+        "activation": INITIAL_ENCODER_IDENTITY,
         "primary_state_dimension": 96,
     }
 
@@ -108,3 +116,68 @@ def test_gru_resolved_architecture_uses_state_size_not_nonexistent_hidden_dim():
     model = build_protocol_model(ModelConfig("gru", 1, 2, width=8))
     assert model.core.state_size == 8
     assert model.core.cell.hidden_size == 8
+
+
+def test_sagodi_gru_variants_use_tanh_wotr_and_direct_linear_readout():
+    protocol = load_protocol(NATIVE_RECIPE_PROTOCOL_PATH)
+    for name, width, expected_count in (
+        (SAGODI_GRU_WIDTH96, 96, 28898),
+        (SAGODI_GRU_PARAM135, 135, 56432),
+    ):
+        torch.manual_seed(23)
+        config = model_config_from_protocol(protocol, name)
+        model = build_protocol_model(config)
+        assert isinstance(model.core, SagodiGRUBaseline)
+        assert config.width == width
+        assert config.initial_encoder_bias is False
+        assert config.initial_encoder_weight_init == INITIAL_ENCODER_SAGODI_W_OTR
+        assert config.initial_encoder_activation == INITIAL_ENCODER_TANH
+        assert model.initial_encoder.bias is None
+        assert isinstance(model.core.readout, torch.nn.Linear)
+        assert model.core.readout.bias is not None
+        assert model.metadata()["parameters_total"] == expected_count
+        assert not torch.equal(
+            model.core.cell.bias_ih.detach(),
+            torch.zeros_like(model.core.cell.bias_ih),
+        )
+        memory = torch.randn(4, 2)
+        state = model.initial_state(4, "cpu", memory)
+        expected = torch.tanh(model.initial_encoder(memory))
+        torch.testing.assert_close(state, expected)
+        output, states = model.forward_sequence(
+            torch.zeros(3, 4, 1),
+            initial_memory=memory,
+            return_states=True,
+        )
+        assert output.shape == (3, 4, 2)
+        assert states.shape == (3, 4, width)
+        contract = model.metadata()["sagodi_gru_contract"]
+        assert contract["readout"] == "direct_biased_linear"
+        assert "uninitialized" in contract["output_to_hidden_initialization_repair"]
+
+
+def test_sagodi_gru_widths_are_fail_closed():
+    with torch.no_grad(), pytest.raises(ValueError, match="freezes hidden width 96"):
+        build_protocol_model(
+            ModelConfig(
+                SAGODI_GRU_WIDTH96,
+                1,
+                2,
+                width=95,
+                initial_encoder_bias=False,
+                initial_encoder_weight_init=INITIAL_ENCODER_SAGODI_W_OTR,
+                initial_encoder_activation=INITIAL_ENCODER_TANH,
+            )
+        )
+
+
+def test_sagodi_grus_expose_phase0_step_interface() -> None:
+    protocol = load_protocol(NATIVE_RECIPE_PROTOCOL_PATH)
+    for name, width in (
+        (SAGODI_GRU_WIDTH96, 96),
+        (SAGODI_GRU_PARAM135, 135),
+    ):
+        model = build_protocol_model(model_config_from_protocol(protocol, name))
+        adapter = StateAdapter(model.core)
+        assert adapter.input_dim == 1
+        assert adapter.primary_dim == width

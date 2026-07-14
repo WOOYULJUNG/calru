@@ -7,7 +7,15 @@ import numpy as np
 
 from repro.sagodi_protocol.artifacts import verify_completion_receipt
 from repro.sagodi_protocol.config import DEFAULT_PROTOCOL_PATH
-from repro.sagodi_protocol.phase0 import run_phase0
+from repro.sagodi_protocol.phase0 import _phase0_width_override, run_phase0
+
+
+def test_phase0_smoke_preserves_architecture_locked_sagodi_gru_widths() -> None:
+    assert _phase0_width_override("ca_lru", smoke=True) == 8
+    assert _phase0_width_override("no_rp", smoke=True) == 8
+    assert _phase0_width_override("gru_sagodi_width96", smoke=True) is None
+    assert _phase0_width_override("gru_sagodi_param135", smoke=True) is None
+    assert _phase0_width_override("gru_sagodi_width96", smoke=False) is None
 
 
 def test_phase0_materializes_required_tensor_trace_and_gate(tmp_path: Path) -> None:

@@ -1,10 +1,11 @@
 """Protocol-faithful Phase-1 ring analysis for one trained checkpoint.
 
 The module constructs two independently labelled state banks: Ságodi Track A
-(slow states selected after a 16T blank rollout and periodically resampled)
-and the task-conditioned canonical/eight-path atlas.  A task-conditioned
-settled atlas is eligible as the primary analysis atlas only when both the
-Track-A reconstruction and the pre-registered settling checks succeed.
+(task-driven endpoints followed by a 16T blank rollout, slow-state selection,
+and periodic resampling) and the task-conditioned canonical/eight-path bank.
+The Track-A spline is the primary analysis manifold.  The eight-path bank is
+kept independent and is used only for correspondence, projection, and fiber
+diagnostics.
 Failures are scientific outcomes and produce normal failure artifacts; only a
 state-transition preflight failure, non-finite computation, or artifact error
 raises.
@@ -13,12 +14,13 @@ The full (non-smoke) analysis uses the frozen primary settings:
 
 * 1,024 uniformly spaced ring anchors;
 * exact 1,024-step (4T) blank drift;
-* clean-paired radial and eight sampled ambient-normal kicks at
-  ``rho = 0.1 * R_s`` and ``H = 500``;
+* radial and eight sampled ambient-normal kicks at ``rho = 0.1 * R_s`` with
+  fixed-manifold distance recovery at ``H = 1,5,20,100,500,1024``;
 * a 0.01-radian tangent-equivariance shift;
 * sampled tangent/radial/ambient JVP gains at H=50.
 
-``--smoke`` reduces counts and horizons solely to validate the pipeline.  All
+The former clean-paired endpoint deviation is retained only as a diagnostic;
+it cannot satisfy C3. ``--smoke`` reduces counts and horizons solely to validate the pipeline.  All
 effective values are recorded and smoke output is ineligible for claims.
 """
 
@@ -41,21 +43,54 @@ from .artifacts import (
     atomic_json,
     derived_seed,
     sha256_file,
+    strict_json_load,
     verify_completion_receipt,
     write_completion_receipt,
 )
+from .analysis_freeze import (
+    analysis_freeze_fingerprint,
+    load_analysis_freeze,
+)
 from .audit import AuditConfig, run_phase0_audit
-from .config import DEFAULT_PROTOCOL_PATH, load_protocol, protocol_fingerprint
+from .config import (
+    DEFAULT_PROTOCOL_PATH,
+    AngularTaskSpec,
+    load_protocol,
+    protocol_fingerprint,
+)
+from .manifold_diagnostics import (
+    manifold_recovery_diagnostics,
+    settling_quality_diagnostics,
+)
 from .metrics import distribution_summary, task_metrics, wrap_angle
 from .models import ProtocolModel, load_checkpoint
 from .state import StateAdapter
 from .tasks import Batch, load_fixed_bank, sample_angular_integration
+from .train import _validate_evaluation_batch
 
 
-ANALYSIS_SCHEMA_VERSION = 3
+ANALYSIS_SCHEMA_VERSION = 4
 SETTLE_HORIZONS = (0, 5, 20, 100)
+RECOVERY_HORIZONS = (1, 5, 20, 100, 500, 1024)
 PATH_COUNT = 8
 SLOW_RELATIVE_SPEED = 1.0e-3
+TRACK_A_COVERAGE_Q95_CELLS = 2.0
+TRACK_A_COVERAGE_MAX_CELLS = 4.0
+TRACK_A_COVERAGE_MAX_GAP_CELLS = 8.0
+DEFAULT_CLEAN_ADHERENCE_Q95_MAX = 0.01
+DEFAULT_RECOVERY_MEDIAN_MAX = 0.5
+DEFAULT_RECOVERY_Q95_STRICT_MAX = 1.0
+DEFAULT_SETTLING_Q95_MAX = 0.01
+DEFAULT_TRACK_A_COVERAGE_BINS = 32
+DEFAULT_TRACK_A_COVERAGE_MIN_FRACTION = 1.0
+DEFAULT_TRACK_A_NORMALIZED_TANGENT_SPEED_MIN = 1.0e-3
+DEFAULT_TRACK_A_SEAM_PROBE_RADIANS = 1.0e-3
+DEFAULT_TRACK_A_SEAM_C0_OVER_RS_MAX = 1.0e-5
+DEFAULT_TRACK_A_SEAM_C1_RELATIVE_MAX = 1.0e-2
+LEGACY_V1_ANALYSIS_FREEZE_IDS = {
+    "sagodi_phase01_ring_pilot_v1",
+    "calru_native_sagodi_ring_pilot_v1",
+}
 
 
 @dataclass(frozen=True)
@@ -68,6 +103,7 @@ class AnalysisPlan:
     ambient_directions: int
     drift_horizon: int
     recovery_horizon: int
+    recovery_horizons: tuple[int, ...]
     jacobian_horizon: int
     tangent_shift: float
     tangent_fd_epsilon: float
@@ -76,9 +112,18 @@ class AnalysisPlan:
     path_steps: int
     path_count: int
     settle_horizons: tuple[int, ...]
-    settle_relative_decrease_max: float
-    settle_geodesic_drift_q95_max: float
-    settle_systematic_fraction_max: float
+    clean_adherence_q95_max: float
+    recovery_median_max: float
+    recovery_q95_strict_max: float
+    settle_absolute_change_q95_max: float
+    settle_positive_expansion_q95_max: float
+    settle_mean_sheet_distance_q95_max: float
+    track_a_coverage_bin_count: int
+    track_a_coverage_min_fraction: float
+    track_a_normalized_tangent_speed_min: float
+    track_a_seam_probe_radians: float
+    track_a_seam_c0_over_rs_max: float
+    track_a_seam_c1_relative_max: float
     projection_density: int
     smoke: bool
 
@@ -92,6 +137,7 @@ class AnalysisPlan:
             "ambient_directions": self.ambient_directions,
             "drift_horizon": self.drift_horizon,
             "recovery_horizon": self.recovery_horizon,
+            "recovery_horizons": list(self.recovery_horizons),
             "jacobian_horizon": self.jacobian_horizon,
             "tangent_shift_radians": self.tangent_shift,
             "tangent_fd_epsilon_radians": self.tangent_fd_epsilon,
@@ -103,21 +149,97 @@ class AnalysisPlan:
             "path_count": self.path_count,
             "settle_horizons": list(self.settle_horizons),
             "settling_quality_controls": {
-                "within_path_next5_relative_decrease_less_than": self.settle_relative_decrease_max,
-                "normalized_geodesic_drift_q95_less_than": self.settle_geodesic_drift_q95_max,
-                "systematic_transverse_decrease_fraction_max": self.settle_systematic_fraction_max,
+                "absolute_symmetric_relative_variance_change_q95_max": self.settle_absolute_change_q95_max,
+                "positive_relative_variance_expansion_q95_max": self.settle_positive_expansion_q95_max,
+                "F0_power_5_mean_sheet_manifold_distance_over_Rs_q95_max": self.settle_mean_sheet_distance_q95_max,
                 "status": "pilot_QA_not_claim_threshold",
+            },
+            "track_a_geometry_quality_controls": {
+                "coarse_coverage_bin_count": self.track_a_coverage_bin_count,
+                "minimum_coarse_bin_occupancy_fraction": self.track_a_coverage_min_fraction,
+                "minimum_normalized_tangent_speed": self.track_a_normalized_tangent_speed_min,
+                "seam_probe_radians": self.track_a_seam_probe_radians,
+                "seam_C0_distance_over_Rs_max": self.track_a_seam_c0_over_rs_max,
+                "seam_C1_relative_difference_max": self.track_a_seam_c1_relative_max,
+            },
+            "c3_manifold_distance_controls": {
+                "clean_adherence_q95_max_at_every_registered_horizon": self.clean_adherence_q95_max,
+                "primary_recovery_median_max": self.recovery_median_max,
+                "primary_recovery_q95_strict_max": self.recovery_q95_strict_max,
+                "legacy_clean_paired_metric_role": "diagnostic_only",
             },
             "projection_dense_spline_factor": self.projection_density,
             "smoke": self.smoke,
         }
 
 
-def _build_plan(protocol: Mapping[str, Any], smoke: bool) -> AnalysisPlan:
+def _analysis_thresholds(
+    analysis_contract: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if analysis_contract is None:
+        return {
+            "recovery_horizons": RECOVERY_HORIZONS,
+            "primary_horizon": 500,
+            "clean_adherence_q95_max": DEFAULT_CLEAN_ADHERENCE_Q95_MAX,
+            "recovery_median_max": DEFAULT_RECOVERY_MEDIAN_MAX,
+            "recovery_q95_strict_max": DEFAULT_RECOVERY_Q95_STRICT_MAX,
+            "settle_absolute_change_q95_max": DEFAULT_SETTLING_Q95_MAX,
+            "settle_positive_expansion_q95_max": DEFAULT_SETTLING_Q95_MAX,
+            "settle_mean_sheet_distance_q95_max": DEFAULT_SETTLING_Q95_MAX,
+            "track_a_coverage_bin_count": DEFAULT_TRACK_A_COVERAGE_BINS,
+            "track_a_coverage_min_fraction": DEFAULT_TRACK_A_COVERAGE_MIN_FRACTION,
+            "track_a_normalized_tangent_speed_min": DEFAULT_TRACK_A_NORMALIZED_TANGENT_SPEED_MIN,
+            "track_a_seam_probe_radians": DEFAULT_TRACK_A_SEAM_PROBE_RADIANS,
+            "track_a_seam_c0_over_rs_max": DEFAULT_TRACK_A_SEAM_C0_OVER_RS_MAX,
+            "track_a_seam_c1_relative_max": DEFAULT_TRACK_A_SEAM_C1_RELATIVE_MAX,
+        }
+    c3 = analysis_contract["c3_normal_recovery"]
+    settling = analysis_contract["settling"]
+    geometry = analysis_contract["manifold"]["primary"]["quality_gates"]
+    primary = c3["thresholds"]["primary_horizon_recovery"]
+    return {
+        "recovery_horizons": tuple(int(value) for value in c3["registered_horizons"]),
+        "primary_horizon": int(c3["primary_horizon"]),
+        "clean_adherence_q95_max": float(
+            c3["thresholds"]["clean_adherence_all_horizons"]["value"]
+        ),
+        "recovery_median_max": float(primary["median"]["value"]),
+        "recovery_q95_strict_max": float(primary["q95"]["value"]),
+        "settle_absolute_change_q95_max": float(
+            settling["absolute_symmetric_relative_change"]["threshold"]["value"]
+        ),
+        "settle_positive_expansion_q95_max": float(
+            settling["positive_expansion"]["threshold"]["value"]
+        ),
+        "settle_mean_sheet_distance_q95_max": float(
+            settling["mean_sheet_rollout"]["threshold"]["value"]
+        ),
+        "track_a_coverage_bin_count": int(geometry["coarse_coverage_bin_count"]),
+        "track_a_coverage_min_fraction": float(
+            geometry["minimum_coarse_bin_occupancy_fraction"]
+        ),
+        "track_a_normalized_tangent_speed_min": float(
+            geometry["minimum_normalized_tangent_speed"]
+        ),
+        "track_a_seam_probe_radians": float(geometry["seam_probe_radians"]),
+        "track_a_seam_c0_over_rs_max": float(
+            geometry["seam_C0_distance_over_Rs_max"]
+        ),
+        "track_a_seam_c1_relative_max": float(
+            geometry["seam_C1_relative_difference_max"]
+        ),
+    }
+
+
+def _build_plan(
+    protocol: Mapping[str, Any],
+    smoke: bool,
+    analysis_contract: Mapping[str, Any] | None = None,
+) -> AnalysisPlan:
     evaluation = protocol["evaluation"]
     task = protocol["phase1_ring_pilot"]["task"]
     qa = protocol["qa_thresholds"]
-    settling = qa["settling"]
+    thresholds = _analysis_thresholds(analysis_contract)
     if smoke:
         return AnalysisPlan(
             atlas_count=32,
@@ -128,6 +250,7 @@ def _build_plan(protocol: Mapping[str, Any], smoke: bool) -> AnalysisPlan:
             ambient_directions=2,
             drift_horizon=8,
             recovery_horizon=5,
+            recovery_horizons=(1, 5),
             jacobian_horizon=3,
             tangent_shift=float(evaluation["tangent_shift_radians"]["primary"]),
             tangent_fd_epsilon=float(qa["tangent_finite_difference_radians"][1]),
@@ -136,9 +259,30 @@ def _build_plan(protocol: Mapping[str, Any], smoke: bool) -> AnalysisPlan:
             path_steps=8,
             path_count=PATH_COUNT,
             settle_horizons=SETTLE_HORIZONS,
-            settle_relative_decrease_max=float(settling["within_path_next5_relative_decrease_less_than"]),
-            settle_geodesic_drift_q95_max=float(settling["normalized_geodesic_drift_q95_less_than"]),
-            settle_systematic_fraction_max=float(settling["systematic_transverse_decrease_fraction_max"]),
+            clean_adherence_q95_max=float(thresholds["clean_adherence_q95_max"]),
+            recovery_median_max=float(thresholds["recovery_median_max"]),
+            recovery_q95_strict_max=float(thresholds["recovery_q95_strict_max"]),
+            settle_absolute_change_q95_max=float(thresholds["settle_absolute_change_q95_max"]),
+            settle_positive_expansion_q95_max=float(thresholds["settle_positive_expansion_q95_max"]),
+            settle_mean_sheet_distance_q95_max=float(thresholds["settle_mean_sheet_distance_q95_max"]),
+            track_a_coverage_bin_count=min(
+                int(thresholds["track_a_coverage_bin_count"]), 32
+            ),
+            track_a_coverage_min_fraction=float(
+                thresholds["track_a_coverage_min_fraction"]
+            ),
+            track_a_normalized_tangent_speed_min=float(
+                thresholds["track_a_normalized_tangent_speed_min"]
+            ),
+            track_a_seam_probe_radians=float(
+                thresholds["track_a_seam_probe_radians"]
+            ),
+            track_a_seam_c0_over_rs_max=float(
+                thresholds["track_a_seam_c0_over_rs_max"]
+            ),
+            track_a_seam_c1_relative_max=float(
+                thresholds["track_a_seam_c1_relative_max"]
+            ),
             projection_density=int(qa["projection"]["ring_dense_spline_factor"]),
             smoke=True,
         )
@@ -150,7 +294,8 @@ def _build_plan(protocol: Mapping[str, Any], smoke: bool) -> AnalysisPlan:
         jacobian_anchor_count=int(evaluation["jacobian_anchor_count"]),
         ambient_directions=int(evaluation["ambient_random_directions_per_anchor"]),
         drift_horizon=int(evaluation["exact_four_T_horizon"]),
-        recovery_horizon=int(evaluation["primary_recovery_horizon"]),
+        recovery_horizon=int(thresholds["primary_horizon"]),
+        recovery_horizons=tuple(int(value) for value in thresholds["recovery_horizons"]),
         jacobian_horizon=50,
         tangent_shift=float(evaluation["tangent_shift_radians"]["primary"]),
         tangent_fd_epsilon=float(qa["tangent_finite_difference_radians"][1]),
@@ -159,9 +304,28 @@ def _build_plan(protocol: Mapping[str, Any], smoke: bool) -> AnalysisPlan:
         path_steps=int(task["sequence_steps"]),
         path_count=PATH_COUNT,
         settle_horizons=SETTLE_HORIZONS,
-        settle_relative_decrease_max=float(settling["within_path_next5_relative_decrease_less_than"]),
-        settle_geodesic_drift_q95_max=float(settling["normalized_geodesic_drift_q95_less_than"]),
-        settle_systematic_fraction_max=float(settling["systematic_transverse_decrease_fraction_max"]),
+        clean_adherence_q95_max=float(thresholds["clean_adherence_q95_max"]),
+        recovery_median_max=float(thresholds["recovery_median_max"]),
+        recovery_q95_strict_max=float(thresholds["recovery_q95_strict_max"]),
+        settle_absolute_change_q95_max=float(thresholds["settle_absolute_change_q95_max"]),
+        settle_positive_expansion_q95_max=float(thresholds["settle_positive_expansion_q95_max"]),
+        settle_mean_sheet_distance_q95_max=float(thresholds["settle_mean_sheet_distance_q95_max"]),
+        track_a_coverage_bin_count=int(thresholds["track_a_coverage_bin_count"]),
+        track_a_coverage_min_fraction=float(
+            thresholds["track_a_coverage_min_fraction"]
+        ),
+        track_a_normalized_tangent_speed_min=float(
+            thresholds["track_a_normalized_tangent_speed_min"]
+        ),
+        track_a_seam_probe_radians=float(
+            thresholds["track_a_seam_probe_radians"]
+        ),
+        track_a_seam_c0_over_rs_max=float(
+            thresholds["track_a_seam_c0_over_rs_max"]
+        ),
+        track_a_seam_c1_relative_max=float(
+            thresholds["track_a_seam_c1_relative_max"]
+        ),
         projection_density=int(qa["projection"]["ring_dense_spline_factor"]),
         smoke=False,
     )
@@ -409,7 +573,7 @@ def _projection_quality_audit(
         known_projected_angles = known_error
         known_summary = {
             "status": "not_evaluated",
-            "reason": "primary task atlas has no selected settling horizon",
+            "reason": "diagnostic task sheet has no corrected settling horizon",
         }
 
     sample_index = _stratified_indices(count, min(256, count), atlas_state.device)
@@ -452,7 +616,7 @@ def _projection_quality_audit(
         "known_q_definition": (
             "mid-cell angles absent from the primary atlas; states are the mean "
             "of eight independent task-conditioned paths blank-settled at the "
-            "primary atlas's selected horizon"
+            "diagnostic task sheet's selected settling horizon"
         ),
         "known_q_state_source": "independent_task_conditioned_eight_path_mean_not_spline_generated",
         "known_q_angle_rule": "stratified primary-atlas cells plus exactly one-half cell",
@@ -563,7 +727,7 @@ def _heldout_task_conditioned_states(
 ) -> dict[str, torch.Tensor | int | str]:
     """Create an independent known-q bank for projection QA.
 
-    The path construction is shared with the primary task atlas, but the
+    The path construction is shared with the diagnostic task sheet, but the
     target angles are disjoint mid-cell points and all model trajectories are
     freshly executed.  The caller supplies the primary atlas's already chosen
     settling horizon; this function never selects a more favorable horizon.
@@ -589,6 +753,184 @@ def _heldout_task_conditioned_states(
     }
 
 
+def _stratified_circular_source_indices(
+    source_angles: torch.Tensor,
+    target_angles: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Assign one distinct source trial to each uniformly spaced target angle.
+
+    The assignment depends only on ground-truth task latents, never on a model
+    output or hidden state.  Stable sorting plus the fixed target order makes
+    ties deterministic.  The full protocol has 4,096 sources for 1,024
+    targets; smoke generation also guarantees at least one source per target.
+    """
+
+    if source_angles.ndim != 1 or target_angles.ndim != 1:
+        raise ValueError("Track-A source and target angles must be rank-1")
+    sources = int(source_angles.numel())
+    targets = int(target_angles.numel())
+    if sources < targets:
+        raise ValueError(
+            f"Track-A discovery needs at least {targets} source trials, got {sources}"
+        )
+    source = source_angles.detach().cpu().double().numpy()
+    target = target_angles.detach().cpu().double().numpy()
+    distance = _circular_distance_numpy(target[:, None], source[None, :])
+    ranked = np.argsort(distance, axis=1, kind="mergesort")
+    used = np.zeros(sources, dtype=bool)
+    selected = np.empty(targets, dtype=np.int64)
+    error = np.empty(targets, dtype=np.float64)
+    for target_index in range(targets):
+        available = ranked[target_index][~used[ranked[target_index]]]
+        if available.size == 0:  # pragma: no cover - guarded by sources >= targets
+            raise RuntimeError("Track-A stratified source assignment exhausted candidates")
+        source_index = int(available[0])
+        selected[target_index] = source_index
+        error[target_index] = distance[target_index, source_index]
+        used[source_index] = True
+    return (
+        torch.as_tensor(selected, device=target_angles.device, dtype=torch.long),
+        torch.as_tensor(error, device=target_angles.device, dtype=target_angles.dtype),
+    )
+
+
+@torch.no_grad()
+def _task_driven_track_a_endpoints(
+    model: ProtocolModel,
+    evaluation: Mapping[str, torch.Tensor],
+    target_angles: torch.Tensor,
+) -> dict[str, Any]:
+    """Create model-independent stratified task endpoints for Track A.
+
+    Source trials are chosen by their ground-truth final latent.  Only after
+    that frozen selection are the task inputs run through the model, without
+    state noise, to obtain the reported recurrent endpoint states.
+    """
+
+    inputs = evaluation.get("discovery_inputs", evaluation["inputs"])
+    latents = evaluation.get("discovery_latents", evaluation["latents"])
+    initial_memory = evaluation.get(
+        "discovery_initial_memory", evaluation["initial_memory"]
+    )
+    final_angles = latents[-1, :, 0]
+    source_indices, selection_error = _stratified_circular_source_indices(
+        final_angles, target_angles
+    )
+    selected_inputs = inputs[:, source_indices]
+    selected_memory = initial_memory[source_indices]
+    reported = model.initial_state(
+        int(target_angles.numel()), target_angles.device, initial_memory=selected_memory
+    )
+    for token in selected_inputs:
+        reported = model.step(token, reported)
+    selected_final_angles = final_angles[source_indices]
+    _require_finite(
+        "Track-A task-driven endpoints",
+        reported,
+        selected_final_angles,
+        selection_error,
+    )
+    return {
+        "reported_state": reported,
+        "source_indices": source_indices,
+        "source_final_angles": selected_final_angles,
+        "source_selection_error": selection_error,
+        "source_trial_count": int(final_angles.numel()),
+        "selected_trial_count": int(source_indices.numel()),
+        "selection_rule": (
+            "distinct_fixed_evaluation_trials_greedily_nearest_to_uniform_targets_"
+            "by_ground_truth_final_latent_stable_ties"
+        ),
+        "task_rollout_horizon": int(selected_inputs.shape[0]),
+        "state_noise_standard_deviation": 0.0,
+    }
+
+
+def _track_a_coverage_quality(
+    selected_decoded: np.ndarray,
+    selected_pair: np.ndarray,
+    target_angles: torch.Tensor,
+    *,
+    coarse_bin_count: int = DEFAULT_TRACK_A_COVERAGE_BINS,
+    minimum_coarse_occupancy_fraction: float = DEFAULT_TRACK_A_COVERAGE_MIN_FRACTION,
+) -> tuple[dict[str, Any], np.ndarray]:
+    """Audit that selected spline knots cover the full decoded output ring."""
+
+    targets = target_angles.detach().cpu().double().numpy()
+    selected = selected_decoded.astype(np.float64, copy=False)
+    error = _circular_distance_numpy(selected, targets)
+    _, unique_index = np.unique(selected_pair, axis=0, return_index=True)
+    unique_index.sort()
+    knot_angles = np.remainder(selected[unique_index], 2.0 * math.pi)
+    knot_angles = np.unique(np.round(knot_angles, decimals=10))
+    sorted_knots = np.sort(knot_angles)
+    if sorted_knots.size:
+        gaps = np.diff(np.concatenate((sorted_knots, sorted_knots[:1] + 2.0 * math.pi)))
+        maximum_gap = float(gaps.max())
+    else:
+        maximum_gap = float(2.0 * math.pi)
+    cell_width = 2.0 * math.pi / float(target_angles.numel())
+    bins = min(int(coarse_bin_count), int(target_angles.numel()))
+    if bins <= 0:
+        raise ValueError("Track-A coverage bin count must be positive")
+    if not 0.0 <= float(minimum_coarse_occupancy_fraction) <= 1.0:
+        raise ValueError("Track-A minimum coarse-bin occupancy must be in [0,1]")
+    nearest_target_index = np.remainder(
+        np.rint(
+            np.remainder(selected + math.pi, 2.0 * math.pi)
+            * float(target_angles.numel())
+            / (2.0 * math.pi)
+        ).astype(np.int64),
+        int(target_angles.numel()),
+    )
+    coarse_bin_index = np.minimum(
+        bins - 1,
+        nearest_target_index * bins // int(target_angles.numel()),
+    )
+    occupied_coarse_bins = int(np.unique(coarse_bin_index).size)
+    coarse_occupancy_fraction = occupied_coarse_bins / float(bins)
+    q95 = float(np.quantile(error, 0.95))
+    maximum = float(error.max())
+    thresholds = {
+        "selection_error_q95_max_radians": TRACK_A_COVERAGE_Q95_CELLS * cell_width,
+        "selection_error_max_radians": TRACK_A_COVERAGE_MAX_CELLS * cell_width,
+        "maximum_circular_knot_gap_radians": (
+            TRACK_A_COVERAGE_MAX_GAP_CELLS * cell_width
+        ),
+        "minimum_unique_knots": 4,
+        "coarse_coverage_bin_count": bins,
+        "minimum_coarse_bin_occupancy_fraction": float(
+            minimum_coarse_occupancy_fraction
+        ),
+    }
+    passed = bool(
+        sorted_knots.size >= int(thresholds["minimum_unique_knots"])
+        and q95 <= float(thresholds["selection_error_q95_max_radians"])
+        and maximum <= float(thresholds["selection_error_max_radians"])
+        and maximum_gap <= float(thresholds["maximum_circular_knot_gap_radians"])
+        and coarse_occupancy_fraction
+        >= float(thresholds["minimum_coarse_bin_occupancy_fraction"])
+    )
+    return {
+        "passed": passed,
+        "target_count": int(target_angles.numel()),
+        "unique_selected_candidate_pairs": int(unique_index.size),
+        "unique_decoded_knots": int(sorted_knots.size),
+        "cell_width_radians": cell_width,
+        "selection_error_radians": {
+            "mean": float(error.mean()),
+            "median": float(np.median(error)),
+            "q95": q95,
+            "max": maximum,
+        },
+        "maximum_circular_knot_gap_radians": maximum_gap,
+        "occupied_coarse_bins": occupied_coarse_bins,
+        "coarse_bin_occupancy_fraction": coarse_occupancy_fraction,
+        "thresholds": thresholds,
+        "scope": "full_ring_decoded_angle_coverage_QA_not_CA_claim_threshold",
+    }, error
+
+
 @torch.no_grad()
 def _slow_state_reconstruction(
     model: ProtocolModel,
@@ -596,11 +938,45 @@ def _slow_state_reconstruction(
     target_angles: torch.Tensor,
     *,
     horizon: int,
+    initial_reported_states: torch.Tensor | None = None,
+    start_state_rule: str | None = None,
+    coarse_coverage_bin_count: int = DEFAULT_TRACK_A_COVERAGE_BINS,
+    minimum_coarse_occupancy_fraction: float = DEFAULT_TRACK_A_COVERAGE_MIN_FRACTION,
 ) -> dict[str, Any]:
-    """Ságodi Track A with exact global circular candidate selection."""
+    """Ságodi Track A with exact global circular candidate selection.
+
+    ``initial_reported_states`` makes task-driven endpoints the primary path.
+    Omitting it preserves the historical canonical-initialization API for
+    focused unit tests and sensitivity analyses.
+    """
 
     anchors = int(target_angles.numel())
-    reported = _canonical_reported_states(model, target_angles)
+    if initial_reported_states is None:
+        initial_reported = _canonical_reported_states(model, target_angles)
+        effective_start_rule = (
+            start_state_rule or "uniform_task_defined_hidden_initialization"
+        )
+    else:
+        initial_reported = initial_reported_states
+        effective_start_rule = (
+            start_state_rule
+            or "stratified_fixed_evaluation_task_driven_endpoints"
+        )
+    if initial_reported.ndim != 2 or initial_reported.shape != (
+        anchors,
+        adapter.reported_dim,
+    ):
+        raise ValueError(
+            "Track-A initial reported states have shape "
+            f"{tuple(initial_reported.shape)}, expected "
+            f"({anchors}, {adapter.reported_dim})"
+        )
+    if initial_reported.device != target_angles.device:
+        raise ValueError("Track-A initial states and target angles must share a device")
+    if initial_reported.dtype != target_angles.dtype:
+        raise ValueError("Track-A initial states and target angles must share a dtype")
+    _require_finite("Track-A initial reported states", initial_reported)
+    reported = initial_reported
     primary = adapter.primary_from_reported(reported)
     speeds = np.empty((int(horizon), anchors), dtype=np.float32)
     decoded = np.empty((int(horizon), anchors), dtype=np.float32)
@@ -618,7 +994,14 @@ def _slow_state_reconstruction(
 
     maximum = speeds.max(axis=0)
     threshold = SLOW_RELATIVE_SPEED * maximum
-    candidate_mask = (maximum[None, :] > 0.0) & (speeds < threshold[None, :])
+    positive_maximum = maximum > 0.0
+    candidate_mask = positive_maximum[None, :] & (
+        speeds <= threshold[None, :]
+    )
+    # An exactly stationary trajectory is the limiting slow case, not a
+    # reconstruction failure.  Keep one representative rather than H copies.
+    all_zero = ~positive_maximum
+    candidate_mask[0, all_zero] = True
     candidate_time, candidate_trajectory = np.nonzero(candidate_mask)
     candidate_angle = decoded[candidate_time, candidate_trajectory]
     reasons: list[str] = []
@@ -629,6 +1012,12 @@ def _slow_state_reconstruction(
         0, adapter.primary_dim, device=target_angles.device, dtype=target_angles.dtype
     )
     resampled = selected_state
+    coverage: dict[str, Any] = {
+        "passed": False,
+        "reason": "no_candidates",
+        "scope": "full_ring_decoded_angle_coverage_QA_not_CA_claim_threshold",
+    }
+    selection_error = np.empty(0, dtype=np.float64)
 
     if candidate_angle.size == 0:
         reasons.append("no_state_satisfied_relative_speed_criterion")
@@ -653,7 +1042,10 @@ def _slow_state_reconstruction(
             anchors, adapter.primary_dim,
             device=target_angles.device, dtype=target_angles.dtype,
         )
-        reported = _canonical_reported_states(model, target_angles)
+        # Replay from the same task-driven endpoints used to discover the
+        # candidate times.  Reverting to canonical initialization here would
+        # silently pair endpoint-derived indices with unrelated states.
+        reported = initial_reported
         for step in range(int(horizon)):
             reported = adapter.reported_step(reported, adapter.zero_input(reported))
             wanted = np.nonzero(selected_time == step)[0]
@@ -668,9 +1060,6 @@ def _slow_state_reconstruction(
         unique_pair = np.unique(pair, axis=0).shape[0]
         selected_wrapped = np.remainder(selected_decoded.astype(np.float64), 2.0 * math.pi)
         unique_angles = np.unique(np.round(selected_wrapped, decimals=10))
-        # Four is the mathematical minimum for the periodic cubic
-        # interpolant, not an additional claim threshold.  Sparse/collapsed
-        # coverage is subsequently exposed by C1 decoding/neighborhood gates.
         minimum_unique = 4
         if unique_pair < minimum_unique:
             reasons.append(
@@ -680,7 +1069,8 @@ def _slow_state_reconstruction(
             reasons.append(
                 f"decoded_knot_coverage_{unique_angles.size}_below_{minimum_unique}"
             )
-        if not reasons:
+        mathematical_reasons = list(reasons)
+        if not mathematical_reasons:
             try:
                 # Multiple targets may choose the same candidate.  Use each
                 # selected candidate once; this preserves exact Track-A
@@ -700,15 +1090,27 @@ def _slow_state_reconstruction(
                 )
             except (RuntimeError, ValueError) as exc:
                 reasons.append(f"periodic_cubic_resampling_failed:{type(exc).__name__}:{exc}")
+        coverage, selection_error = _track_a_coverage_quality(
+            selected_decoded,
+            pair,
+            target_angles,
+            coarse_bin_count=coarse_coverage_bin_count,
+            minimum_coarse_occupancy_fraction=minimum_coarse_occupancy_fraction,
+        )
+        if not bool(coverage["passed"]):
+            reasons.append("full_ring_candidate_coverage_failed")
 
     candidate_per_trajectory = candidate_mask.sum(axis=0).astype(np.int64)
     return {
         "success": not reasons,
         "failure_reasons": reasons,
-        "start_state_rule": "uniform_task_defined_hidden_initialization",
+        "start_state_rule": effective_start_rule,
         "rollout_horizon": int(horizon),
         "trajectory_count": anchors,
-        "candidate_threshold": "speed_t < 1e-3 * max_t speed_t, per trajectory",
+        "candidate_threshold": (
+            "speed_t <= 1e-3 * max_t speed_t per nonstationary trajectory; "
+            "one representative retained when max_t speed_t == 0"
+        ),
         "candidate_count": int(candidate_angle.size),
         "candidate_trajectory_coverage": int(np.count_nonzero(candidate_per_trajectory)),
         "max_speed": maximum,
@@ -716,9 +1118,20 @@ def _slow_state_reconstruction(
         "selected_time": selected_time,
         "selected_trajectory": selected_trajectory,
         "selected_decoded_angle": selected_decoded,
+        "selected_target_error_radians": selection_error,
         "selected_state": selected_state,
         "resampled_state": resampled,
-        "interpolation": "periodic_cubic_spline_cyclic_linear_system" if not reasons else None,
+        "coverage": coverage,
+        "geometry_available": bool(
+            resampled.ndim == 2
+            and tuple(resampled.shape) == (anchors, adapter.primary_dim)
+        ),
+        "interpolation": (
+            "periodic_cubic_spline_cyclic_linear_system"
+            if resampled.ndim == 2
+            and tuple(resampled.shape) == (anchors, adapter.primary_dim)
+            else None
+        ),
     }
 
 
@@ -728,8 +1141,16 @@ def _task_conditioned_atlas(
     adapter: StateAdapter,
     angles: torch.Tensor,
     plan: AnalysisPlan,
+    *,
+    primary_projector: Mapping[str, Any] | None = None,
+    primary_state_scale: torch.Tensor | None = None,
 ) -> dict[str, Any]:
-    """Canonical, eight-path, and settled state banks for a ring task."""
+    """Build the independent eight-path task sheet and test its settling.
+
+    Settling is meaningful only relative to the already reconstructed Track-A
+    manifold.  When that primary geometry is unavailable, the task states are
+    still returned for diagnostics but no settling horizon is selected.
+    """
 
     canonical = _atlas_states(model, adapter, angles)
     velocity = _ring_path_velocity_bank(angles, steps=plan.path_steps)
@@ -742,56 +1163,67 @@ def _task_conditioned_atlas(
         if step in needed:
             states[step] = current.reshape_as(endpoint).clone()
 
-    canonical_weight, canonical_bias, _, _, _ = _fit_heldout_linear_decoder(
-        canonical, angles
+    primary_geometry_available = (
+        primary_projector is not None and primary_state_scale is not None
     )
-    raw_variance: list[float] = []
-    next_variance: list[float] = []
-    relative_decrease: list[float] = []
-    drift_q95: list[float] = []
-    systematic_fraction: list[float] = []
+    if (primary_projector is None) != (primary_state_scale is None):
+        raise ValueError(
+            "task-sheet settling requires both primary_projector and primary_state_scale"
+        )
+
+    absolute_q95: list[float | None] = []
+    expansion_q95: list[float | None] = []
+    sheet_distance_q95: list[float | None] = []
+    systematic_fraction: list[float | None] = []
     criteria_pass: list[bool] = []
+    quality_by_horizon: list[dict[str, Any] | None] = []
     for horizon in plan.settle_horizons:
         state = states[horizon]
-        following = states[horizon + 5]
-        mean = state.mean(dim=1)
-        following_mean = following.mean(dim=1)
-        variance_q = (state - mean[:, None, :]).square().sum(dim=-1).mean(dim=1)
-        next_variance_q = (
-            (following - following_mean[:, None, :]).square().sum(dim=-1).mean(dim=1)
+        if not primary_geometry_available:
+            quality_by_horizon.append(None)
+            absolute_q95.append(None)
+            expansion_q95.append(None)
+            sheet_distance_q95.append(None)
+            systematic_fraction.append(None)
+            criteria_pass.append(False)
+            continue
+        assert primary_projector is not None
+        assert primary_state_scale is not None
+        quality = settling_quality_diagnostics(
+            state,
+            state_scale=primary_state_scale,
+            actual_f0=adapter.actual_f0,
+            project_mean_sheet=lambda value: _project_ring(
+                value, primary_projector
+            ),
+            blank_steps=5,
+            absolute_relative_change_q95_max=(
+                plan.settle_absolute_change_q95_max
+            ),
+            positive_expansion_q95_max=(
+                plan.settle_positive_expansion_q95_max
+            ),
+            mean_sheet_distance_q95_max=(
+                plan.settle_mean_sheet_distance_q95_max
+            ),
         )
-        variance = float(variance_q.median().cpu())
-        variance_next = float(next_variance_q.median().cpu())
-        decrease = (variance - variance_next) / max(variance, torch.finfo(state.dtype).eps)
-        decoded_now = _linear_decode_angles(
-            state.reshape(-1, state.shape[-1]), canonical_weight, canonical_bias
-        ).reshape(state.shape[:2])
-        decoded_next = _linear_decode_angles(
-            following.reshape(-1, following.shape[-1]), canonical_weight, canonical_bias
-        ).reshape(following.shape[:2])
-        drift = wrap_angle(decoded_next - decoded_now).abs() / math.pi
-        residual = torch.sqrt(variance_q.clamp_min(0.0))
-        residual_next = torch.sqrt(next_variance_q.clamp_min(0.0))
-        systematically_decreasing = residual_next < 0.99 * residual
-        fraction = float(systematically_decreasing.float().mean().cpu())
-        q95 = float(torch.quantile(drift, 0.95).cpu())
-        passed = bool(
-            decrease < plan.settle_relative_decrease_max
-            and q95 < plan.settle_geodesic_drift_q95_max
-            and fraction <= plan.settle_systematic_fraction_max
-        )
-        raw_variance.append(variance)
-        next_variance.append(variance_next)
-        relative_decrease.append(float(decrease))
-        drift_q95.append(q95)
-        systematic_fraction.append(fraction)
-        criteria_pass.append(passed)
+        quality_by_horizon.append(quality)
+        absolute_q95.append(float(quality["absolute_relative_change_q95"].cpu()))
+        expansion_q95.append(float(quality["positive_expansion_q95"].cpu()))
+        sheet_distance_q95.append(float(quality["mean_sheet_distance_q95"].cpu()))
+        systematic_fraction.append(float(quality["systematic_decrease_fraction"]))
+        criteria_pass.append(bool(quality["passed"]))
 
     selected_index = next((i for i, passed in enumerate(criteria_pass) if passed), None)
     selected_horizon = (
         int(plan.settle_horizons[selected_index]) if selected_index is not None else None
     )
-    selected_paths = states[selected_horizon] if selected_horizon is not None else states[100]
+    fallback_horizon = max(plan.settle_horizons)
+    selected_paths = (
+        states[selected_horizon]
+        if selected_horizon is not None
+        else states[fallback_horizon]
+    )
     selected_mean = selected_paths.mean(dim=1)
     try:
         rs, _ = _state_scale(selected_mean)
@@ -829,25 +1261,102 @@ def _task_conditioned_atlas(
         "selected_path_state": selected_paths,
         "selected_mean_state": selected_mean,
         "criteria": {
-            "median_within_path_variance": raw_variance,
-            "median_next5_within_path_variance": next_variance,
-            "next5_relative_decrease": relative_decrease,
-            "normalized_geodesic_drift_q95": drift_q95,
+            "primary_track_a_geometry_available": primary_geometry_available,
+            "absolute_symmetric_relative_variance_change_q95": absolute_q95,
+            "positive_relative_variance_expansion_q95": expansion_q95,
+            "F0_power_5_mean_sheet_manifold_distance_over_Rs_q95": sheet_distance_q95,
             "systematic_transverse_decrease_fraction": systematic_fraction,
             "passed": criteria_pass,
             "rules": {
-                "next5_relative_decrease_less_than": plan.settle_relative_decrease_max,
-                "normalized_geodesic_drift_q95_less_than": plan.settle_geodesic_drift_q95_max,
-                "systematic_transverse_decrease_fraction_max": plan.settle_systematic_fraction_max,
-                "systematic_fraction_definition": "fraction of anchors whose Rs-normalized transverse residual decreases by more than 1% over the next five blank steps",
-                "source_status": "protocol_criterion_3_operationalized_for_pilot_not_claim_threshold",
+                "absolute_symmetric_relative_variance_change_q95_max": plan.settle_absolute_change_q95_max,
+                "positive_relative_variance_expansion_q95_max": plan.settle_positive_expansion_q95_max,
+                "F0_power_5_mean_sheet_manifold_distance_over_Rs_q95_max": plan.settle_mean_sheet_distance_q95_max,
+                "source_status": "corrected_v2_settling_QA_not_CA_claim_threshold",
             },
         },
+        "quality_by_horizon": quality_by_horizon,
         "within_variance_normalized": within,
         "between_nearest_separation_normalized": between,
         "chi_fiber": chi,
         "near_single_sheet": bool(valid and math.isfinite(chi) and chi <= 0.1),
     }
+
+
+@torch.no_grad()
+def _task_track_a_correspondence(
+    task_atlas: Mapping[str, Any],
+    *,
+    track_a_state: torch.Tensor,
+    track_a_angles: torch.Tensor,
+    projector: Mapping[str, Any],
+    state_scale: torch.Tensor,
+) -> tuple[dict[str, Any], dict[str, torch.Tensor]]:
+    """Compare the independent task sheet with the primary Track-A curve."""
+
+    path_state = task_atlas["selected_path_state"]
+    mean_state = task_atlas["selected_mean_state"]
+    anchors, paths, dimension = path_state.shape
+    flat_projection = _project_ring(path_state.reshape(-1, dimension), projector)
+    path_distance = flat_projection["distance"].reshape(anchors, paths) / state_scale
+    path_angle = flat_projection["angle"].reshape(anchors, paths)
+    path_angle_error = (
+        wrap_angle(path_angle - track_a_angles[:, None]).abs() / math.pi
+    )
+    mean_projection = _project_ring(mean_state, projector)
+    mean_distance = mean_projection["distance"] / state_scale
+    mean_angle_error = (
+        wrap_angle(mean_projection["angle"] - track_a_angles).abs() / math.pi
+    )
+
+    pairwise = torch.cdist(track_a_state, mean_state) / state_scale
+    track_a_to_task_distance, track_a_to_task_index = pairwise.min(dim=1)
+    task_to_track_a_distance, task_to_track_a_index = pairwise.min(dim=0)
+    symmetric_hausdorff = torch.maximum(
+        track_a_to_task_distance.max(), task_to_track_a_distance.max()
+    )
+    path_per_anchor_max = path_distance.max(dim=1).values
+    path_angle_per_anchor_max = path_angle_error.max(dim=1).values
+    valid = bool(task_atlas["valid"])
+    summary = {
+        "role": "independent_correspondence_and_fiber_diagnostic_only",
+        "primary_manifold": "Sagodi_Track_A_periodic_spline",
+        "task_sheet_settling_valid": valid,
+        "selected_task_sheet_horizon": task_atlas["selected_horizon"],
+        "mean_state_distance_to_track_A_over_Rs": _summary(mean_distance),
+        "path_state_distance_to_track_A_over_Rs_per_anchor_max": _summary(
+            path_per_anchor_max
+        ),
+        "mean_projected_angle_error_pi_normalized": _summary(mean_angle_error),
+        "path_projected_angle_error_pi_normalized_per_anchor_max": _summary(
+            path_angle_per_anchor_max
+        ),
+        "fiber_spread_chi": (
+            float(task_atlas["chi_fiber"])
+            if math.isfinite(float(task_atlas["chi_fiber"]))
+            else None
+        ),
+        "directed_hausdorff_track_A_to_task_mean_over_Rs": float(
+            track_a_to_task_distance.max().cpu()
+        ),
+        "directed_hausdorff_task_mean_to_track_A_over_Rs": float(
+            task_to_track_a_distance.max().cpu()
+        ),
+        "symmetric_hausdorff_over_Rs": float(symmetric_hausdorff.cpu()),
+        "claim_gate": False,
+    }
+    arrays = {
+        "task_path_distance_to_track_A_over_Rs": path_distance,
+        "task_path_projected_angle": path_angle,
+        "task_path_projected_angle_error_pi_normalized": path_angle_error,
+        "task_mean_distance_to_track_A_over_Rs": mean_distance,
+        "task_mean_projected_angle": mean_projection["angle"],
+        "task_mean_projected_angle_error_pi_normalized": mean_angle_error,
+        "track_A_to_task_mean_distance_over_Rs": track_a_to_task_distance,
+        "track_A_to_task_mean_nearest_index": track_a_to_task_index,
+        "task_mean_to_track_A_distance_over_Rs": task_to_track_a_distance,
+        "task_mean_to_track_A_nearest_index": task_to_track_a_index,
+    }
+    return summary, arrays
 
 
 @torch.no_grad()
@@ -962,6 +1471,68 @@ def _tangent_finite_difference_sensitivity(
         "geometries": geometries,
         "comparisons": comparisons,
         "status": "diagnostic_only_no_preregistered_cutoff",
+    }
+
+
+@torch.no_grad()
+def _track_a_geometry_quality(
+    angles: torch.Tensor,
+    atlas_state: torch.Tensor,
+    tangent_speed: torch.Tensor,
+    state_scale: torch.Tensor,
+    *,
+    minimum_normalized_tangent_speed: float,
+    seam_probe_radians: float,
+    seam_c0_over_rs_max: float,
+    seam_c1_relative_max: float,
+) -> dict[str, Any]:
+    """Fail closed on a collapsed chart or a non-periodic spline seam."""
+
+    epsilon = float(seam_probe_radians)
+    if not math.isfinite(epsilon) or epsilon <= 0.0:
+        raise ValueError("Track-A seam probe must be finite and positive")
+    seam = torch.tensor([-math.pi], device=angles.device, dtype=angles.dtype)
+    seam_state = _periodic_cubic_resample(angles, atlas_state, seam)
+    period_state = _periodic_cubic_resample(
+        angles, atlas_state, seam + 2.0 * math.pi
+    )
+    left_state = _periodic_cubic_resample(angles, atlas_state, seam - epsilon)
+    right_state = _periodic_cubic_resample(angles, atlas_state, seam + epsilon)
+    left_derivative = (seam_state - left_state) / epsilon
+    right_derivative = (right_state - seam_state) / epsilon
+    seam_c0 = torch.linalg.vector_norm(period_state - seam_state) / state_scale
+    derivative_scale = 0.5 * (
+        torch.linalg.vector_norm(left_derivative)
+        + torch.linalg.vector_norm(right_derivative)
+    )
+    seam_c1 = torch.linalg.vector_norm(left_derivative - right_derivative) / (
+        derivative_scale.clamp_min(100.0 * torch.finfo(atlas_state.dtype).eps)
+    )
+    normalized_speed = tangent_speed / state_scale
+    minimum_speed = float(normalized_speed.min().cpu())
+    c0_value = float(seam_c0.cpu())
+    c1_value = float(seam_c1.cpu())
+    speed_pass = minimum_speed >= float(minimum_normalized_tangent_speed)
+    c0_pass = c0_value <= float(seam_c0_over_rs_max)
+    c1_pass = c1_value <= float(seam_c1_relative_max)
+    return {
+        "passed": bool(speed_pass and c0_pass and c1_pass),
+        "minimum_normalized_tangent_speed": minimum_speed,
+        "seam_C0_distance_over_Rs": c0_value,
+        "seam_C1_relative_difference": c1_value,
+        "criteria": {
+            "minimum_normalized_tangent_speed": float(
+                minimum_normalized_tangent_speed
+            ),
+            "seam_probe_radians": epsilon,
+            "seam_C0_distance_over_Rs_max": float(seam_c0_over_rs_max),
+            "seam_C1_relative_difference_max": float(seam_c1_relative_max),
+        },
+        "component_passed": {
+            "tangent_speed_floor": speed_pass,
+            "periodic_seam_C0": c0_pass,
+            "periodic_seam_C1": c1_pass,
+        },
     }
 
 
@@ -1153,6 +1724,12 @@ def _finite_kicks(
     horizon: int,
     projector: Mapping[str, Any],
 ) -> dict[str, torch.Tensor]:
+    """Retain the former clean-paired endpoint decomposition as diagnostics.
+
+    These values are not distances to the manifold and may not satisfy C3.
+    Primary recovery is computed by :func:`manifold_recovery_diagnostics`.
+    """
+
     base = atlas_state[anchor_indices]
     directions = torch.cat((radial[:, None, :], ambient), dim=1)
     anchors, conditions, dimension = directions.shape
@@ -1551,21 +2128,26 @@ def _evaluation_batch(
     *,
     path: Path | str | None,
     plan: AnalysisPlan,
-    seed_policy: Mapping[str, Any],
+    protocol: Mapping[str, Any],
+    task_spec: AngularTaskSpec,
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    seed_policy = protocol["seed_policy"]
     if path is None:
         if not plan.smoke:
             raise ValueError("--evaluation-bank is required for non-smoke Phase-1 analysis")
+        generated_count = max(int(plan.task_trials), int(plan.atlas_count))
         batch = sample_angular_integration(
-            plan.task_trials,
+            generated_count,
             plan.task_horizon,
             int(seed_policy["task_seed"]),
             int(seed_policy["evaluation_bank_seed"]),
             "hidden-init",
             device=device,
             dtype=dtype,
+            task_spec=task_spec,
+            allow_horizon_override=plan.smoke,
         )
         source = {
             "source": "deterministic_generator_fallback",
@@ -1575,11 +2157,19 @@ def _evaluation_batch(
     else:
         bank_path = Path(path).expanduser().resolve(strict=True)
         batch = load_fixed_bank(bank_path, device=device)
+        _validate_evaluation_batch(
+            batch,
+            protocol,
+            require_full_protocol_shape=not plan.smoke,
+        )
         source = {
             "source": str(bank_path),
             "sha256": sha256_file(bank_path),
             "fixed_bank": True,
         }
+    bound_task_spec = batch.metadata.get("resolved_task_spec_sha256")
+    if bound_task_spec is not None and bound_task_spec != task_spec.fingerprint():
+        raise ValueError("evaluation bank resolved-task fingerprint differs from protocol")
     if batch.inputs.shape[-1] != 1 or batch.output_targets.shape[-1] != 2:
         raise ValueError("evaluation bank is not a single-ring angular-integration bank")
     if batch.metadata.get("task_name") != "angular_integration":
@@ -1601,12 +2191,26 @@ def _evaluation_batch(
         raise ValueError("hidden-init evaluation bank has no initial memory")
     time = plan.task_horizon
     count = plan.task_trials
+    discovery_count = int(batch.batch_size)
     view = {
         "inputs": batch.inputs[:time, :count].to(device=device, dtype=dtype),
         "targets": batch.output_targets[:time, :count].to(device=device, dtype=dtype),
         "latents": batch.latent_targets[:time, :count].to(device=device, dtype=dtype),
         "mask": batch.mask[:time, :count].to(device=device, dtype=dtype),
         "initial_memory": memory[:count].to(device=device, dtype=dtype),
+        # The clean task metric keeps its frozen effective count above.  Track A
+        # independently sees the complete fixed evaluation bank so 1,024
+        # model-independent, ground-truth-stratified discovery trials can be
+        # selected from all 4,096 full-protocol trials.
+        "discovery_inputs": batch.inputs[:time, :discovery_count].to(
+            device=device, dtype=dtype
+        ),
+        "discovery_latents": batch.latent_targets[:time, :discovery_count].to(
+            device=device, dtype=dtype
+        ),
+        "discovery_initial_memory": memory[:discovery_count].to(
+            device=device, dtype=dtype
+        ),
     }
     _require_finite("evaluation bank", *view.values())
     source["effective_shape"] = {
@@ -1614,8 +2218,156 @@ def _evaluation_batch(
         "batch": count,
         "input": 1,
         "output": 2,
+        "track_a_discovery_batch": discovery_count,
     }
+    source["resolved_task_spec_sha256"] = task_spec.fingerprint()
+    source["bank_metadata_task_spec_sha256"] = bound_task_spec
+    source["legacy_v1_metadata_binding"] = bound_task_spec is None
     return view, source
+
+
+def _verify_analysis_freeze_parent(
+    *,
+    analysis_contract: Mapping[str, Any],
+    protocol: Mapping[str, Any],
+    protocol_path: Path,
+    run_dir: Path,
+    campaign_identity: str | None,
+) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    """Bind reanalysis to the immutable parent campaign and manifest."""
+
+    parent = analysis_contract["parent_training"]
+    expected_protocol = {
+        "freeze_id": str(protocol["freeze_id"]),
+        "protocol_canonical_fingerprint": protocol_fingerprint(protocol),
+        "protocol_file_sha256": sha256_file(protocol_path),
+    }
+    for key, observed in expected_protocol.items():
+        if observed != parent[key]:
+            raise ValueError(
+                f"analysis freeze parent mismatch for {key}: "
+                f"{observed!r} != {parent[key]!r}"
+            )
+    if campaign_identity != parent["scientific_identity"]:
+        raise ValueError("analysis freeze scientific identity differs from parent run")
+    if run_dir.parent.name != "runs":
+        raise ValueError("reanalysis parent run must be below the campaign runs directory")
+    campaign_root = run_dir.parent.parent.resolve(strict=True)
+    if campaign_root.name != parent["campaign_id"]:
+        raise ValueError("analysis freeze campaign_id differs from parent artifact root")
+    manifest_path = campaign_root / "manifest.json"
+    if sha256_file(manifest_path) != parent["manifest_sha256"]:
+        raise ValueError("parent campaign manifest SHA-256 differs from analysis freeze")
+    manifest = strict_json_load(manifest_path)
+    manifest_expected = {
+        "campaign_id": parent["campaign_id"],
+        "scientific_identity": parent["scientific_identity"],
+        "protocol_canonical_fingerprint": parent[
+            "protocol_canonical_fingerprint"
+        ],
+        "protocol_file_sha256": parent["protocol_file_sha256"],
+    }
+    for key, expected in manifest_expected.items():
+        if manifest.get(key) != expected:
+            raise ValueError(f"parent campaign manifest mismatch for {key}")
+
+    run_matrix = manifest.get("run_matrix")
+    if not isinstance(run_matrix, list):
+        raise ValueError("parent campaign manifest has no frozen run matrix")
+    matching_runs = [
+        item
+        for item in run_matrix
+        if isinstance(item, Mapping) and item.get("run_id") == run_dir.name
+    ]
+    if len(matching_runs) != 1:
+        raise ValueError(
+            "reanalysis run directory name is not exactly one frozen parent run id"
+        )
+    frozen_run = matching_runs[0]
+    expectations = manifest.get("receipt_expectations")
+    if not isinstance(expectations, Mapping):
+        raise ValueError("parent campaign manifest has no receipt expectations")
+    expectation = expectations.get(f"training:{run_dir.name}")
+    if not isinstance(expectation, Mapping):
+        raise ValueError("parent campaign has no training receipt expectation for run")
+    expected_output = (campaign_root / str(expectation.get("output"))).resolve(
+        strict=True
+    )
+    if expected_output != run_dir:
+        raise ValueError("parent training output path differs from frozen run id")
+    expected_receipt_metadata = {
+        "campaign_scientific_identity": parent["scientific_identity"],
+        "protocol_fingerprint": parent["protocol_canonical_fingerprint"],
+        "run_id": run_dir.name,
+        "stage": "training",
+    }
+    valid, reason = verify_completion_receipt(
+        run_dir / "completion_receipt.json",
+        expected_job_id=str(expectation.get("job_id")),
+        expected_metadata=expected_receipt_metadata,
+    )
+    if not valid:
+        raise ValueError(f"parent training receipt is invalid: {reason}")
+    receipt = strict_json_load(run_dir / "completion_receipt.json")
+    training_manifest = strict_json_load(run_dir / "manifest.json")
+    checkpoint_path = run_dir / "checkpoint.pt"
+    checkpoint_digest = sha256_file(checkpoint_path)
+    if int(receipt.get("schema_version", -1)) != 2:
+        raise ValueError("parent training receipt must use relocatable schema 2")
+    receipt_artifacts = receipt.get("artifacts")
+    if not isinstance(receipt_artifacts, Mapping):
+        raise ValueError("parent training receipt artifacts are malformed")
+    if receipt_artifacts.get("checkpoint.pt") != checkpoint_digest:
+        raise ValueError("parent training receipt does not bind checkpoint bytes")
+    if receipt_artifacts.get("manifest.json") != sha256_file(
+        run_dir / "manifest.json"
+    ):
+        raise ValueError("parent training receipt does not bind run manifest")
+    if training_manifest.get("checkpoint_sha256") != checkpoint_digest:
+        raise ValueError("parent run manifest checkpoint hash mismatch")
+    if training_manifest.get("campaign_identity") != parent["scientific_identity"]:
+        raise ValueError("parent run manifest campaign identity mismatch")
+    if training_manifest.get("protocol_canonical_fingerprint") != parent[
+        "protocol_canonical_fingerprint"
+    ]:
+        raise ValueError("parent run manifest protocol fingerprint mismatch")
+    frozen_model = frozen_run.get("model")
+    if not isinstance(frozen_model, Mapping):
+        raise ValueError("frozen parent run model entry is malformed")
+    if training_manifest.get("model_id") != frozen_model.get("id"):
+        raise ValueError("parent run manifest model id differs from run matrix")
+    if int(training_manifest.get("model_seed", -1)) != int(
+        frozen_run.get("model_seed", -2)
+    ):
+        raise ValueError("parent run manifest seed differs from run matrix")
+    return campaign_root, dict(parent), dict(manifest)
+
+
+def _verify_parent_bound_bank(
+    *,
+    parent_root: Path,
+    parent_manifest: Mapping[str, Any],
+    bank_key: str,
+    supplied_path: Path | str | None,
+) -> None:
+    """Require the exact file and sidecar frozen by the immutable parent."""
+
+    if supplied_path is None:
+        raise ValueError(f"parent-bound reanalysis requires --{bank_key.replace('_', '-')}")
+    expected = parent_manifest.get(bank_key)
+    if not isinstance(expected, Mapping):
+        raise ValueError(f"parent manifest has no valid {bank_key} binding")
+    expected_path = (parent_root / str(expected.get("path"))).resolve(strict=True)
+    observed_path = Path(supplied_path).expanduser().resolve(strict=True)
+    if observed_path != expected_path:
+        raise ValueError(f"{bank_key} path differs from immutable parent manifest")
+    if sha256_file(observed_path) != expected.get("sha256"):
+        raise ValueError(f"{bank_key} bytes differ from immutable parent manifest")
+    sidecar = Path(f"{observed_path}.sha256")
+    if not sidecar.is_file() or sha256_file(sidecar) != expected.get(
+        "sidecar_sha256"
+    ):
+        raise ValueError(f"{bank_key} checksum sidecar differs from parent manifest")
 
 
 def _verify_checkpoint_identity(
@@ -1893,12 +2645,15 @@ def _claim_gate(
     chi_fiber: float,
     track_a_success: bool,
     settling_valid: bool,
+    settling_summary: Mapping[str, Any],
     primary_atlas_valid: bool,
     projection_qa: Mapping[str, Any],
     invariance_summary: Mapping[str, float],
     drift_summary: Mapping[str, float],
+    clean_adherence: Mapping[str, Any],
     radial_recovery: Mapping[str, float],
     ambient_recovery: Mapping[str, float],
+    recovery_input_valid: bool,
     same_memory: Mapping[str, float],
     tangent_equivariance: Mapping[str, float],
     jvp: Mapping[str, Any],
@@ -1940,13 +2695,16 @@ def _claim_gate(
         float(drift_summary["mean"]) <= float(thresholds["c2_drift"]["mean_max"])
         and float(drift_summary["q95"]) <= float(thresholds["c2_drift"]["q95_max"])
     )
+    clean_adherence_pass = bool(
+        clean_adherence["all_registered_horizons_passed"]
+    )
     radial_pass = (
-        float(radial_recovery["median"]) <= float(thresholds["c3_normal_recovery"]["median_max"])
-        and float(radial_recovery["q95"]) < float(thresholds["c3_normal_recovery"]["q95_threshold"])
+        float(radial_recovery["median"]) <= plan.recovery_median_max
+        and float(radial_recovery["q95"]) < plan.recovery_q95_strict_max
     )
     ambient_pass = (
-        float(ambient_recovery["median"]) <= float(thresholds["c3_normal_recovery"]["median_max"])
-        and float(ambient_recovery["q95"]) < float(thresholds["c3_normal_recovery"]["q95_threshold"])
+        float(ambient_recovery["median"]) <= plan.recovery_median_max
+        and float(ambient_recovery["q95"]) < plan.recovery_q95_strict_max
     )
     same_pass = (
         float(same_memory["mean"]) <= float(thresholds["c3_same_memory"]["mean_max"])
@@ -1971,6 +2729,9 @@ def _claim_gate(
     projected_normal_metrics_eligible = bool(
         projected_metrics_eligible and normal_direction_valid
     )
+    recovery_metrics_eligible = bool(
+        projected_normal_metrics_eligible and recovery_input_valid
+    )
     projected_cocycle_eligible = bool(
         projected_normal_metrics_eligible and cocycle_frames_valid
     )
@@ -1983,7 +2744,10 @@ def _claim_gate(
         "c1_sheet_fiber": fiber_pass,
         "invariance": invariance_pass,
         "c2_drift": drift_pass,
-        "c3_normal_recovery": radial_pass and ambient_pass,
+        "c3_clean_adherence": clean_adherence_pass,
+        "c3_normal_recovery": (
+            clean_adherence_pass and radial_pass and ambient_pass
+        ),
         "c3_same_memory": same_pass,
         "c3_paper_noise": paper_noise_pass,
         "tangent_equivariance": tangent_eq_pass,
@@ -2000,7 +2764,7 @@ def _claim_gate(
     )
     status, passed, reason = evaluated_status(
         decode_pass, eligible=primary_atlas_valid,
-        ineligible_reason="Track-A or settled task-conditioned atlas reconstruction failed",
+        ineligible_reason="primary Track-A reconstruction failed",
     )
     gates["c1_decoding"] = _gate(
         "c1_decoding", metric="held_out_linear_decoder_pi_normalized_geodesic",
@@ -2010,7 +2774,7 @@ def _claim_gate(
     )
     status, passed, reason = evaluated_status(
         rank_pass, eligible=primary_atlas_valid,
-        ineligible_reason="Track-A or settled task-conditioned atlas reconstruction failed",
+        ineligible_reason="primary Track-A reconstruction failed",
     )
     gates["c1_rank"] = _gate(
         "c1_rank", metric="normalized_sigma_d_over_sigma_1_at_each_anchor",
@@ -2026,8 +2790,28 @@ def _claim_gate(
         "atlas_reconstruction",
         metric="Sagodi_Track_A_slow_state_periodic_reconstruction",
         threshold={"relative_speed": SLOW_RELATIVE_SPEED, "rollout": "16T"},
-        value={"track_a_success": track_a_success, "settling_valid": settling_valid},
+        value={"track_a_success": track_a_success},
         passed=passed, status=status, source_artifact="analysis_arrays.npz", reason=reason,
+    )
+    status, passed, reason = evaluated_status(
+        settling_valid,
+        eligible=primary_atlas_valid,
+        ineligible_reason="task-sheet settling requires a valid primary Track-A manifold",
+    )
+    gates["task_sheet_settling"] = _gate(
+        "task_sheet_settling",
+        metric="two_sided_variance_plateau_expansion_and_F0_power5_manifold_adherence",
+        threshold={
+            "absolute_symmetric_relative_change_q95_max": plan.settle_absolute_change_q95_max,
+            "positive_expansion_q95_max": plan.settle_positive_expansion_q95_max,
+            "mean_sheet_distance_over_Rs_q95_max": plan.settle_mean_sheet_distance_q95_max,
+        },
+        value=dict(settling_summary),
+        passed=passed,
+        status=status,
+        source_artifact="analysis.json",
+        reason=reason,
+        scope="correspondence_and_fiber_QA_not_primary_manifold_construction",
     )
     status, passed, reason = evaluated_status(
         neighborhood_pass, eligible=primary_atlas_valid,
@@ -2040,8 +2824,8 @@ def _claim_gate(
     )
     status, passed, reason = evaluated_status(
         fiber_pass,
-        eligible=primary_atlas_valid,
-        ineligible_reason="eight-path sheet did not meet Track-A and settling eligibility",
+        eligible=bool(primary_atlas_valid and settling_valid),
+        ineligible_reason="eight-path task sheet did not pass corrected settling QA",
     )
     gates["c1_sheet_fiber"] = _gate(
         "c1_sheet_fiber", metric="chi_fiber", threshold={"maximum": 0.1},
@@ -2094,22 +2878,57 @@ def _claim_gate(
         source_artifact="analysis_arrays.npz", reason=reason,
     )
     status, passed, reason = evaluated_status(
-        radial_pass and ambient_pass, eligible=projected_normal_metrics_eligible,
-        ineligible_reason="primary atlas, projection QA, or normal-direction QA is invalid",
+        clean_adherence_pass,
+        eligible=projected_metrics_eligible,
+        ineligible_reason="primary Track-A manifold or projection QA is invalid",
+    )
+    gates["c3_clean_adherence"] = _gate(
+        "c3_clean_adherence",
+        metric="D_clean_H_distance_to_fixed_Track_A_over_Rs",
+        threshold={
+            "registered_horizons": list(plan.recovery_horizons),
+            "q95_max_at_every_horizon": plan.clean_adherence_q95_max,
+        },
+        value=dict(clean_adherence),
+        passed=passed,
+        status=status,
+        source_artifact="analysis_arrays.npz",
+        reason=reason,
+    )
+    status, passed, reason = evaluated_status(
+        clean_adherence_pass and radial_pass and ambient_pass,
+        eligible=recovery_metrics_eligible,
+        ineligible_reason=(
+            "primary Track-A, projection/normal QA, initial manifold-distance "
+            "denominator, or clean projector frame is invalid"
+        ),
     )
     gates["c3_normal_recovery"] = _gate(
-        "c3_normal_recovery", metric="clean_paired_R_N_by_direction_family",
-        threshold={"rho_over_Rs": 0.1, "horizon": 500, "median_max": 0.5, "q95_less_than": 1.0, "families_must_pass_separately": True},
-        value={"effective_horizon": plan.recovery_horizon, "radial": dict(radial_recovery), "ambient_per_anchor_sampled_max": dict(ambient_recovery)},
+        "c3_normal_recovery", metric="Q_recovery_distance_to_fixed_Track_A_by_direction_family",
+        threshold={
+            "rho_over_Rs": plan.kick_relative_radius,
+            "horizon": plan.recovery_horizon,
+            "median_max": plan.recovery_median_max,
+            "q95_less_than": plan.recovery_q95_strict_max,
+            "clean_adherence_required": True,
+            "families_must_pass_separately": True,
+        },
+        value={
+            "effective_horizon": plan.recovery_horizon,
+            "clean_adherence_passed": clean_adherence_pass,
+            "denominator_and_clean_frame_valid": recovery_input_valid,
+            "radial": dict(radial_recovery),
+            "ambient_per_anchor_sampled_max": dict(ambient_recovery),
+        },
         passed=passed, status=status, source_artifact="analysis_arrays.npz", reason=reason,
         scope="radial_plus_eight_sampled_ambient_normals" if not plan.smoke else "smoke_sample",
     )
     status, passed, reason = evaluated_status(
-        same_pass, eligible=projected_normal_metrics_eligible,
-        ineligible_reason="primary atlas, projection QA, or normal-direction QA is invalid",
+        same_pass, eligible=recovery_metrics_eligible,
+        ineligible_reason="recovery projection or initial-distance denominator is invalid",
     )
     gates["c3_same_memory"] = _gate(
-        "c3_same_memory", metric="clean_paired_E_excess_per_anchor_sampled_max",
+        "c3_same_memory", metric="projected_memory_displacement_after_manifold_recovery",
         threshold={"horizon": 500, "mean_max": 0.05, "q95_max": 0.1},
         value={"effective_horizon": plan.recovery_horizon, **dict(same_memory)}, passed=passed, status=status,
         source_artifact="analysis_arrays.npz", reason=reason,
@@ -2185,12 +3004,13 @@ def _claim_gate(
 
     l0 = bool(not plan.smoke and computed["task"])
     l1 = bool(
-        l0 and primary_atlas_valid and projection_valid and computed["c1_decoding"]
+        l0 and primary_atlas_valid and settling_valid and projection_valid
+        and computed["c1_decoding"]
         and computed["c1_rank"] and computed["c1_neighborhood"]
         and computed["c1_sheet_fiber"] and computed["c2_drift"]
     )
     l2 = bool(
-        l1 and normal_direction_valid and cocycle_frames_valid
+        l1 and normal_direction_valid and recovery_input_valid and cocycle_frames_valid
         and computed["invariance"] and computed["c3_normal_recovery"]
         and computed["c3_same_memory"] and computed["c3_paper_noise"]
         and computed["tangent_equivariance"] and computed["tangent_non_expansion"]
@@ -2259,9 +3079,9 @@ def _task_failure_claim(
         )
     }
     manifold_gate_ids = (
-        "atlas_reconstruction", "c1_decoding", "c1_rank", "c1_neighborhood",
+        "atlas_reconstruction", "task_sheet_settling", "c1_decoding", "c1_rank", "c1_neighborhood",
         "c1_sheet_fiber", "projection_quality", "normal_direction_quality",
-        "invariance", "c2_drift", "c3_normal_recovery",
+        "invariance", "c2_drift", "c3_clean_adherence", "c3_normal_recovery",
         "c3_same_memory", "c3_paper_noise", "tangent_equivariance",
         "tangent_non_expansion", "sampled_normal_gap", "strict_worst_normal",
     )
@@ -2321,6 +3141,7 @@ def analyze_checkpoint(
     evaluation_bank: Path | str | None = None,
     perturbation_bank: Path | str | None = None,
     campaign_identity: str | None = None,
+    analysis_freeze_path: Path | str | None = None,
 ) -> Path:
     """Analyze ``run_dir/checkpoint.pt`` and atomically publish Phase-1 output."""
 
@@ -2328,12 +3149,80 @@ def analyze_checkpoint(
     run_dir = Path(run_dir).expanduser().resolve(strict=True)
     checkpoint = (run_dir / "checkpoint.pt").resolve(strict=True)
     destination = Path(output_dir).expanduser().resolve()
+    analysis_contract: dict[str, Any] | None = None
+    analysis_freeze_source: Path | None = None
+    if analysis_freeze_path is not None:
+        if bool(smoke):
+            raise ValueError("parent-bound v2 reanalysis freeze cannot be used for smoke")
+        analysis_freeze_source = (
+            Path(analysis_freeze_path).expanduser().resolve(strict=True)
+        )
+        analysis_contract = load_analysis_freeze(analysis_freeze_source)
+
+    protocol = load_protocol(protocol_path)
+    if (
+        not bool(smoke)
+        and analysis_contract is None
+        and protocol["freeze_id"] in LEGACY_V1_ANALYSIS_FREEZE_IDS
+    ):
+        raise ValueError(
+            "legacy v1 full analysis requires an explicit corrected v2 analysis freeze"
+        )
+    parent_root: Path | None = None
+    parent_binding: dict[str, Any] | None = None
+    parent_manifest: dict[str, Any] | None = None
+    if analysis_contract is not None:
+        parent_root, parent_binding, parent_manifest = _verify_analysis_freeze_parent(
+            analysis_contract=analysis_contract,
+            protocol=protocol,
+            protocol_path=protocol_path,
+            run_dir=run_dir,
+            campaign_identity=campaign_identity,
+        )
+        _verify_parent_bound_bank(
+            parent_root=parent_root,
+            parent_manifest=parent_manifest,
+            bank_key="evaluation_bank",
+            supplied_path=evaluation_bank,
+        )
+        _verify_parent_bound_bank(
+            parent_root=parent_root,
+            parent_manifest=parent_manifest,
+            bank_key="perturbation_bank",
+            supplied_path=perturbation_bank,
+        )
+        try:
+            destination.relative_to(parent_root)
+        except ValueError:
+            pass
+        else:
+            raise ValueError(
+                "v2 reanalysis output must be outside the immutable parent campaign root"
+            )
     if destination.exists() and any(destination.iterdir()):
         raise FileExistsError(f"refusing to overwrite non-empty analysis directory: {destination}")
     destination.mkdir(parents=True, exist_ok=True)
 
-    protocol = load_protocol(protocol_path)
-    plan = _build_plan(protocol, bool(smoke))
+    analysis_binding_path: Path | None = None
+    analysis_binding: dict[str, Any] | None = None
+    if analysis_contract is not None:
+        assert analysis_freeze_source is not None
+        analysis_binding = {
+            "schema_version": 1,
+            "analysis_freeze_id": analysis_contract["freeze_id"],
+            "analysis_freeze_path": str(analysis_freeze_source),
+            "analysis_freeze_file_sha256": sha256_file(analysis_freeze_source),
+            "analysis_freeze_canonical_fingerprint": analysis_freeze_fingerprint(
+                analysis_contract
+            ),
+            "parent_training": parent_binding,
+            "claim_scope": analysis_contract["claim_scope"],
+        }
+        analysis_binding_path = destination / "analysis_freeze_binding.json"
+        atomic_json(analysis_binding_path, analysis_binding)
+
+    plan = _build_plan(protocol, bool(smoke), analysis_contract)
+    task_spec = AngularTaskSpec.from_protocol(protocol)
     target_device = torch.device(device)
     model, checkpoint_payload = load_checkpoint(checkpoint, target_device)
     if model.config.init_mode != "hidden_init":
@@ -2346,7 +3235,10 @@ def analyze_checkpoint(
     seed_policy = protocol["seed_policy"]
 
     evaluation, evaluation_source = _evaluation_batch(
-        path=evaluation_bank, plan=plan, seed_policy=seed_policy,
+        path=evaluation_bank,
+        plan=plan,
+        protocol=protocol,
+        task_spec=task_spec,
         device=target_device, dtype=dtype,
     )
     _verify_checkpoint_identity(
@@ -2367,6 +3259,23 @@ def analyze_checkpoint(
         device=target_device,
         dtype=dtype,
     )
+    if parent_root is not None:
+        assert parent_manifest is not None
+        # Recheck after both banks have been parsed.  This closes replacement
+        # races during loading while the analysis itself uses the tensors
+        # already held in memory.
+        _verify_parent_bound_bank(
+            parent_root=parent_root,
+            parent_manifest=parent_manifest,
+            bank_key="evaluation_bank",
+            supplied_path=evaluation_bank,
+        )
+        _verify_parent_bound_bank(
+            parent_root=parent_root,
+            parent_manifest=parent_manifest,
+            bank_key="perturbation_bank",
+            supplied_path=perturbation_bank,
+        )
     with torch.no_grad():
         prediction = model.forward_sequence(
             evaluation["inputs"], initial_memory=evaluation["initial_memory"]
@@ -2409,6 +3318,9 @@ def analyze_checkpoint(
         "protocol_path": str(protocol_path),
         "protocol_sha256": sha256_file(protocol_path),
         "protocol_fingerprint": protocol_fingerprint(protocol),
+        "analysis_freeze_binding": analysis_binding,
+        "resolved_task_spec": task_spec.resolved_payload(),
+        "resolved_task_spec_sha256": task_spec.fingerprint(),
         "checkpoint_path": str(checkpoint),
         "checkpoint_sha256": sha256_file(checkpoint),
         "checkpoint_extra": checkpoint_payload.get("extra", {}),
@@ -2431,6 +3343,27 @@ def analyze_checkpoint(
             "probe_source": "trained_checkpoint_task_evoked_primary_state",
         },
     }
+
+    def receipt_artifacts(*paths: Path) -> list[Path]:
+        artifacts = list(paths)
+        if analysis_binding_path is not None:
+            artifacts.append(analysis_binding_path)
+        return artifacts
+
+    def receipt_analysis_metadata() -> dict[str, Any]:
+        if analysis_binding is None:
+            return {
+                "analysis_schema_version": ANALYSIS_SCHEMA_VERSION,
+                "analysis_freeze_id": None,
+                "analysis_freeze_canonical_fingerprint": None,
+            }
+        return {
+            "analysis_schema_version": ANALYSIS_SCHEMA_VERSION,
+            "analysis_freeze_id": analysis_binding["analysis_freeze_id"],
+            "analysis_freeze_canonical_fingerprint": analysis_binding[
+                "analysis_freeze_canonical_fingerprint"
+            ],
+        }
 
     if not task_pass and not plan.smoke:
         analysis = {
@@ -2458,7 +3391,9 @@ def analyze_checkpoint(
         write_completion_receipt(
             destination / "completion_receipt.json",
             job_id=f"phase1-analysis-{checkpoint.parent.name}",
-            artifacts=[preflight_path, analysis_path, arrays_path, claim_path],
+            artifacts=receipt_artifacts(
+                preflight_path, analysis_path, arrays_path, claim_path
+            ),
             metadata={
                 "pilot_only": True, "smoke": False,
                 "campaign_identity": campaign_identity,
@@ -2466,6 +3401,8 @@ def analyze_checkpoint(
                 "task_gate_passed": False, "manifold_fitting": "not_applicable",
                 "evaluation_bank_sha256": evaluation_source["sha256"],
                 "perturbation_bank_sha256": perturbation_source["sha256"],
+                "resolved_task_spec_sha256": task_spec.fingerprint(),
+                **receipt_analysis_metadata(),
                 "L3": False,
             },
         )
@@ -2491,16 +3428,198 @@ def analyze_checkpoint(
     atlas_angles = -math.pi + 2.0 * math.pi * torch.arange(
         plan.atlas_count, device=target_device, dtype=dtype
     ) / float(plan.atlas_count)
+    discovery = _task_driven_track_a_endpoints(model, evaluation, atlas_angles)
     slow = _slow_state_reconstruction(
-        model, adapter, atlas_angles, horizon=plan.slow_rollout_horizon
+        model,
+        adapter,
+        atlas_angles,
+        horizon=plan.slow_rollout_horizon,
+        initial_reported_states=discovery["reported_state"],
+        start_state_rule="stratified_fixed_evaluation_task_driven_endpoints",
+        coarse_coverage_bin_count=plan.track_a_coverage_bin_count,
+        minimum_coarse_occupancy_fraction=plan.track_a_coverage_min_fraction,
     )
-    task_atlas = _task_conditioned_atlas(model, adapter, atlas_angles, plan)
-    primary_atlas_valid = bool(slow["success"] and task_atlas["valid"])
-    atlas_state = (
-        task_atlas["selected_mean_state"]
-        if task_atlas["selected_state_scale_valid"]
-        else task_atlas["canonical_state"]
-    )
+    primary_atlas_valid = bool(slow["success"])
+    atlas_state = slow["resampled_state"]
+    if not bool(slow["geometry_available"]):
+        task_atlas = _task_conditioned_atlas(
+            model, adapter, atlas_angles, plan
+        )
+        zero_summary = {
+            "mean": 0.0,
+            "median": 0.0,
+            "q95": 0.0,
+            "q99": 0.0,
+            "max": 0.0,
+        }
+        projection_qa = {
+            "passed": False,
+            "q95_max": float(
+                protocol["qa_thresholds"]["projection"]["implied_q95_error_max"]
+            ),
+            "status": "not_evaluated_track_a_reconstruction_failed",
+        }
+        claim = _claim_gate(
+            protocol=protocol,
+            plan=plan,
+            task_result=task_result,
+            paper_noise_result=paper_noise_result,
+            decoder_summary=zero_summary,
+            rank_summary={
+                "passed": False,
+                "qualifying_atlas_fraction": 0.0,
+                "minimum_normalized_sigma_d_over_sigma_1": float(
+                    protocol["claim_gates"]["c1_rank"]["minimum"]
+                ),
+                "required_atlas_fraction": float(
+                    protocol["claim_gates"]["c1_rank"]["required_atlas_fraction"]
+                ),
+            },
+            neighborhood={"trustworthiness": 0.0, "continuity": 0.0},
+            chi_fiber=float(task_atlas["chi_fiber"]),
+            track_a_success=False,
+            settling_valid=False,
+            settling_summary=task_atlas["criteria"],
+            primary_atlas_valid=False,
+            projection_qa=projection_qa,
+            invariance_summary=zero_summary,
+            drift_summary=zero_summary,
+            clean_adherence={
+                "all_registered_horizons_passed": False,
+                "registered_horizons": list(plan.recovery_horizons),
+                "by_horizon": {},
+            },
+            radial_recovery=zero_summary,
+            ambient_recovery=zero_summary,
+            recovery_input_valid=False,
+            same_memory=zero_summary,
+            tangent_equivariance=zero_summary,
+            jvp={
+                "tangent_gain": {"q95": 0.0},
+                "sampled_normal_gain_max": zero_summary,
+                "sampled_joint_fraction": 0.0,
+                "all_clean_projector_frames_valid": False,
+            },
+            normal_direction_qa={"passed": False, "threshold_max": 0.0},
+            preflight_audit=preflight_audit,
+        )
+        analysis = {
+            **base_analysis,
+            "paper_coordinate_noise_std_0p1_task_metrics": paper_noise_result,
+            "paper_coordinate_noise_seed": noise_seed,
+            "perturbation_bank": perturbation_source,
+            "manifold_analysis": "inconclusive_track_a_reconstruction_failed",
+            "atlas": {
+                "construction": "none_no_primary_fallback",
+                "anchor_count": plan.atlas_count,
+                "primary_eligible": False,
+                "primary_source": "track_a_periodic_spline",
+                "Sagodi_Track_A": {
+                    "success": False,
+                    "failure_reasons": slow["failure_reasons"],
+                    "start_state_rule": slow["start_state_rule"],
+                    "rollout_horizon": slow["rollout_horizon"],
+                    "trajectory_count": slow["trajectory_count"],
+                    "candidate_threshold": slow["candidate_threshold"],
+                    "candidate_count": slow["candidate_count"],
+                    "candidate_trajectory_coverage": slow[
+                        "candidate_trajectory_coverage"
+                    ],
+                    "coverage": slow["coverage"],
+                    "interpolation": slow["interpolation"],
+                },
+                "task_conditioned": {
+                    "role": "correspondence_and_fiber_diagnostic_only",
+                    "valid": task_atlas["valid"],
+                    "selected_horizon": task_atlas["selected_horizon"],
+                    "chi_fiber": (
+                        task_atlas["chi_fiber"]
+                        if math.isfinite(float(task_atlas["chi_fiber"]))
+                        else None
+                    ),
+                },
+            },
+            "limitations": [
+                "Track-A periodic reconstruction failed; no task-atlas fallback was used",
+                "all projection-dependent gates are inconclusive",
+            ],
+        }
+
+        def failed_array(value: torch.Tensor) -> np.ndarray:
+            return value.detach().cpu().numpy()
+
+        analysis_path = destination / "analysis.json"
+        arrays_path = destination / "analysis_arrays.npz"
+        claim_path = destination / "claim_gate.json"
+        atomic_json(analysis_path, analysis)
+        _atomic_npz(
+            arrays_path,
+            {
+                "atlas_angles": failed_array(atlas_angles),
+                "atlas_primary_carrier": failed_array(slow["resampled_state"]),
+                "atlas_primary_eligible": np.asarray(False, dtype=np.uint8),
+                "track_a_resampled_primary_carrier": failed_array(
+                    slow["resampled_state"]
+                ),
+                "track_a_selected_primary_carrier": failed_array(
+                    slow["selected_state"]
+                ),
+                "track_a_selected_time": np.asarray(
+                    slow["selected_time"], dtype=np.int64
+                ),
+                "track_a_selected_trajectory": np.asarray(
+                    slow["selected_trajectory"], dtype=np.int64
+                ),
+                "track_a_selected_decoded_angle": np.asarray(
+                    slow["selected_decoded_angle"]
+                ),
+                "track_a_selected_target_error_radians": np.asarray(
+                    slow["selected_target_error_radians"]
+                ),
+                "track_a_discovery_source_indices": failed_array(
+                    discovery["source_indices"]
+                ),
+                "track_a_discovery_source_final_angles": failed_array(
+                    discovery["source_final_angles"]
+                ),
+                "track_a_discovery_source_selection_error": failed_array(
+                    discovery["source_selection_error"]
+                ),
+                "track_a_discovery_endpoint_reported_state": failed_array(
+                    discovery["reported_state"]
+                ),
+                "task_path_endpoint_primary_carrier": failed_array(
+                    task_atlas["path_endpoint_state"]
+                ),
+                "task_selected_path_primary_carrier": failed_array(
+                    task_atlas["selected_path_state"]
+                ),
+            },
+        )
+        atomic_json(claim_path, claim)
+        write_completion_receipt(
+            destination / "completion_receipt.json",
+            job_id=f"phase1-analysis-{checkpoint.parent.name}",
+            artifacts=receipt_artifacts(
+                preflight_path, analysis_path, arrays_path, claim_path
+            ),
+            metadata={
+                "pilot_only": True,
+                "smoke": bool(smoke),
+                "checkpoint_sha256": base_analysis["checkpoint_sha256"],
+                "campaign_identity": campaign_identity,
+                "evaluation_bank_sha256": evaluation_source["sha256"],
+                "perturbation_bank_sha256": perturbation_source["sha256"],
+                "resolved_task_spec_sha256": task_spec.fingerprint(),
+                **receipt_analysis_metadata(),
+                "task_gate_passed": task_pass,
+                "primary_atlas_eligible": False,
+                "projection_quality_passed": False,
+                "strict_worst_normal_evaluated": False,
+                "L3": False,
+            },
+        )
+        return destination
     rs, center = _state_scale(atlas_state)
     tangent_sensitivity = _tangent_finite_difference_sensitivity(
         atlas_angles,
@@ -2510,6 +3629,24 @@ def analyze_checkpoint(
     derivative, tangent, tangent_speed, curvature = tangent_sensitivity["geometries"][
         float(plan.tangent_fd_epsilon)
     ]
+    track_a_geometry_quality = _track_a_geometry_quality(
+        atlas_angles,
+        atlas_state,
+        tangent_speed,
+        rs,
+        minimum_normalized_tangent_speed=(
+            plan.track_a_normalized_tangent_speed_min
+        ),
+        seam_probe_radians=plan.track_a_seam_probe_radians,
+        seam_c0_over_rs_max=plan.track_a_seam_c0_over_rs_max,
+        seam_c1_relative_max=plan.track_a_seam_c1_relative_max,
+    )
+    primary_atlas_valid = bool(
+        slow["success"] and track_a_geometry_quality["passed"]
+    )
+    track_a_failure_reasons = list(slow["failure_reasons"])
+    if not bool(track_a_geometry_quality["passed"]):
+        track_a_failure_reasons.append("track_a_geometry_quality_failed")
     rank_result = _ring_local_rank_metrics(
         derivative,
         rs,
@@ -2525,6 +3662,23 @@ def analyze_checkpoint(
     neighborhood = _neighborhood_metrics(atlas_state, atlas_angles)
     projector = _build_ring_projector(
         atlas_angles, atlas_state, density=plan.projection_density
+    )
+    task_atlas = _task_conditioned_atlas(
+        model,
+        adapter,
+        atlas_angles,
+        plan,
+        primary_projector=projector,
+        primary_state_scale=rs,
+    )
+    task_correspondence, task_correspondence_arrays = (
+        _task_track_a_correspondence(
+            task_atlas,
+            track_a_state=atlas_state,
+            track_a_angles=atlas_angles,
+            projector=projector,
+            state_scale=rs,
+        )
     )
     heldout_count = min(256, plan.atlas_count)
     heldout_cell_indices = _stratified_indices(
@@ -2578,7 +3732,17 @@ def analyze_checkpoint(
     kick_normal_orthogonality = _normal_direction_orthogonality(
         tangent[kick_indices], radial, ambient
     )
+    kick_directions = torch.cat((radial[:, None, :], ambient), dim=1)
     with torch.no_grad():
+        manifold_recovery = manifold_recovery_diagnostics(
+            atlas_state[kick_indices],
+            kick_directions,
+            radius=plan.kick_relative_radius * rs,
+            state_scale=rs,
+            horizons=plan.recovery_horizons,
+            actual_f0=adapter.actual_f0,
+            project=lambda value: _project_ring(value, projector),
+        )
         kick = _finite_kicks(
             adapter, atlas_state, atlas_angles, tangent, kick_indices,
             radial, ambient, plan.kick_relative_radius * rs, plan.recovery_horizon,
@@ -2625,11 +3789,74 @@ def analyze_checkpoint(
         projector=projector, steps=20,
     )
 
-    radial_recovery = _summary(kick["r_n"][:, 0])
-    ambient_per_anchor_max = kick["r_n"][:, 1:].max(dim=1).values
+    registered_horizons = [
+        int(value) for value in manifold_recovery["horizons"].cpu().tolist()
+    ]
+    primary_recovery_index = registered_horizons.index(plan.recovery_horizon)
+    recovery_q_primary = manifold_recovery["manifold_recovery_Q"][
+        primary_recovery_index
+    ]
+    radial_recovery = _summary(recovery_q_primary[:, 0])
+    ambient_per_anchor_max = recovery_q_primary[:, 1:].max(dim=1).values
     ambient_recovery = _summary(ambient_per_anchor_max)
-    same_memory_per_anchor_max = kick["e_excess"].max(dim=1).values
+    same_memory_per_anchor_max = manifold_recovery["same_memory_E_excess"][
+        primary_recovery_index
+    ].max(dim=1).values
     same_memory = _summary(same_memory_per_anchor_max)
+    clean_adherence_by_horizon = {
+        str(horizon): _summary(
+            manifold_recovery["clean_manifold_distance_over_Rs"][index]
+        )
+        for index, horizon in enumerate(registered_horizons)
+    }
+    clean_adherence_q95_max_observed = max(
+        float(summary["q95"])
+        for summary in clean_adherence_by_horizon.values()
+    )
+    clean_adherence = {
+        "metric": "D_clean(H)=d(F0^H(m),M)/Rs",
+        "registered_horizons": registered_horizons,
+        "by_horizon": clean_adherence_by_horizon,
+        "q95_max_over_registered_horizons": clean_adherence_q95_max_observed,
+        "q95_threshold": plan.clean_adherence_q95_max,
+        "all_registered_horizons_passed": bool(
+            clean_adherence_q95_max_observed <= plan.clean_adherence_q95_max
+        ),
+    }
+    recovery_input_valid = bool(
+        manifold_recovery["denominator_valid"].all().cpu()
+        and manifold_recovery[
+            "clean_projection_tangent_frame_valid"
+        ].all().cpu()
+    )
+    initial_distance_summary = {
+        "radial": _summary(
+            manifold_recovery["initial_manifold_distance_over_Rs"][:, 0]
+        ),
+        "ambient_per_anchor_sampled_max": _summary(
+            manifold_recovery["initial_manifold_distance_over_Rs"][:, 1:]
+            .max(dim=1)
+            .values
+        ),
+    }
+    perturbed_distance_primary = manifold_recovery[
+        "perturbed_manifold_distance_over_Rs"
+    ][primary_recovery_index]
+    perturbed_distance_summary = {
+        "radial": _summary(perturbed_distance_primary[:, 0]),
+        "ambient_per_anchor_sampled_max": _summary(
+            perturbed_distance_primary[:, 1:].max(dim=1).values
+        ),
+    }
+    legacy_paired_primary = manifold_recovery[
+        "paired_endpoint_normal_deviation_over_radius"
+    ][primary_recovery_index]
+    legacy_paired_summary = {
+        "radial": _summary(legacy_paired_primary[:, 0]),
+        "ambient_per_anchor_sampled_max": _summary(
+            legacy_paired_primary[:, 1:].max(dim=1).values
+        ),
+    }
     tangent_equivariance = _summary(tangent_error)
     invariance_summary = _summary(invariance)
     fixedness_summary = _summary(fixedness)
@@ -2681,17 +3908,17 @@ def analyze_checkpoint(
         "paper_coordinate_noise_seed": noise_seed,
         "perturbation_bank": perturbation_source,
         "atlas": {
-            "construction": (
-                "settled_mean_of_eight_task_conditioned_paths"
-                if task_atlas["selected_state_scale_valid"]
-                else "canonical_hidden_initialization_diagnostic_fallback_not_primary"
-            ),
+            "construction": "Sagodi_Track_A_task_endpoint_slow_state_periodic_spline",
+            "primary_source": "track_a_resampled_state",
             "anchor_count": plan.atlas_count,
             "state_scale_Rs": float(rs.cpu()),
             "primary_eligible": primary_atlas_valid,
             "eligibility_requires": [
                 "Sagodi_Track_A_reconstruction_success",
-                "task_conditioned_settling_selection_success",
+                "full_ring_candidate_coverage_QA",
+                "all_registered_coarse_coverage_bins_occupied",
+                "normalized_tangent_speed_floor",
+                "periodic_spline_seam_C0_C1_continuity",
             ],
             "heldout_linear_decoder": dict(decoder_summary),
             "decoder_train_anchors": int(decoder_train.size),
@@ -2709,17 +3936,33 @@ def analyze_checkpoint(
             "normal_direction_quality": normal_direction_qa,
             "chi_fiber": task_atlas["chi_fiber"] if math.isfinite(task_atlas["chi_fiber"]) else None,
             "Sagodi_Track_A": {
-                "success": slow["success"],
-                "failure_reasons": slow["failure_reasons"],
+                "success": primary_atlas_valid,
+                "slow_state_reconstruction_success": slow["success"],
+                "failure_reasons": track_a_failure_reasons,
                 "start_state_rule": slow["start_state_rule"],
                 "rollout_horizon": slow["rollout_horizon"],
                 "trajectory_count": slow["trajectory_count"],
                 "candidate_threshold": slow["candidate_threshold"],
                 "candidate_count": slow["candidate_count"],
                 "candidate_trajectory_coverage": slow["candidate_trajectory_coverage"],
+                "coverage": slow["coverage"],
+                "geometry_quality": track_a_geometry_quality,
                 "interpolation": slow["interpolation"],
+                "task_endpoint_discovery": {
+                    "selection_rule": discovery["selection_rule"],
+                    "source_trial_count": discovery["source_trial_count"],
+                    "selected_trial_count": discovery["selected_trial_count"],
+                    "task_rollout_horizon": discovery["task_rollout_horizon"],
+                    "state_noise_standard_deviation": discovery[
+                        "state_noise_standard_deviation"
+                    ],
+                    "source_selection_error_radians": _summary(
+                        discovery["source_selection_error"]
+                    ),
+                },
             },
             "task_conditioned": {
+                "role": "independent_correspondence_projection_and_fiber_diagnostic_only",
                 "canonical": "state immediately after hidden initialization for q",
                 "path_start_angle": 0.0,
                 "path_count": plan.path_count,
@@ -2732,6 +3975,7 @@ def analyze_checkpoint(
                 "settling_criteria": task_atlas["criteria"],
                 "chi_fiber": task_atlas["chi_fiber"] if math.isfinite(task_atlas["chi_fiber"]) else None,
                 "near_single_sheet": task_atlas["near_single_sheet"],
+                "correspondence_to_primary_track_A": task_correspondence,
             },
         },
         "blank_flow": {
@@ -2740,14 +3984,24 @@ def analyze_checkpoint(
             "drift": {"horizon": plan.drift_horizon, **drift_summary},
         },
         "finite_kicks": {
+            "primary_metric": "distance_to_fixed_Track_A_manifold",
             "clean_paired": True,
             "carrier_only": True,
             "rho_over_Rs": plan.kick_relative_radius,
             "rho": float((plan.kick_relative_radius * rs).cpu()),
-            "horizon": plan.recovery_horizon,
-            "radial_R_N": radial_recovery,
-            "ambient_R_N_per_anchor_sampled_max": ambient_recovery,
+            "registered_horizons": registered_horizons,
+            "primary_horizon": plan.recovery_horizon,
+            "clean_adherence": clean_adherence,
+            "initial_manifold_distance_over_Rs": initial_distance_summary,
+            "denominator_and_clean_frame_valid": recovery_input_valid,
+            "radial_Q_recovery": radial_recovery,
+            "ambient_Q_recovery_per_anchor_sampled_max": ambient_recovery,
+            "perturbed_manifold_distance_over_Rs_at_primary_horizon": perturbed_distance_summary,
             "same_memory_E_excess_per_anchor_sampled_max": same_memory,
+            "legacy_paired_endpoint_normal_deviation_over_rho": {
+                "role": "diagnostic_only_may_not_satisfy_C3",
+                **legacy_paired_summary,
+            },
             "ambient_direction_label": "sampled_tangent_and_radial_orthogonal_carrier_normal",
             "ambient_directions_per_anchor": plan.ambient_directions,
         },
@@ -2764,17 +4018,36 @@ def analyze_checkpoint(
             "C4 parameter perturbations are not evaluated",
             "exact all-point fixedness and stable-normal-bundle conditions are not evaluated",
             "the primary normal gap uses sampled per-step projected directions, not an optimized strict-worst operator direction",
-            "settling criterion 3 uses the frozen pilot operational sign/majority definition",
+            "task-sheet settling is a correspondence/fiber QA and does not replace Track A",
+            "all CA conclusions are finite-horizon approximate-CA diagnostics only",
         ],
     }
 
     claim = _claim_gate(
-        protocol, plan, task_result, paper_noise_result, decoder_summary, rank_summary,
-        neighborhood, float(task_atlas["chi_fiber"]), bool(slow["success"]),
-        bool(task_atlas["valid"]), primary_atlas_valid, projection_qa,
-        invariance_summary, drift_summary, radial_recovery, ambient_recovery,
-        same_memory, tangent_equivariance, jvp_summary, normal_direction_qa,
-        preflight_audit,
+        protocol=protocol,
+        plan=plan,
+        task_result=task_result,
+        paper_noise_result=paper_noise_result,
+        decoder_summary=decoder_summary,
+        rank_summary=rank_summary,
+        neighborhood=neighborhood,
+        chi_fiber=float(task_atlas["chi_fiber"]),
+        track_a_success=primary_atlas_valid,
+        settling_valid=bool(task_atlas["valid"]),
+        settling_summary=task_atlas["criteria"],
+        primary_atlas_valid=primary_atlas_valid,
+        projection_qa=projection_qa,
+        invariance_summary=invariance_summary,
+        drift_summary=drift_summary,
+        clean_adherence=clean_adherence,
+        radial_recovery=radial_recovery,
+        ambient_recovery=ambient_recovery,
+        recovery_input_valid=recovery_input_valid,
+        same_memory=same_memory,
+        tangent_equivariance=tangent_equivariance,
+        jvp=jvp_summary,
+        normal_direction_qa=normal_direction_qa,
+        preflight_audit=preflight_audit,
     )
 
     def array(value: torch.Tensor) -> np.ndarray:
@@ -2800,6 +4073,30 @@ def analyze_checkpoint(
         if heldout_task_bank is None
         else heldout_task_bank["settled_path_state"]
     )
+    settling_quality = task_atlas["quality_by_horizon"]
+    if any(value is None for value in settling_quality):
+        raise RuntimeError(
+            "primary Track-A geometry exists but task-sheet settling was not evaluated"
+        )
+    settling_tensor_fields = (
+        "within_path_variance",
+        "next_within_path_variance",
+        "absolute_symmetric_relative_variance_change",
+        "positive_relative_variance_expansion",
+        "within_path_residual_over_Rs",
+        "next_within_path_residual_over_Rs",
+        "systematic_decrease_indicator",
+        "rolled_mean_state",
+        "mean_of_rolled_path_states",
+        "rolled_mean_manifold_distance_over_Rs",
+        "rolled_mean_projected_angle",
+    )
+    settling_arrays = {
+        f"task_settling_{field}": array(
+            torch.stack([value[field] for value in settling_quality])
+        )
+        for field in settling_tensor_fields
+    }
     arrays = {
         "atlas_angles": array(atlas_angles),
         "atlas_primary_carrier": array(atlas_state),
@@ -2815,8 +4112,21 @@ def analyze_checkpoint(
         "track_a_selected_time": np.asarray(slow["selected_time"], dtype=np.int64),
         "track_a_selected_trajectory": np.asarray(slow["selected_trajectory"], dtype=np.int64),
         "track_a_selected_decoded_angle": np.asarray(slow["selected_decoded_angle"]),
+        "track_a_selected_target_error_radians": np.asarray(
+            slow["selected_target_error_radians"]
+        ),
         "track_a_max_speed": np.asarray(slow["max_speed"]),
         "track_a_candidate_count_per_trajectory": np.asarray(slow["candidate_count_per_trajectory"]),
+        "track_a_discovery_source_indices": array(discovery["source_indices"]),
+        "track_a_discovery_source_final_angles": array(
+            discovery["source_final_angles"]
+        ),
+        "track_a_discovery_source_selection_error": array(
+            discovery["source_selection_error"]
+        ),
+        "track_a_discovery_endpoint_reported_state": array(
+            discovery["reported_state"]
+        ),
         "task_canonical_primary_carrier": array(task_atlas["canonical_state"]),
         "task_path_velocity": array(task_atlas["path_velocity"]),
         "task_path_endpoint_primary_carrier": array(task_atlas["path_endpoint_state"]),
@@ -2825,6 +4135,11 @@ def analyze_checkpoint(
         "task_selected_path_primary_carrier": array(task_atlas["selected_path_state"]),
         "task_fiber_within_variance_normalized": array(task_atlas["within_variance_normalized"]),
         "task_between_nearest_separation_normalized": array(task_atlas["between_nearest_separation_normalized"]),
+        **settling_arrays,
+        **{
+            f"task_track_A_correspondence_{key}": array(value)
+            for key, value in task_correspondence_arrays.items()
+        },
         "atlas_tangent": array(tangent),
         "atlas_tangent_derivative": array(derivative),
         "atlas_tangent_speed": array(tangent_speed),
@@ -2861,10 +4176,19 @@ def analyze_checkpoint(
         "kick_ambient_tangent_orthogonality_error": array(
             kick_normal_orthogonality["ambient"]
         ),
-        "kick_R_N": array(kick["r_n"]),
-        "kick_L_T": array(kick["l_t"]),
-        "kick_R_same": array(kick["r_same"]),
-        "kick_E_excess": array(kick["e_excess"]),
+        **{
+            f"manifold_recovery_{key}": array(value)
+            for key, value in manifold_recovery.items()
+        },
+        "diagnostic_paired_endpoint_normal_deviation_over_rho": array(
+            manifold_recovery[
+                "paired_endpoint_normal_deviation_over_radius"
+            ]
+        ),
+        "diagnostic_legacy_paired_endpoint_R_N": array(kick["r_n"]),
+        "diagnostic_legacy_paired_endpoint_L_T": array(kick["l_t"]),
+        "diagnostic_legacy_paired_endpoint_R_same": array(kick["r_same"]),
+        "diagnostic_legacy_paired_endpoint_E_excess": array(kick["e_excess"]),
         "tangent_equivariance_E_T": array(tangent_error),
         "jacobian_anchor_indices": array(jacobian_indices),
         "jacobian_radial_tangent_orthogonality_error": array(
@@ -2907,7 +4231,14 @@ def analyze_checkpoint(
     write_completion_receipt(
         destination / "completion_receipt.json",
         job_id=f"phase1-analysis-{checkpoint.parent.name}",
-        artifacts=[preflight_path, analysis_path, arrays_path, trace_path, trace_json_path, claim_path],
+        artifacts=receipt_artifacts(
+            preflight_path,
+            analysis_path,
+            arrays_path,
+            trace_path,
+            trace_json_path,
+            claim_path,
+        ),
         metadata={
             "pilot_only": True,
             "smoke": bool(smoke),
@@ -2916,6 +4247,8 @@ def analyze_checkpoint(
             "evaluation_bank_sha256": evaluation_source["sha256"],
             "perturbation_bank_sha256": perturbation_source["sha256"],
             "realized_projected_direction_sha256": perturbation_source["realized_projected_direction_sha256"],
+            "resolved_task_spec_sha256": task_spec.fingerprint(),
+            **receipt_analysis_metadata(),
             "task_gate_passed": task_pass,
             "primary_atlas_eligible": primary_atlas_valid,
             "projection_quality_passed": bool(projection_qa["passed"]),
@@ -2935,6 +4268,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--evaluation-bank", type=Path)
     parser.add_argument("--perturbation-bank", type=Path)
     parser.add_argument("--campaign-identity")
+    parser.add_argument("--analysis-freeze", type=Path)
     parser.add_argument("--smoke", action="store_true")
     return parser.parse_args(argv)
 
@@ -2950,6 +4284,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         evaluation_bank=args.evaluation_bank,
         perturbation_bank=args.perturbation_bank,
         campaign_identity=args.campaign_identity,
+        analysis_freeze_path=args.analysis_freeze,
     )
     print(json.dumps({"status": "complete", "output_dir": str(output)}, sort_keys=True))
     return 0

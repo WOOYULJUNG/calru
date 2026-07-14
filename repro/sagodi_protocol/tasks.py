@@ -35,6 +35,8 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import torch
 
+from .config import AngularTaskSpec
+
 
 TASK_VERSION = "sagodi-protocol-v1"
 BANK_SCHEMA_VERSION = 1
@@ -77,6 +79,12 @@ def _thaw(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise TypeError(f"metadata value is not JSON-compatible: {type(value).__name__}")
+
+
+def metadata_payload(value: Any) -> Any:
+    """Return immutable task metadata as ordinary JSON-compatible objects."""
+
+    return _thaw(value)
 
 
 @dataclass(frozen=True)
@@ -288,6 +296,9 @@ def _gp_cholesky(
     length_scale: float,
     gp_std: float,
     jitter: float,
+    grid_start: float,
+    grid_stop: float,
+    grid_endpoint: bool,
 ) -> np.ndarray:
     if int(horizon) <= 0:
         raise ValueError("horizon must be positive")
@@ -295,7 +306,17 @@ def _gp_cholesky(
         raise ValueError("GP length scale and standard deviation must be positive")
     if float(jitter) <= 0.0:
         raise ValueError("GP Cholesky jitter must be positive")
-    grid = np.linspace(-1.0, 1.0, int(horizon), dtype=np.float64)
+    if not math.isfinite(float(grid_start)) or not math.isfinite(float(grid_stop)):
+        raise ValueError("GP grid bounds must be finite")
+    if float(grid_start) >= float(grid_stop):
+        raise ValueError("GP grid start must be smaller than grid stop")
+    grid = np.linspace(
+        float(grid_start),
+        float(grid_stop),
+        int(horizon),
+        endpoint=bool(grid_endpoint),
+        dtype=np.float64,
+    )
     delta = grid[:, None] - grid[None, :]
     covariance = float(gp_std) ** 2 * np.exp(
         -(delta**2) / (2.0 * float(length_scale) ** 2)
@@ -330,6 +351,17 @@ def angular_integration(
     gp_length_scale: float = GP_LENGTH_SCALE,
     gp_std: float = GP_STD,
     gp_jitter: float = GP_CHOLESKY_JITTER,
+    gp_grid_start: float = -1.0,
+    gp_grid_stop: float = 1.0,
+    gp_grid_endpoint: bool = True,
+    q0_distribution: str = "uniform_minus_pi_pi",
+    q0_low: float = -math.pi,
+    q0_high: float = math.pi,
+    q0_high_inclusive: bool = False,
+    target_indexing: str = "q_t_plus_1_after_velocity_update",
+    loss_mask_mode: str = "all_256_velocity_steps",
+    resolved_task_spec: Mapping[str, Any] | None = None,
+    resolved_task_spec_sha256: str | None = None,
     stream_key: Sequence[Any] | Any | None = None,
     dtype: torch.dtype = torch.float32,
     device: torch.device | str = "cpu",
@@ -349,6 +381,26 @@ def angular_integration(
         raise ValueError("batch_size, dimensions, and horizon must be positive")
     if float(dt) <= 0.0:
         raise ValueError("dt must be positive")
+    if str(q0_distribution) != "uniform_minus_pi_pi":
+        raise ValueError("unsupported q0 distribution")
+    if not math.isfinite(float(q0_low)) or not math.isfinite(float(q0_high)):
+        raise ValueError("q0 bounds must be finite")
+    if float(q0_low) >= float(q0_high):
+        raise ValueError("q0 lower bound must be smaller than upper bound")
+    if bool(q0_high_inclusive):
+        raise ValueError("NumPy uniform q0 sampling uses an exclusive high endpoint")
+    if str(target_indexing) != "q_t_plus_1_after_velocity_update":
+        raise ValueError("unsupported angular target indexing")
+    if str(loss_mask_mode) != "all_256_velocity_steps":
+        raise ValueError("unsupported angular loss mask")
+    if (resolved_task_spec is None) != (resolved_task_spec_sha256 is None):
+        raise ValueError("resolved task spec payload and SHA-256 must be supplied together")
+    if resolved_task_spec is not None:
+        expected_task_spec_sha256 = hashlib.sha256(
+            _canonical_json_bytes(resolved_task_spec)
+        ).hexdigest()
+        if str(resolved_task_spec_sha256) != expected_task_spec_sha256:
+            raise ValueError("resolved task spec SHA-256 does not match its payload")
     mode = _normalize_init_mode(init_mode)
     keys = _stream_key(stream_key)
     derived = keyed_seed(
@@ -364,9 +416,17 @@ def angular_integration(
         *keys,
     )
     rng = np.random.default_rng(derived)
-    q0 = rng.uniform(-math.pi, math.pi, size=(batch, dim))
+    q0 = rng.uniform(float(q0_low), float(q0_high), size=(batch, dim))
     white = rng.standard_normal(size=(steps, batch * dim))
-    factor = _gp_cholesky(steps, gp_length_scale, gp_std, gp_jitter)
+    factor = _gp_cholesky(
+        steps,
+        gp_length_scale,
+        gp_std,
+        gp_jitter,
+        gp_grid_start,
+        gp_grid_stop,
+        gp_grid_endpoint,
+    )
     velocity = (factor @ white).reshape(steps, batch, dim)
 
     q = np.empty((steps + 1, batch, dim), dtype=np.float64)
@@ -405,13 +465,25 @@ def angular_integration(
         "input_dimension": int(inputs.shape[-1]),
         "output_dimension": 2 * dim,
         "gp_grid": "linspace(-1,1,T)",
+        "gp_grid_start": float(gp_grid_start),
+        "gp_grid_stop": float(gp_grid_stop),
+        "gp_grid_endpoint": bool(gp_grid_endpoint),
         "gp_length_scale": float(gp_length_scale),
         "gp_std": float(gp_std),
         "gp_cholesky_jitter": float(gp_jitter),
+        "q0_distribution": str(q0_distribution),
+        "q0_low": float(q0_low),
+        "q0_high": float(q0_high),
+        "q0_high_inclusive": bool(q0_high_inclusive),
         "initial_latents": q0,
         "target_indexing": "post_velocity_update",
+        "target_indexing_contract": str(target_indexing),
+        "loss_mask_mode": str(loss_mask_mode),
         "cue_token_is_loss_masked": mode == "cue-driven",
     }
+    if resolved_task_spec is not None:
+        metadata["resolved_task_spec"] = resolved_task_spec
+        metadata["resolved_task_spec_sha256"] = str(resolved_task_spec_sha256)
     return Batch(
         inputs=_tensor(inputs, dtype=dtype, device=device),
         output_targets=_tensor(output_targets, dtype=dtype, device=device),
@@ -482,19 +554,36 @@ def sample_angular_integration(
     gp_length_scale: float = GP_LENGTH_SCALE,
     gp_std: float = GP_STD,
     gp_jitter: float = GP_CHOLESKY_JITTER,
+    task_spec: AngularTaskSpec | None = None,
+    allow_horizon_override: bool = False,
 ) -> Batch:
     """Stable two-seed API for single-angle integration."""
 
+    if task_spec is None:
+        generator_kwargs = {
+            "dimensions": 1,
+            "init_mode": init_mode,
+            "horizon": horizon,
+            "dt": dt,
+            "gp_length_scale": gp_length_scale,
+            "gp_std": gp_std,
+            "gp_jitter": gp_jitter,
+        }
+    else:
+        if (
+            int(horizon) != int(task_spec.sequence_steps)
+            and not bool(allow_horizon_override)
+        ):
+            raise ValueError("sample horizon differs from resolved task spec")
+        if _normalize_init_mode(init_mode) != task_spec.init_mode_for_generator:
+            raise ValueError("sample init mode differs from resolved task spec")
+        generator_kwargs = task_spec.generator_kwargs()
+        if bool(allow_horizon_override):
+            generator_kwargs["horizon"] = int(horizon)
     batch = angular_integration(
         batch_size,
         task_seed,
-        dimensions=1,
-        init_mode=init_mode,
-        horizon=horizon,
-        dt=dt,
-        gp_length_scale=gp_length_scale,
-        gp_std=gp_std,
-        gp_jitter=gp_jitter,
+        **generator_kwargs,
         stream_key=("sample_seed", int(sample_seed)),
         device=device,
         dtype=dtype,
@@ -705,6 +794,7 @@ __all__ = [
     "double_angular_integration",
     "keyed_seed",
     "load_fixed_bank",
+    "metadata_payload",
     "memory_guided_saccade",
     "sample_angular_integration",
     "sample_double_angular_integration",

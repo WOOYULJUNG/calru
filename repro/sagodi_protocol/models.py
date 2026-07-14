@@ -27,9 +27,20 @@ if str(_LEGACY) not in sys.path:
 from exp71_pan_block_pulse_hold import build_model_variant  # noqa: E402
 
 
-MODEL_NAMES = ("ca_lru", "no_rp", "gru")
+CUSTOM_GRU = "gru"
+SAGODI_GRU_WIDTH96 = "gru_sagodi_width96"
+SAGODI_GRU_PARAM135 = "gru_sagodi_param135"
+SAGODI_GRU_NAMES = (SAGODI_GRU_WIDTH96, SAGODI_GRU_PARAM135)
+SAGODI_GRU_WIDTHS = {
+    SAGODI_GRU_WIDTH96: 96,
+    SAGODI_GRU_PARAM135: 135,
+}
+MODEL_NAMES = ("ca_lru", "no_rp", CUSTOM_GRU, *SAGODI_GRU_NAMES)
 INITIAL_ENCODER_PYTORCH_DEFAULT = "pytorch_default"
 INITIAL_ENCODER_SAGODI_W_OTR = "sagodi_W_otr_normal_primary_inverse_sqrt"
+INITIAL_ENCODER_IDENTITY = "identity"
+INITIAL_ENCODER_TANH = "tanh"
+SAGODI_CODE_COMMIT = "cbd7404e9baca4b2dc291560cfc6576bb7b1f078"
 
 
 @dataclass(frozen=True)
@@ -51,6 +62,7 @@ class ModelConfig:
     rank_matched_lambda_low: float = 0.0
     initial_encoder_bias: bool = True
     initial_encoder_weight_init: str = INITIAL_ENCODER_PYTORCH_DEFAULT
+    initial_encoder_activation: str = INITIAL_ENCODER_IDENTITY
 
     def validate(self) -> None:
         if self.name not in MODEL_NAMES:
@@ -77,6 +89,11 @@ class ModelConfig:
                 raise ValueError(f"pilot architecture freezes {key}={expected}, got {actual}")
         if self.init_mode != "hidden_init":
             raise ValueError("the Phase-1 pilot freezes hidden_init")
+        if self.initial_encoder_activation not in {
+            INITIAL_ENCODER_IDENTITY,
+            INITIAL_ENCODER_TANH,
+        }:
+            raise ValueError("unsupported initial-state encoder activation")
         if self.initial_encoder_weight_init not in {
             INITIAL_ENCODER_PYTORCH_DEFAULT,
             INITIAL_ENCODER_SAGODI_W_OTR,
@@ -95,6 +112,18 @@ class ModelConfig:
             and self.initial_encoder_bias is not False
         ):
             raise ValueError("Ságodi W_otr initialization requires bias=false")
+        if self.name in SAGODI_GRU_NAMES:
+            expected_width = SAGODI_GRU_WIDTHS[self.name]
+            if int(self.width) != expected_width:
+                raise ValueError(
+                    f"{self.name} freezes hidden width {expected_width}, got {self.width}"
+                )
+            if self.initial_encoder_weight_init != INITIAL_ENCODER_SAGODI_W_OTR:
+                raise ValueError("Ságodi GRU requires the explicit W_otr initialization repair")
+            if self.initial_encoder_activation != INITIAL_ENCODER_TANH:
+                raise ValueError("Ságodi GRU requires tanh(W_otr y0) initialization")
+        elif self.initial_encoder_activation != INITIAL_ENCODER_IDENTITY:
+            raise ValueError("legacy v1 models retain identity initial-state activation")
 
 
 def _legacy_variant(name: str) -> str:
@@ -103,6 +132,46 @@ def _legacy_variant(name: str) -> str:
     if name == "gru":
         return "GRU"
     raise ValueError(name)
+
+
+class SagodiGRUBaseline(nn.Module):
+    """One-layer official-style GRU with direct linear readout.
+
+    The pinned ``gru.py`` uses ``nn.GRU`` and a direct ``nn.Linear`` head.  A
+    single ``GRUCell`` exposes the same one-step recurrence needed by the
+    protocol analysis.  We preserve PyTorch's two random bias vectors (the
+    official code does not zero the update gate) and explicitly repeat the
+    official recurrent-weight uniform initialization.  The pinned GRU forgot
+    to initialize ``output_to_hidden``; that deterministic repair is owned by
+    :class:`ProtocolModel` rather than silently reproducing uninitialized
+    memory.
+    """
+
+    def __init__(self, input_dim: int, output_dim: int, hidden: int):
+        super().__init__()
+        # StateAdapter audits the literal blank-input map through this public
+        # step interface, so the input dimension must be explicit rather than
+        # hidden inside GRUCell.
+        self.input_dim = int(input_dim)
+        self.hidden = int(hidden)
+        self.cell = nn.GRUCell(self.input_dim, self.hidden, bias=True)
+        bound = 1.0 / math.sqrt(float(self.hidden))
+        with torch.no_grad():
+            nn.init.uniform_(self.cell.weight_hh, -bound, bound)
+        self.readout = nn.Linear(self.hidden, int(output_dim), bias=True)
+
+    @property
+    def state_size(self) -> int:
+        return self.hidden
+
+    def init_state(self, batch: int, device: torch.device | str) -> torch.Tensor:
+        return torch.zeros(int(batch), self.hidden, device=device)
+
+    def step(self, x_t: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
+        return self.cell(x_t, state)
+
+    def decode(self, state: torch.Tensor) -> torch.Tensor:
+        return self.readout(state)
 
 
 def _primary_size(core: nn.Module) -> int:
@@ -190,6 +259,8 @@ class ProtocolModel(nn.Module):
                 f"({batch}, {self.config.initial_memory_dim})"
             )
         primary = self.initial_encoder(initial_memory)
+        if self.config.initial_encoder_activation == INITIAL_ENCODER_TANH:
+            primary = torch.tanh(primary)
         return self.reported_from_primary(primary)
 
     def step(
@@ -301,9 +372,14 @@ class ProtocolModel(nn.Module):
                     == INITIAL_ENCODER_SAGODI_W_OTR
                     else "torch.nn.Linear.reset_parameters"
                 ),
+                "activation": self.config.initial_encoder_activation,
                 "primary_state_dimension": self.primary_state_size,
             },
-            "legacy_variant": _legacy_variant(self.config.name),
+            "legacy_variant": (
+                _legacy_variant(self.config.name)
+                if self.config.name not in SAGODI_GRU_NAMES
+                else None
+            ),
             "autonomous_primary_map": autonomous_primary_map,
             "input_conditioned_writer": input_conditioned_writer,
             "primary_state_size": self.primary_state_size,
@@ -311,6 +387,25 @@ class ProtocolModel(nn.Module):
             "parameters_total": sum(p.numel() for p in self.parameters()),
             "parameters_trainable": sum(p.numel() for p in self.parameters() if p.requires_grad),
             "rp_enabled": self.rp_enabled,
+            "sagodi_gru_contract": (
+                {
+                    "official_source_commit": SAGODI_CODE_COMMIT,
+                    "recurrence": "one_layer_torch_GRUCell_step_equivalent_to_nn_GRU",
+                    "bias_convention": "two_PyTorch_default_random_bias_vectors",
+                    "initial_state": "tanh(bias_free_W_otr_y0)",
+                    "readout": "direct_biased_linear",
+                    "output_to_hidden_initialization_repair": (
+                        "Normal(0,1/sqrt(hidden)); pinned gru.py left W_otr uninitialized"
+                    ),
+                    "matching_role": (
+                        "width_matched_to_CA_LRU_96"
+                        if self.config.name == SAGODI_GRU_WIDTH96
+                        else "nearest_parameter_match_to_CA_LRU_56834"
+                    ),
+                }
+                if self.config.name in SAGODI_GRU_NAMES
+                else None
+            ),
         }
 
 
@@ -344,13 +439,25 @@ def model_config_from_protocol(
         }:
             raise ValueError("unsupported initial-state encoder initialization block")
         initial_encoder_weight_init = INITIAL_ENCODER_SAGODI_W_OTR
+    resolved_width = int(training["width"] if width_override is None else width_override)
+    resolved_encoder_bias = bool(initializer["bias"])
+    resolved_encoder_weight_init = initial_encoder_weight_init
+    resolved_encoder_activation = INITIAL_ENCODER_IDENTITY
+    if model_name in SAGODI_GRU_NAMES:
+        frozen_width = SAGODI_GRU_WIDTHS[str(model_name)]
+        if width_override is not None and int(width_override) != frozen_width:
+            raise ValueError(f"{model_name} width override must be {frozen_width}")
+        resolved_width = frozen_width
+        resolved_encoder_bias = False
+        resolved_encoder_weight_init = INITIAL_ENCODER_SAGODI_W_OTR
+        resolved_encoder_activation = INITIAL_ENCODER_TANH
     return ModelConfig(
         name=str(model_name),
         input_dim=int(task["input_dimension"]),
         output_dim=int(task["output_dimension"]),
         initial_memory_dim=int(initializer["input_dimension"]),
         init_mode=str(task["initialization_mode"]),
-        width=int(training["width"] if width_override is None else width_override),
+        width=resolved_width,
         rank=int(shared["rank"]),
         layers=int(shared["layers"]),
         dropout=float(shared["dropout"]),
@@ -360,8 +467,9 @@ def model_config_from_protocol(
         plru_c=float(shared["plru_c"]),
         rank_matched_lambda_high=float(shared["rank_matched_lambda_high"]),
         rank_matched_lambda_low=float(shared["rank_matched_lambda_low"]),
-        initial_encoder_bias=bool(initializer["bias"]),
-        initial_encoder_weight_init=initial_encoder_weight_init,
+        initial_encoder_bias=resolved_encoder_bias,
+        initial_encoder_weight_init=resolved_encoder_weight_init,
+        initial_encoder_activation=resolved_encoder_activation,
     )
 
 
@@ -447,7 +555,7 @@ def _verify_resolved_architecture(model: ProtocolModel) -> None:
             or core.head[1].bias is None
         ):
             raise RuntimeError("CA-LRU head must be affine LayerNorm followed by biased Linear")
-    else:
+    elif config.name == CUSTOM_GRU:
         if core.__class__.__name__ != "GRUBaseline":
             raise RuntimeError("GRU pilot baseline must resolve to GRUBaseline")
         if not isinstance(core.cell, nn.GRUCell):
@@ -478,26 +586,55 @@ def _verify_resolved_architecture(model: ProtocolModel) -> None:
             or readout[2].bias is None
         ):
             raise RuntimeError("GRU readout must be the frozen biased 64-unit Tanh MLP")
+    else:
+        if config.name not in SAGODI_GRU_NAMES:
+            raise RuntimeError(f"unverified model architecture {config.name!r}")
+        if not isinstance(core, SagodiGRUBaseline):
+            raise RuntimeError("Ságodi GRU must resolve to SagodiGRUBaseline")
+        if not isinstance(core.cell, nn.GRUCell):
+            raise RuntimeError("Ságodi GRU recurrence must use torch.nn.GRUCell")
+        if core.cell.bias_ih is None or core.cell.bias_hh is None:
+            raise RuntimeError("Ságodi GRU must retain both official bias vectors")
+        if not isinstance(core.readout, nn.Linear) or core.readout.bias is None:
+            raise RuntimeError("Ságodi GRU must use a direct biased linear readout")
+        if core.readout.in_features != int(config.width):
+            raise RuntimeError("Ságodi GRU direct readout has the wrong hidden width")
+        if config.initial_encoder_activation != INITIAL_ENCODER_TANH:
+            raise RuntimeError("Ságodi GRU initial mapping must apply tanh")
+        expected_parameters = 3 * int(config.width) ** 2 + 13 * int(config.width) + 2
+        actual_parameters = sum(parameter.numel() for parameter in model.parameters())
+        if actual_parameters != expected_parameters:
+            raise RuntimeError(
+                "Ságodi GRU parameter-count contract failed: "
+                f"{actual_parameters} != {expected_parameters}"
+            )
 
 
 def build_protocol_model(config: ModelConfig) -> ProtocolModel:
     config.validate()
-    core = build_model_variant(
-        variant=_legacy_variant(config.name),
-        input_dim=int(config.input_dim),
-        output_dim=int(config.output_dim),
-        rank=int(config.rank),
-        d_model=int(config.width),
-        rec_dim=int(config.width),
-        layers=int(config.layers),
-        dropout=float(config.dropout),
-        plru_tau=float(config.plru_tau),
-        plru_c=float(config.plru_c),
-        pan_lambda_min=float(config.pan_lambda_min),
-        pan_lambda_max=float(config.pan_lambda_max),
-        rank_matched_lambda_high=float(config.rank_matched_lambda_high),
-        rank_matched_lambda_low=float(config.rank_matched_lambda_low),
-    )
+    if config.name in SAGODI_GRU_NAMES:
+        core = SagodiGRUBaseline(
+            int(config.input_dim),
+            int(config.output_dim),
+            int(config.width),
+        )
+    else:
+        core = build_model_variant(
+            variant=_legacy_variant(config.name),
+            input_dim=int(config.input_dim),
+            output_dim=int(config.output_dim),
+            rank=int(config.rank),
+            d_model=int(config.width),
+            rec_dim=int(config.width),
+            layers=int(config.layers),
+            dropout=float(config.dropout),
+            plru_tau=float(config.plru_tau),
+            plru_c=float(config.plru_c),
+            pan_lambda_min=float(config.pan_lambda_min),
+            pan_lambda_max=float(config.pan_lambda_max),
+            rank_matched_lambda_high=float(config.rank_matched_lambda_high),
+            rank_matched_lambda_low=float(config.rank_matched_lambda_low),
+        )
     model = ProtocolModel(config, core)
     _verify_resolved_architecture(model)
     return model
