@@ -28,6 +28,8 @@ from .artifacts import (
 from .config import (
     DEFAULT_PROTOCOL_PATH,
     SAGODI_LR_SELECTION_TRACK,
+    SAGODI_PRIMARY_LR_SELECTION_TRACK,
+    SAGODI_PRIMARY_MAIN_TRACK,
     AngularTaskSpec,
     load_protocol,
     protocol_fingerprint,
@@ -71,11 +73,12 @@ def _frozen_training_model_seeds(protocol: dict[str, Any]) -> tuple[int, ...]:
     """
 
     track = protocol["phase1_ring_pilot"]["protocol_track"]
-    seed_key = (
-        "selection_model_seeds"
-        if track == SAGODI_LR_SELECTION_TRACK
-        else "pilot_model_seeds"
-    )
+    if track in {SAGODI_LR_SELECTION_TRACK, SAGODI_PRIMARY_LR_SELECTION_TRACK}:
+        seed_key = "selection_model_seeds"
+    elif track == SAGODI_PRIMARY_MAIN_TRACK:
+        seed_key = "main_model_seeds"
+    else:
+        seed_key = "pilot_model_seeds"
     raw = protocol["seed_policy"].get(seed_key)
     if not isinstance(raw, list) or not raw:
         raise ValueError(
@@ -468,6 +471,10 @@ def train_one(spec: TrainSpec) -> Path:
     task_spec_sha256 = task_spec.fingerprint()
     training = phase["training"]
     seed_policy = protocol["seed_policy"]
+    primary_main = phase["protocol_track"] == SAGODI_PRIMARY_MAIN_TRACK
+    artifact_role = "primary_main_training" if primary_main else "pilot_training"
+    campaign_type = "sagodi_primary_main_v3" if primary_main else "sagodi_protocol_pilot"
+    pilot_only = not primary_main
     model_ids = [item["id"] for item in phase["models"]]
     if spec.model_name not in model_ids:
         raise ValueError(f"model {spec.model_name!r} is outside the frozen pilot")
@@ -476,6 +483,18 @@ def train_one(spec: TrainSpec) -> Path:
         raise ValueError("model seed is outside the frozen training set")
     if float(spec.learning_rate) not in training["learning_rate"]["active_launch_values"] and not spec.smoke:
         raise ValueError("learning rate is outside active frozen values")
+    selected_by_model = training["learning_rate"].get("selected_by_model")
+    if primary_main:
+        if not isinstance(selected_by_model, dict) or set(selected_by_model) != set(model_ids):
+            raise ValueError("primary main protocol lacks the complete modelwise LR mapping")
+        expected_learning_rate = float(selected_by_model[spec.model_name])
+        if not math.isclose(
+            float(spec.learning_rate), expected_learning_rate, rel_tol=0.0, abs_tol=0.0
+        ):
+            raise ValueError(
+                f"primary main {spec.model_name} requires selector-bound "
+                f"learning rate {expected_learning_rate:g}"
+            )
     if not spec.smoke and (spec.steps_override is not None or spec.batch_override is not None):
         raise ValueError("--steps and --batch-size overrides are smoke-only")
     campaign_identity = _normalize_campaign_identity(
@@ -526,11 +545,24 @@ def train_one(spec: TrainSpec) -> Path:
         else 0.0
     )
     rp = training["rp_schedule_for_ca_lru"]
-    rp_enabled_by_protocol = bool(rp.get("enabled_during_selector", True))
+    rp_schedule_enabled = bool(
+        rp.get("enabled_during_training")
+        if primary_main
+        else rp.get("enabled_during_selector", True)
+    )
+    rp_enabled_by_protocol = bool(rp_schedule_enabled and model.rp_enabled)
     # These are inherited pilot defaults from the preceding CA-LRU study and
     # are recorded explicitly.  They are not confirmatory values.
-    eta_lambda = float(rp.get("eta_lambda_pilot_default", 3000.0))
-    damage_epsilon = float(rp.get("damage_epsilon_pilot_default", 3e-5))
+    eta_lambda = float(
+        rp.get("eta_lambda")
+        if primary_main
+        else rp.get("eta_lambda_pilot_default", 3000.0)
+    )
+    damage_epsilon = float(
+        rp.get("damage_epsilon")
+        if primary_main
+        else rp.get("damage_epsilon_pilot_default", 3e-5)
+    )
     rp_probe_batch = min(int(rp["probe_batch_size"]), 4) if spec.smoke else int(rp["probe_batch_size"])
     rp_probe_horizon = min(int(rp["probe_horizon"]), 8) if spec.smoke else int(rp["probe_horizon"])
     configured_blank_horizon = int(rp.get("blank_ablation_horizon", rp["probe_horizon"]))
@@ -578,6 +610,9 @@ def train_one(spec: TrainSpec) -> Path:
         "protocol_canonical_fingerprint": protocol_canonical_fingerprint,
         "protocol_track": phase["protocol_track"],
         "reporting": protocol.get("reporting"),
+        "artifact_role": artifact_role,
+        "campaign_type": campaign_type,
+        "parent_selector": protocol.get("parent_selector"),
         "campaign_identity": campaign_identity,
         "physical_gpu_id": os.environ.get("CALRU_PHYSICAL_GPU_ID"),
         "train_spec": {**serialized_spec, "output_dir": str(output_dir)},
@@ -804,6 +839,9 @@ def train_one(spec: TrainSpec) -> Path:
                 "protocol_canonical_fingerprint": protocol_canonical_fingerprint,
                 "protocol_track": phase["protocol_track"],
                 "reporting": protocol.get("reporting"),
+                "artifact_role": artifact_role,
+                "campaign_type": campaign_type,
+                "parent_selector": protocol.get("parent_selector"),
                 "campaign_identity": campaign_identity,
                 "evaluation_bank_sha256": evaluation_bank_sha256,
                 "resolved_task_spec_sha256": task_spec_sha256,
@@ -841,6 +879,9 @@ def train_one(spec: TrainSpec) -> Path:
         "protocol_canonical_fingerprint": protocol_canonical_fingerprint,
         "protocol_track": phase["protocol_track"],
         "reporting": protocol.get("reporting"),
+        "artifact_role": artifact_role,
+        "campaign_type": campaign_type,
+        "parent_selector": protocol.get("parent_selector"),
         "source_protocol_sha256": protocol["source_protocol"]["sha256"],
         "resolved_task_spec": task_spec_payload,
         "resolved_task_spec_sha256": task_spec_sha256,
@@ -875,12 +916,17 @@ def train_one(spec: TrainSpec) -> Path:
             "calls": len(rp_trace),
         },
         "task_metrics_path": "task_metrics.json",
-        "pilot_only": True,
+        "pilot_only": pilot_only,
+        "ca_evidence": False,
+        "manifold_analysis_performed": False,
     }
     _require_finite_payload(manifest, "manifest")
     atomic_json(output_dir / "manifest.json", manifest)
     receipt_metadata = {
-        "pilot_only": True,
+        "pilot_only": pilot_only,
+        "artifact_role": artifact_role,
+        "campaign_type": campaign_type,
+        "parent_selector": protocol.get("parent_selector"),
         "freeze_id": protocol["freeze_id"],
         "protocol_track": phase["protocol_track"],
         "reporting": protocol.get("reporting"),

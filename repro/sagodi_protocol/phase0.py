@@ -16,7 +16,12 @@ import torch
 from .artifacts import atomic_json, sha256_file, write_completion_receipt
 from .audit import AuditConfig, run_phase0_audit
 from .config import DEFAULT_PROTOCOL_PATH, load_protocol, protocol_fingerprint
-from .models import SAGODI_GRU_NAMES, build_protocol_model, model_config_from_protocol
+from .models import (
+    PROJECT_PARAM_BASELINE_NAMES,
+    SAGODI_GRU_NAMES,
+    build_protocol_model,
+    model_config_from_protocol,
+)
 from .state import StateAdapter
 
 
@@ -39,7 +44,7 @@ def _atomic_npz(path: Path, **arrays: np.ndarray) -> None:
 def _phase0_width_override(model_name: str, *, smoke: bool) -> int | None:
     """Keep architecture-locked Ságodi GRUs at their frozen dimensions."""
 
-    if not smoke or model_name in SAGODI_GRU_NAMES:
+    if not smoke or model_name in (*SAGODI_GRU_NAMES, *PROJECT_PARAM_BASELINE_NAMES):
         return None
     return 8
 
@@ -141,6 +146,8 @@ def run_phase0(
     smoke: bool = False,
 ) -> Path:
     protocol = load_protocol(protocol_path)
+    primary_main = protocol.get("campaign_mode") == "sagodi_primary_main_v3"
+    pilot_only = not primary_main
     root = Path(output_root).resolve()
     completion = root / "completion_receipt.json"
     if completion.exists() or (root.exists() and any(root.iterdir())):
@@ -308,7 +315,11 @@ def run_phase0(
             "protocol_file_sha256": protocol_hash,
             "protocol_canonical_fingerprint": protocol_fingerprint(protocol),
             "source_protocol_sha256": protocol["source_protocol"]["sha256"],
-            "pilot_only": True,
+            "pilot_only": pilot_only,
+            "campaign_type": (
+                "sagodi_primary_main_v3" if primary_main else "sagodi_protocol_pilot"
+            ),
+            "parent_selector": protocol.get("parent_selector"),
         },
     )
     artifacts.extend([gate_path, manifest_path])
@@ -316,7 +327,14 @@ def run_phase0(
         completion,
         job_id="phase0_state_audit",
         artifacts=artifacts,
-        metadata={"passed": passed, "pilot_only": True},
+        metadata={
+            "passed": passed,
+            "pilot_only": pilot_only,
+            "campaign_type": (
+                "sagodi_primary_main_v3" if primary_main else "sagodi_protocol_pilot"
+            ),
+            "parent_selector": protocol.get("parent_selector"),
+        },
     )
     if not passed:
         raise RuntimeError("Phase-0 audit failed; Phase 1 must not run")

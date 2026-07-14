@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "campaign_id": "sagodi_six_model_lr_selection_v3",
+  "scope": "training_only_lr_selection_no_manifold_analysis_no_ca_evidence",
+  "models": [
+    {"id": "rnn_param206", "hidden_width": 206, "parameter_count": 56844},
+    {"id": "gru_sagodi_param135", "hidden_width": 135, "parameter_count": 56432},
+    {"id": "lstm_param109", "hidden_width": 109, "parameter_count": 56438},
+    {"id": "lru_param96", "hidden_width": 96, "parameter_count": 56834},
+    {"id": "no_rp", "hidden_width": 96, "parameter_count": 56834},
+    {"id": "ca_lru", "hidden_width": 96, "parameter_count": 56834}
+  ],
+  "selection_model_seeds": [1100, 1101, 1102, 1103, 1104],
+  "learning_rates": [0.01, 0.001, 0.0001, 0.00001],
+  "optimizer_updates": 100,
+  "batch_size": 64,
+  "expected_runs": 120,
+  "selection_rule": {
+    "primary_metric": "online_training_masked_mse_at_update_100",
+    "seed_aggregation": "arithmetic_mean_across_all_five_selection_seeds",
+    "winner": "minimum_primary_metric",
+    "tie_break": "smaller_numeric_learning_rate",
+    "validation_metrics_role": "recorded_but_non_selecting",
+    "all_matrix_cells_required": true
+  }
+}

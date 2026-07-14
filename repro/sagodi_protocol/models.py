@@ -28,6 +28,11 @@ from exp71_pan_block_pulse_hold import build_model_variant  # noqa: E402
 
 
 CUSTOM_GRU = "gru"
+INITIAL_ENCODER_PYTORCH_DEFAULT = "pytorch_default"
+INITIAL_ENCODER_SAGODI_W_OTR = "sagodi_W_otr_normal_primary_inverse_sqrt"
+INITIAL_ENCODER_IDENTITY = "identity"
+INITIAL_ENCODER_TANH = "tanh"
+SAGODI_CODE_COMMIT = "cbd7404e9baca4b2dc291560cfc6576bb7b1f078"
 SAGODI_GRU_WIDTH96 = "gru_sagodi_width96"
 SAGODI_GRU_PARAM135 = "gru_sagodi_param135"
 SAGODI_GRU_NAMES = (SAGODI_GRU_WIDTH96, SAGODI_GRU_PARAM135)
@@ -35,12 +40,40 @@ SAGODI_GRU_WIDTHS = {
     SAGODI_GRU_WIDTH96: 96,
     SAGODI_GRU_PARAM135: 135,
 }
-MODEL_NAMES = ("ca_lru", "no_rp", CUSTOM_GRU, *SAGODI_GRU_NAMES)
-INITIAL_ENCODER_PYTORCH_DEFAULT = "pytorch_default"
-INITIAL_ENCODER_SAGODI_W_OTR = "sagodi_W_otr_normal_primary_inverse_sqrt"
-INITIAL_ENCODER_IDENTITY = "identity"
-INITIAL_ENCODER_TANH = "tanh"
-SAGODI_CODE_COMMIT = "cbd7404e9baca4b2dc291560cfc6576bb7b1f078"
+RNN_PARAM206 = "rnn_param206"
+LSTM_PARAM109 = "lstm_param109"
+LRU_PARAM96 = "lru_param96"
+PROJECT_PARAM_BASELINE_NAMES = (RNN_PARAM206, LSTM_PARAM109, LRU_PARAM96)
+PROJECT_PARAM_BASELINE_WIDTHS = {
+    RNN_PARAM206: 206,
+    LSTM_PARAM109: 109,
+    LRU_PARAM96: 96,
+}
+PROJECT_PARAM_BASELINE_VARIANTS = {
+    RNN_PARAM206: "RNN",
+    LSTM_PARAM109: "LSTM",
+    # ``LRU full`` is the existing project baseline.  Unlike the raw
+    # ``LRU-Block`` constructor, it removes the encoder bias and input
+    # LayerNorm so that its scaffold matches the CA-LRU comparison.
+    LRU_PARAM96: "LRU full",
+}
+PROJECT_PARAM_BASELINE_ACTIVATIONS = {
+    RNN_PARAM206: INITIAL_ENCODER_IDENTITY,
+    LSTM_PARAM109: INITIAL_ENCODER_TANH,
+    LRU_PARAM96: INITIAL_ENCODER_IDENTITY,
+}
+PROJECT_PARAM_BASELINE_PARAMETER_COUNTS = {
+    RNN_PARAM206: 56844,
+    LSTM_PARAM109: 56438,
+    LRU_PARAM96: 56834,
+}
+MODEL_NAMES = (
+    "ca_lru",
+    "no_rp",
+    CUSTOM_GRU,
+    *SAGODI_GRU_NAMES,
+    *PROJECT_PARAM_BASELINE_NAMES,
+)
 
 
 @dataclass(frozen=True)
@@ -112,7 +145,26 @@ class ModelConfig:
             and self.initial_encoder_bias is not False
         ):
             raise ValueError("Ságodi W_otr initialization requires bias=false")
-        if self.name in SAGODI_GRU_NAMES:
+        if self.name in PROJECT_PARAM_BASELINE_NAMES:
+            if (int(self.input_dim), int(self.output_dim)) != (1, 2):
+                raise ValueError(
+                    f"{self.name} freezes angular-task dimensions input=1/output=2"
+                )
+            expected_width = PROJECT_PARAM_BASELINE_WIDTHS[self.name]
+            if int(self.width) != expected_width:
+                raise ValueError(
+                    f"{self.name} freezes hidden width {expected_width}, got {self.width}"
+                )
+            if self.initial_encoder_weight_init != INITIAL_ENCODER_SAGODI_W_OTR:
+                raise ValueError(
+                    f"{self.name} requires the campaign's explicit bias-free W_otr policy"
+                )
+            expected_activation = PROJECT_PARAM_BASELINE_ACTIVATIONS[self.name]
+            if self.initial_encoder_activation != expected_activation:
+                raise ValueError(
+                    f"{self.name} requires {expected_activation}(W_otr y0) initialization"
+                )
+        elif self.name in SAGODI_GRU_NAMES:
             expected_width = SAGODI_GRU_WIDTHS[self.name]
             if int(self.width) != expected_width:
                 raise ValueError(
@@ -131,6 +183,8 @@ def _legacy_variant(name: str) -> str:
         return "PAN-RNW-full"
     if name == "gru":
         return "GRU"
+    if name in PROJECT_PARAM_BASELINE_NAMES:
+        return PROJECT_PARAM_BASELINE_VARIANTS[name]
     raise ValueError(name)
 
 
@@ -358,9 +412,24 @@ class ProtocolModel(nn.Module):
         if self.config.name in {"ca_lru", "no_rp"}:
             autonomous_primary_map = "homogeneous_diagonal_linear_F0_h_equals_Lambda_h"
             input_conditioned_writer = "nonlinear_recurrent_writer_g_h_u_minus_g_h_zero"
+        elif self.config.name == RNN_PARAM206:
+            autonomous_primary_map = "nonlinear_tanh_RNN_blank_hidden_map"
+            input_conditioned_writer = "standard_RNN_input_conditioning"
+        elif self.config.name == LSTM_PARAM109:
+            autonomous_primary_map = "nonlinear_LSTM_blank_full_h_c_map"
+            input_conditioned_writer = "standard_LSTM_input_conditioning"
+        elif self.config.name == LRU_PARAM96:
+            autonomous_primary_map = (
+                "homogeneous_complex_diagonal_linear_F0_z_equals_Lambda_z"
+            )
+            input_conditioned_writer = "linear_LRU_input_projection"
         else:
             autonomous_primary_map = "nonlinear_GRU_blank_hidden_map"
             input_conditioned_writer = "standard_GRU_input_conditioning"
+        parameters_total = sum(p.numel() for p in self.parameters())
+        parameters_trainable = sum(
+            p.numel() for p in self.parameters() if p.requires_grad
+        )
         return {
             "model_config": asdict(self.config),
             "initial_state_encoder_initialization": {
@@ -384,9 +453,46 @@ class ProtocolModel(nn.Module):
             "input_conditioned_writer": input_conditioned_writer,
             "primary_state_size": self.primary_state_size,
             "reported_state_size": self.reported_state_size,
-            "parameters_total": sum(p.numel() for p in self.parameters()),
-            "parameters_trainable": sum(p.numel() for p in self.parameters() if p.requires_grad),
+            "parameters_total": parameters_total,
+            "parameters_trainable": parameters_trainable,
             "rp_enabled": self.rp_enabled,
+            "project_parameter_matched_baseline_contract": (
+                {
+                    "official_sagodi_architecture": False,
+                    "architecture_provenance": "project_legacy_comparison_scaffold",
+                    "legacy_variant": PROJECT_PARAM_BASELINE_VARIANTS[self.config.name],
+                    "matching_role": "nearest_parameter_match_to_CA_LRU_56834",
+                    "target_parameter_count": 56834,
+                    "actual_parameter_count": parameters_total,
+                    "parameter_count_delta": parameters_total - 56834,
+                    "frozen_width": PROJECT_PARAM_BASELINE_WIDTHS[self.config.name],
+                    "state_semantics": (
+                        "full_concatenated_h_c_Markov_state"
+                        if self.config.name == LSTM_PARAM109
+                        else (
+                            "full_real_imaginary_complex_carrier_excluding_overwritten_stream"
+                            if self.config.name == LRU_PARAM96
+                            else "hidden_Markov_state"
+                        )
+                    ),
+                    "readout": (
+                        "project_biased_64_unit_tanh_MLP_from_h"
+                        if self.config.name == LSTM_PARAM109
+                        else (
+                            "project_full_block_stream_head"
+                            if self.config.name == LRU_PARAM96
+                            else "project_biased_64_unit_tanh_MLP"
+                        )
+                    ),
+                    "raw_LRU_Block_excluded_reason": (
+                        "enables_encoder_bias_and_affine_input_LayerNorm"
+                        if self.config.name == LRU_PARAM96
+                        else None
+                    ),
+                }
+                if self.config.name in PROJECT_PARAM_BASELINE_NAMES
+                else None
+            ),
             "sagodi_gru_contract": (
                 {
                     "official_source_commit": SAGODI_CODE_COMMIT,
@@ -443,14 +549,18 @@ def model_config_from_protocol(
     resolved_encoder_bias = bool(initializer["bias"])
     resolved_encoder_weight_init = initial_encoder_weight_init
     resolved_encoder_activation = INITIAL_ENCODER_IDENTITY
-    if model_name in SAGODI_GRU_NAMES:
-        frozen_width = SAGODI_GRU_WIDTHS[str(model_name)]
+    if model_name in (*SAGODI_GRU_NAMES, *PROJECT_PARAM_BASELINE_NAMES):
+        if model_name in SAGODI_GRU_NAMES:
+            frozen_width = SAGODI_GRU_WIDTHS[str(model_name)]
+            resolved_encoder_activation = INITIAL_ENCODER_TANH
+        else:
+            frozen_width = PROJECT_PARAM_BASELINE_WIDTHS[str(model_name)]
+            resolved_encoder_activation = PROJECT_PARAM_BASELINE_ACTIVATIONS[str(model_name)]
         if width_override is not None and int(width_override) != frozen_width:
             raise ValueError(f"{model_name} width override must be {frozen_width}")
         resolved_width = frozen_width
         resolved_encoder_bias = False
         resolved_encoder_weight_init = INITIAL_ENCODER_SAGODI_W_OTR
-        resolved_encoder_activation = INITIAL_ENCODER_TANH
     return ModelConfig(
         name=str(model_name),
         input_dim=int(task["input_dimension"]),
@@ -555,6 +665,119 @@ def _verify_resolved_architecture(model: ProtocolModel) -> None:
             or core.head[1].bias is None
         ):
             raise RuntimeError("CA-LRU head must be affine LayerNorm followed by biased Linear")
+    elif config.name in PROJECT_PARAM_BASELINE_NAMES:
+        if config.initial_encoder_weight_init != INITIAL_ENCODER_SAGODI_W_OTR:
+            raise RuntimeError("project parameter baseline requires explicit W_otr initialization")
+        if model.initial_encoder.bias is not None:
+            raise RuntimeError("project parameter baseline W_otr must be bias-free")
+
+        if config.name == RNN_PARAM206:
+            if core.__class__.__name__ != "RNNBaseline":
+                raise RuntimeError("RNN parameter baseline must resolve to RNNBaseline")
+            if not isinstance(core.cell, nn.RNNCell) or core.cell.nonlinearity != "tanh":
+                raise RuntimeError("RNN parameter baseline must use torch tanh RNNCell")
+            if int(core.cell.hidden_size) != 206 or int(core.state_size) != 206:
+                raise RuntimeError("RNN parameter baseline must retain hidden width 206")
+            if model.primary_state_size != 206 or model.reported_state_size != 206:
+                raise RuntimeError("RNN parameter baseline must expose the complete hidden state")
+        elif config.name == LSTM_PARAM109:
+            if core.__class__.__name__ != "LSTMBaseline":
+                raise RuntimeError("LSTM parameter baseline must resolve to LSTMBaseline")
+            if not isinstance(core.cell, nn.LSTMCell):
+                raise RuntimeError("LSTM parameter baseline must use torch.nn.LSTMCell")
+            if int(core.cell.hidden_size) != 109 or int(core.state_size) != 218:
+                raise RuntimeError("LSTM parameter baseline must retain width 109 and state [h,c]")
+            if model.primary_state_size != 218 or model.reported_state_size != 218:
+                raise RuntimeError("LSTM primary Markov state must contain full concatenated [h,c]")
+            if config.initial_encoder_activation != INITIAL_ENCODER_TANH:
+                raise RuntimeError("LSTM initial mapping must apply tanh to full [h,c]")
+        else:
+            if core.__class__.__name__ != "FullBlockSequenceModel":
+                raise RuntimeError("LRU parameter baseline must resolve to FullBlockSequenceModel")
+            expected_attributes = {
+                "variant": "LRU-Block",
+                "d_model": 96,
+                "rec_dim": 96,
+                "num_layers": 1,
+                "decode_mode": "stream",
+                "carry_stream": False,
+                "recurrent_state_size": 192,
+                "state_size": 288,
+            }
+            for key, expected in expected_attributes.items():
+                if getattr(core, key, None) != expected:
+                    raise RuntimeError(
+                        f"resolved LRU full scaffold has {key}={getattr(core, key, None)!r}, "
+                        f"expected {expected!r}"
+                    )
+            if model.primary_state_size != 192 or model.reported_state_size != 288:
+                raise RuntimeError(
+                    "LRU primary state must be the full 192-d real/imaginary carrier"
+                )
+            if core.encoder.bias is not None:
+                raise RuntimeError("project LRU full freezes a bias-free input encoder")
+            if len(core.blocks) != 1:
+                raise RuntimeError("project LRU full freezes exactly one recurrent block")
+            block = core.blocks[0]
+            if not isinstance(block.norm_in, nn.Identity):
+                raise RuntimeError("project LRU full freezes use_norm_in=False")
+            if not isinstance(block.norm_out, nn.LayerNorm) or not block.norm_out.elementwise_affine:
+                raise RuntimeError("project LRU full requires affine output LayerNorm")
+            if block.update_mode != "glu" or block.glu_proj is None:
+                raise RuntimeError("project LRU full requires the GLU update")
+            if not block.use_residual or not math.isclose(float(block.dropout.p), 0.0):
+                raise RuntimeError("project LRU full requires residual=True and dropout=0")
+            recurrence = block.rec
+            if recurrence.__class__.__name__ != "ComplexLRURec":
+                raise RuntimeError("project LRU full recurrence must be ComplexLRURec")
+            if recurrence.gamma_mode != "tied" or hasattr(recurrence, "gamma_raw"):
+                raise RuntimeError("project LRU full requires tied input normalization gamma")
+            expected_retention = torch.linspace(
+                0.999,
+                0.90,
+                96,
+                device=recurrence.nu.device,
+                dtype=recurrence.nu.dtype,
+            )
+            if not torch.allclose(
+                recurrence.lam_mag().detach(), expected_retention, rtol=1e-6, atol=1e-6
+            ):
+                raise RuntimeError("project LRU full retention radii must run from 0.999 to 0.90")
+            if recurrence.B_re.shape != (96, 96) or recurrence.B_im.shape != (96, 96):
+                raise RuntimeError("project LRU full must drive the complete complex carrier")
+            if not recurrence.phase.requires_grad:
+                raise RuntimeError("project LRU full phases must remain trainable")
+
+        if config.name in {RNN_PARAM206, LSTM_PARAM109}:
+            if core.cell.bias_ih is None or core.cell.bias_hh is None:
+                raise RuntimeError("project recurrent baseline must retain both torch bias vectors")
+            readout = core.readout.net
+            if (
+                len(readout) != 3
+                or not isinstance(readout[0], nn.Linear)
+                or readout[0].out_features != 64
+                or readout[0].bias is None
+                or not isinstance(readout[1], nn.Tanh)
+                or not isinstance(readout[2], nn.Linear)
+                or readout[2].out_features != int(config.output_dim)
+                or readout[2].bias is None
+            ):
+                raise RuntimeError(
+                    "project RNN/LSTM readout must be the biased 64-unit Tanh MLP"
+                )
+            expected_readout_input = 206 if config.name == RNN_PARAM206 else 109
+            if readout[0].in_features != expected_readout_input:
+                raise RuntimeError("project recurrent baseline readout has the wrong input width")
+
+        expected_parameters = PROJECT_PARAM_BASELINE_PARAMETER_COUNTS[config.name]
+        actual_parameters = sum(parameter.numel() for parameter in model.parameters())
+        if actual_parameters != expected_parameters:
+            raise RuntimeError(
+                f"{config.name} parameter-count contract failed: "
+                f"{actual_parameters} != {expected_parameters}"
+            )
+        if any(not parameter.requires_grad for parameter in model.parameters()):
+            raise RuntimeError(f"{config.name} must keep all parameters trainable")
     elif config.name == CUSTOM_GRU:
         if core.__class__.__name__ != "GRUBaseline":
             raise RuntimeError("GRU pilot baseline must resolve to GRUBaseline")

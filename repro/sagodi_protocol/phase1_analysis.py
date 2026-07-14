@@ -1,4 +1,10 @@
-"""Protocol-faithful Phase-1 ring analysis for one trained checkpoint.
+"""CA-LRU-specific supplementary ring diagnostics for one checkpoint.
+
+This historical module is **not** the Ságodi-primary analysis used by the v3
+paper comparison.  Its settling, recovery, projected-JVP, and numerical
+C1--C4/L0--L3 gates are project-specific extensions.  The v3 primary path is
+implemented in :mod:`sagodi_primary_runner` and intentionally never imports
+this module.
 
 The module constructs two independently labelled state banks: Ságodi Track A
 (task-driven endpoints followed by a 16T blank rollout, slow-state selection,

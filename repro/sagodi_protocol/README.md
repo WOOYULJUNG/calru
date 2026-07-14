@@ -1,8 +1,114 @@
-# Ságodi-aligned CA-LRU protocol
+# Ságodi-based CA-LRU evaluation protocol
 
-이 패키지는 `CA_LRU_Sagodi_Experimental_Protocol_ko.md`의 전체 Cartesian
-product를 한 번에 실행하지 않는다. 현재 freeze는 선행 상태 감사와 ring pilot만
-허용한다.
+결과 생성에 사용할 현재 경로는 `Ságodi-primary v3`다. Ságodi et al.의
+방법은 CA-LRU의 제안 방법이 아니라 continuous-attractor 특성을
+검사하는 평가 도구로만 사용한다. 정확한 범위·모호성 해소·수치 규칙은
+`SAGODI_PRIMARY_V3_FREEZE_ko.md`에 고정했다.
+
+```text
+Phase 0: six-model full-Markov-state / blank-map audit
+    ↓
+120-run LR selector: 6 models × 5 selection seeds × 4 LRs × 100 updates
+    ↓ verified selector receipt + atomic resolved-main freeze
+Primary main training: 6 models × 10 seeds × 5,000 updates
+    ↓ validation NMSE < -20 dB (all attempted seeds still reported)
+Ságodi-based primary analysis: slow spline, full spectrum, projected drift,
+fixed-point topology, finite/asymptotic memory
+    ↓
+Engineering benefit: temporal/velocity OOD and state-perturbation retention
+    ↓
+Descriptive dynamics–utility association (no causal claim or binary gate)
+```
+
+Primary six-model comparison is parameter-near-matched:
+`RNN-206`, official-style `GRU-135`, `LSTM-109`, existing `LRU full-96`,
+`CA-LRU without RP-96`, and `CA-LRU-96`. RNN/LSTM/LRU are explicitly project
+baselines, not bit-exact Ságodi architectures.
+
+현재 v3 파일:
+
+- `sagodi_primary_lr_selection_v3.yaml` / `.json`: 120-run selector freeze
+- `lr_selection_v3.py`: strict, resumable selector campaign
+- `primary_main_template_v3.json` / `primary_main_campaign.py`: selector-bound
+  60-run main training
+- `sagodi_primary_analysis.py`: Ságodi-primary numerical definitions
+- `sagodi_primary_runner.py`: one-checkpoint primary analysis
+- `primary_analysis_campaign.py`: 60-checkpoint analysis and descriptive aggregation
+- `engineering_benefit_freeze_v1.json`, `engineering_benefit_runner.py`,
+  `engineering_benefit_campaign.py`: 별도 공학 효용 평가
+- `dynamics_utility_association_freeze_v1.json`,
+  `dynamics_utility_association.py`: seed-level 기술적 연관 분석
+- `primary_v3_pipeline.py`: 위 다섯 단계를 같은 clean commit에서 순차 실행·재개
+- `phase1_analysis.py`: historical CA-LRU-specific **supplementary** diagnostics only
+
+아래 v1/v2 설명은 과거 artifact의 provenance와 재분석을 위해 보존한다.
+
+## v3 실행
+
+전체 v3는 하나의 clean commit에서 selector → main → primary
+analysis → engineering benefit → descriptive association 순으로
+실행한다. 어느 단계에서든 코드를 바꾸면 exact-commit 검증이
+후속 실행을 중단한다.
+
+```bash
+python -m repro.sagodi_protocol.lr_selection_v3 \
+  --selector repro/sagodi_protocol/sagodi_primary_lr_selection_v3.json \
+  --protocol repro/sagodi_protocol/sagodi_primary_lr_selection_v3.yaml \
+  --artifact-root /path/to/v3/selector \
+  --python /path/to/python \
+  --gpus 0,1,2,3,4,5
+
+python -m repro.sagodi_protocol.primary_main_campaign \
+  --selector-root /path/to/v3/selector \
+  --template repro/sagodi_protocol/primary_main_template_v3.json \
+  --artifact-root /path/to/v3/main \
+  --python /path/to/python \
+  --gpus 0,1,2,3,4,5
+
+python -m repro.sagodi_protocol.primary_analysis_campaign \
+  --main-root /path/to/v3/main \
+  --artifact-root /path/to/v3/primary_analysis \
+  --python /path/to/python \
+  --gpus 0,1,2,3,4,5
+
+python -m repro.sagodi_protocol.engineering_benefit_campaign \
+  --main-root /path/to/v3/main \
+  --selector-root /path/to/v3/selector \
+  --freeze repro/sagodi_protocol/engineering_benefit_freeze_v1.json \
+  --artifact-root /path/to/v3/engineering_benefit \
+  --python /path/to/python \
+  --gpus 0,1,2,3,4,5
+
+python -m repro.sagodi_protocol.dynamics_utility_association \
+  --primary-root /path/to/v3/primary_analysis \
+  --engineering-root /path/to/v3/engineering_benefit \
+  --main-root /path/to/v3/main \
+  --selector-root /path/to/v3/selector \
+  --freeze repro/sagodi_protocol/dynamics_utility_association_freeze_v1.json \
+  --artifact-root /path/to/v3/dynamics_utility_association
+```
+
+권장 실행법은 영수증 검증과 재개를 포함한 단일 launcher다.
+
+```bash
+python -m repro.sagodi_protocol.primary_v3_pipeline \
+  --artifact-root /path/to/v3 \
+  --python /path/to/python \
+  --gpus 0,1,2,3,4,5
+```
+
+`--dry-run`은 artifact를 만들거나 학습을 실행하지 않고 정확한 다섯 단계
+명령만 출력한다.
+
+Selector smoke는 120개 경로와 receipt를 검사하지만 2 updates로
+축소되므로 LR winner를 생성하지 않는다. Main은 반드시 100-step
+full selector의 120개 verified receipt와 6개 winner가 있어야 시작한다.
+따라서 pipeline launcher는 과학적으로 잘못된 smoke 체인을 제공하지 않는다.
+
+## Legacy v1/v2 (provenance only)
+
+아래 설명은 과거 artifact를 재현·감사하기 위한 legacy v1/v2 경로다.
+Legacy freeze는 선행 상태 감사와 ring pilot만 허용했다.
 
 ```text
 Phase 0: actual Markov state / blank map audit
@@ -148,3 +254,27 @@ normal의 tangent 내적 최대가 frozen QA `1e-6`을 넘으면 관련 gate는
 CA-LRU/No-RP의 현재 scaffold에서 blank carrier map은 정확히
 `F0(h) = Lambda h`다. 비선형 writer는 input-conditioned이며, 결과를 nonlinear
 autonomous restoring field 또는 exact nonzero continuum로 해석하면 안 된다.
+
+## v3 동역학–효용 연관 분석 (descriptive only)
+
+`dynamics_utility_association.py`는 완료된 Ságodi-primary 60개 결과와
+engineering-benefit 60개 결과를 정확한 `(model_id, model_seed)`로 결합한다.
+등록된 60개 pair를 하나도 삭제하거나 대체하지 않으며, ineligibleㆍnot-estimableㆍ
+metric-missing 상태를 각 연관 분석의 row와 분모에 그대로 기록한다. Pearson과
+average-rank Spearman 및 고정 seed paired-bootstrap 구간은 기술통계일 뿐이며,
+인과 주장, p-value, CA gate 또는 예상 방향 pass threshold로 사용하지 않는다.
+
+Top-two real-part gap은 spline tangent 정렬을 직접 측정한 값이 아니라
+slow-leading-mode 가정 아래의 Ságodi-style timescale-separation proxy로 명시한다.
+전체 단계는 selector/main/두 parent campaign과 동일한 clean Git commit에서만
+실행된다.
+
+```bash
+python -m repro.sagodi_protocol.dynamics_utility_association \
+  --primary-root /path/to/v3/primary_analysis \
+  --engineering-root /path/to/v3/engineering_benefit \
+  --main-root /path/to/v3/main \
+  --selector-root /path/to/v3/selector \
+  --freeze repro/sagodi_protocol/dynamics_utility_association_freeze_v1.json \
+  --artifact-root /path/to/v3/dynamics_utility_association
+```

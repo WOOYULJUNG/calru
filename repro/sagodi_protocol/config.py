@@ -29,6 +29,36 @@ PROTOCOL_A_TRACK = "A_sagodi_training_rules"
 NATIVE_RECIPE_TRACK = "calru_native_recipe_transfer"
 SAGODI_LR_SELECTION_TRACK = "sagodi_paper_aligned_lr_selection"
 SAGODI_LR_SELECTION_FREEZE_ID = "sagodi_ring_lr_selection_v2"
+SAGODI_PRIMARY_LR_SELECTION_TRACK = "sagodi_primary_v3_lr_selection"
+SAGODI_PRIMARY_LR_SELECTION_FREEZE_ID = "sagodi_primary_lr_selection_v3"
+SAGODI_PRIMARY_MAIN_TRACK = "sagodi_primary_v3_main"
+SAGODI_PRIMARY_MAIN_FREEZE_ID = "sagodi_primary_main_v3_resolved"
+SAGODI_PRIMARY_MODELS = (
+    "rnn_param206",
+    "gru_sagodi_param135",
+    "lstm_param109",
+    "lru_param96",
+    "no_rp",
+    "ca_lru",
+)
+SAGODI_PRIMARY_MODEL_WIDTHS = {
+    "rnn_param206": 206,
+    "gru_sagodi_param135": 135,
+    "lstm_param109": 109,
+    "lru_param96": 96,
+    "no_rp": 96,
+    "ca_lru": 96,
+}
+SAGODI_PRIMARY_PARAMETER_COUNTS = {
+    "rnn_param206": 56844,
+    "gru_sagodi_param135": 56432,
+    "lstm_param109": 56438,
+    "lru_param96": 56834,
+    "no_rp": 56834,
+    "ca_lru": 56834,
+}
+SAGODI_PRIMARY_SELECTION_SEEDS = (1100, 1101, 1102, 1103, 1104)
+SAGODI_PRIMARY_MAIN_SEEDS = tuple(range(10))
 
 REQUIRED_CLAIM_GATES = frozenset(
     {
@@ -901,9 +931,527 @@ def _validate_sagodi_lr_selection_protocol(protocol: Mapping[str, Any]) -> None:
     )
 
 
+def _validate_sagodi_primary_lr_selection_protocol(
+    protocol: Mapping[str, Any],
+) -> None:
+    """Fail closed on the six-model, 120-run primary LR-selection freeze.
+
+    This is deliberately a new schema branch.  The historical v1/v2 freezes
+    remain byte-for-byte interpretable and cannot silently inherit the wider
+    model registry or the primary-analysis scope introduced here.
+    """
+
+    _require(
+        protocol.get("schema_version") == "2.0.0",
+        "primary selector must use schema_version 2.0.0",
+    )
+    _require(
+        protocol.get("freeze_id") == SAGODI_PRIMARY_LR_SELECTION_FREEZE_ID,
+        "primary selector freeze_id changed",
+    )
+    _require(
+        protocol.get("freeze_status") == "preregistered_training_only",
+        "primary selector must remain training-only",
+    )
+    _require(
+        protocol.get("frozen_at_utc") == "2026-07-14",
+        "primary selector frozen date changed",
+    )
+    source = _require_mapping(protocol.get("source_protocol"), "source_protocol")
+    _require(
+        source.get("path")
+        == "repro/sagodi_protocol/SAGODI_PRIMARY_V3_FREEZE_ko.md",
+        "primary selector source path changed",
+    )
+    _require(source.get("version") == "3.0", "primary selector source version changed")
+    digest = str(source.get("sha256", ""))
+    _require(
+        len(digest) == 64 and all(character in "0123456789abcdef" for character in digest),
+        "primary selector source SHA-256 must be lowercase hexadecimal",
+    )
+    _require(
+        source.get("normative_sections") == ["3", "4", "5"],
+        "primary selector normative sections changed",
+    )
+
+    reporting = _require_mapping(protocol.get("reporting"), "reporting")
+    _require(
+        reporting.get("training_track") == SAGODI_PRIMARY_LR_SELECTION_TRACK,
+        "primary selector reporting track changed",
+    )
+    _require(
+        reporting.get("analysis_role") == "training_only_no_CA_evidence",
+        "primary selector may not be labelled as CA evidence",
+    )
+    for key in (
+        "protocol_A_eligible",
+        "protocol_B_confirmatory_eligible",
+        "bit_exact_official_implementation",
+    ):
+        _require(reporting.get(key) is False, f"primary selector {key} must be false")
+
+    scope = _require_mapping(protocol.get("scope"), "scope")
+    _require(
+        tuple(_require_sequence(scope.get("active_phase_ids"), "active_phase_ids"))
+        == ACTIVE_PHASES,
+        f"primary selector active phases must be {ACTIVE_PHASES!r}",
+    )
+    _require(
+        scope.get("selection_results_are_approximate_ca_evidence") is False,
+        "LR selection is not approximate-CA evidence",
+    )
+    _require(
+        scope.get("old_campaign_results_may_be_pooled") is False,
+        "historical selector results may not be pooled into v3",
+    )
+    later = _require_sequence(scope.get("later_phases"), "scope.later_phases")
+    _require(len(later) == 1, "primary selector must declare one gated main phase")
+    _require(
+        _require_mapping(later[0], "later phase").get("enabled") is False,
+        "main phase must remain disabled in the selector freeze",
+    )
+
+    seeds = _require_mapping(protocol.get("seed_policy"), "seed_policy")
+    selection_seeds = tuple(
+        _require_sequence(seeds.get("selection_model_seeds"), "selection_model_seeds")
+    )
+    _require(
+        selection_seeds == SAGODI_PRIMARY_SELECTION_SEEDS,
+        f"primary selection seeds must be {SAGODI_PRIMARY_SELECTION_SEEDS!r}",
+    )
+    _unique(selection_seeds, "primary selection seeds")
+    _require(seeds.get("main_model_seeds") == [], "selector cannot launch main seeds")
+    for key in (
+        "task_seed",
+        "data_stream_seed",
+        "evaluation_bank_seed",
+        "perturbation_bank_seed",
+    ):
+        _require(seeds.get(key) == 0, f"primary selector {key} must be zero")
+    _require(
+        seeds.get("independent_statistical_unit") == "trained_model_seed",
+        "trained model seed must remain the statistical unit",
+    )
+
+    phase0 = _require_mapping(protocol.get("phase0_state_audit"), "phase0_state_audit")
+    _require(phase0.get("enabled") is True, "primary selector Phase 0 must be enabled")
+    _require(
+        phase0.get("blocks_dependents_on_failure") is True,
+        "primary selector Phase 0 must block training on failure",
+    )
+    _require(
+        tuple(phase0.get("models", [])) == SAGODI_PRIMARY_MODELS,
+        f"primary Phase-0 models must be {SAGODI_PRIMARY_MODELS!r}",
+    )
+    _require(
+        phase0.get("primary_state_rule") == "minimum_full_markov_recurrent_state",
+        "primary selector must audit the minimum full Markov state",
+    )
+    _require(
+        phase0.get("required_maps")
+        == ["F0_primary", "F0_carrier_if_applicable", "F0_reported_full"],
+        "primary selector blank-map inventory changed",
+    )
+    required_check_ids = tuple(
+        _require_mapping(item, "Phase-0 check").get("id")
+        for item in _require_sequence(phase0.get("required_checks"), "required_checks")
+    )
+    _require(
+        required_check_ids
+        == (
+            "state_transition_inventory",
+            "pack_unpack_round_trip",
+            "actual_blank_map",
+            "blank_input_trace",
+            "determinism",
+            "analysis_mode",
+            "float64_subset",
+            "jacobian_finite_difference",
+            "hidden_cache_audit",
+        ),
+        "primary selector Phase-0 check inventory changed",
+    )
+    _require(
+        phase0.get("required_artifacts")
+        == [
+            "state_spec.json",
+            "state_transition_audit.json",
+            "blank_map_trace.npz",
+            "blank_map_trace_metadata.json",
+            "exactness_screen.json",
+            "determinism_check.json",
+            "jacobian_check.json",
+            "float64_subset_check.json",
+            "hidden_cache_check.json",
+            "phase0_gate.json",
+        ],
+        "primary selector Phase-0 artifact inventory changed",
+    )
+
+    phase1 = _require_mapping(protocol.get("phase1_ring_pilot"), "phase1_ring_pilot")
+    _require(phase1.get("enabled") is True, "primary selector training must be enabled")
+    _require(phase1.get("confirmatory") is False, "LR selection is not confirmatory")
+    _require(
+        phase1.get("protocol_track") == SAGODI_PRIMARY_LR_SELECTION_TRACK,
+        "primary selector protocol track changed",
+    )
+    _require(
+        phase1.get("purpose") == "modelwise_learning_rate_selection_only",
+        "primary selector purpose changed",
+    )
+    AngularTaskSpec.from_protocol(protocol)
+
+    model_specs = _require_sequence(phase1.get("models"), "phase1.models")
+    model_ids = tuple(_require_mapping(item, "model spec").get("id") for item in model_specs)
+    _require(
+        model_ids == SAGODI_PRIMARY_MODELS,
+        f"primary selector models must be {SAGODI_PRIMARY_MODELS!r}",
+    )
+    _unique(model_ids, "primary selector model ids")
+    for model_spec in model_specs:
+        item = _require_mapping(model_spec, "primary model spec")
+        model_id = str(item["id"])
+        _require(
+            item.get("hidden_width") == SAGODI_PRIMARY_MODEL_WIDTHS[model_id],
+            f"{model_id} hidden width changed",
+        )
+        _require(
+            item.get("parameter_count") == SAGODI_PRIMARY_PARAMETER_COUNTS[model_id],
+            f"{model_id} parameter count changed",
+        )
+
+    training = _require_mapping(phase1.get("training"), "phase1.training")
+    _require(training.get("width") == 96, "primary selector default width must be 96")
+    architecture = _require_mapping(training.get("architecture"), "training.architecture")
+    initializer = _require_mapping(
+        architecture.get("initial_state_encoder"), "initial_state_encoder"
+    )
+    _require(initializer.get("input_dimension") == 2, "memory encoder input must be 2D")
+    _require(initializer.get("bias") is False, "primary memory encoder must be bias-free")
+    _require(
+        initializer.get("activation_by_model")
+        == {
+            "rnn_param206": "identity",
+            "gru_sagodi_param135": "tanh",
+            "lstm_param109": "tanh",
+            "lru_param96": "identity",
+            "no_rp": "identity",
+            "ca_lru": "identity",
+        },
+        "primary model initial-state activations changed",
+    )
+    _require(
+        architecture.get("shared_builder_kwargs")
+        == {
+            "rank": 2,
+            "d_model": "width",
+            "rec_dim": "width",
+            "layers": 1,
+            "dropout": 0.0,
+            "plru_tau": 0.001,
+            "plru_c": 50.0,
+            "pan_lambda_min": 0.90,
+            "pan_lambda_max": 0.999,
+            "rank_matched_lambda_high": 0.999,
+            "rank_matched_lambda_low": 0.0,
+        },
+        "primary selector shared builder arguments changed",
+    )
+    _require(training.get("batch_size") == 64, "primary selector batch size must be 64")
+    _require(
+        training.get("optimizer_updates") == 100,
+        "primary selector must run exactly 100 updates",
+    )
+    _require(
+        training.get("optimizer")
+        == {
+            "name": "Adam",
+            "betas": [0.9, 0.999],
+            "epsilon": 0.00000001,
+            "weight_decay": 0.0,
+        },
+        "primary selector Adam configuration changed",
+    )
+    learning_rate = _require_mapping(training.get("learning_rate"), "learning_rate")
+    _require(
+        tuple(learning_rate.get("grid", [])) == SAGODI_LR_SELECTION_GRID,
+        f"primary selector LR grid must be {SAGODI_LR_SELECTION_GRID!r}",
+    )
+    _require(
+        tuple(learning_rate.get("active_launch_values", []))
+        == SAGODI_LR_SELECTION_GRID,
+        "all four primary selector LRs must be active",
+    )
+    rule = _require_mapping(learning_rate.get("selection_rule"), "selection_rule")
+    _require(
+        rule.get("primary_metric") == "mean_online_training_loss_at_update_100",
+        "primary selector metric changed",
+    )
+    _require(rule.get("all_runs_required") is True, "all 120 runs must be required")
+    _require(
+        rule.get("tie_policy") == "smaller_numeric_learning_rate",
+        "primary selector tie policy changed",
+    )
+    noise = _require_mapping(training.get("state_noise"), "state_noise")
+    _require(noise.get("enabled") is True, "primary selector state noise must be enabled")
+    _require(
+        noise.get("coordinate_standard_deviation") == 0.1,
+        "primary selector state-noise std must be 0.1",
+    )
+    _require(
+        noise.get("target") == "minimum_full_markov_recurrent_state",
+        "primary selector noise target changed",
+    )
+    _require(
+        training.get("gradient_clipping")
+        == {"policy": "none", "frozen_numeric_value": None},
+        "primary selector must not clip gradients",
+    )
+    rp = _require_mapping(training.get("rp_schedule_for_ca_lru"), "RP schedule")
+    _require(rp.get("enabled_during_selector") is False, "RP must be disabled in selection")
+    _require(rp.get("calls_after_warmup") == 0, "selector must make zero RP calls")
+
+    run_matrix = _require_mapping(phase1.get("run_matrix"), "run_matrix")
+    _require(
+        run_matrix.get("expected_training_runs") == 120,
+        "primary selector must contain exactly 120 training runs",
+    )
+    _require(
+        len(model_ids)
+        * len(selection_seeds)
+        * len(learning_rate["active_launch_values"])
+        == 120,
+        "primary selector cross-product is not 120 runs",
+    )
+    evaluation = _require_mapping(protocol.get("evaluation"), "evaluation")
+    _require(evaluation.get("id_test_trials") == 2048, "selector ID bank must use 2048 trials")
+    _require(evaluation.get("analysis_enabled") is False, "selector may not run CA analysis")
+    gates = _require_mapping(protocol.get("claim_gates"), "claim_gates")
+    _require(
+        gates.get("all_approximate_ca_claims_enabled") is False,
+        "primary selector CA claim gates must be disabled",
+    )
+
+
+def _validate_sha256(value: Any, label: str) -> None:
+    text = str(value)
+    _require(
+        len(text) == 64
+        and all(character in "0123456789abcdef" for character in text),
+        f"{label} must be a lowercase SHA-256 digest",
+    )
+
+
+def _validate_sagodi_primary_main_protocol(protocol: Mapping[str, Any]) -> None:
+    """Validate the selector-bound 60-run main protocol materialization."""
+
+    _require(protocol.get("schema_version") == "2.0.0", "main schema must be 2.0.0")
+    _require(
+        protocol.get("freeze_id") == SAGODI_PRIMARY_MAIN_FREEZE_ID,
+        "main freeze_id changed",
+    )
+    _require(
+        protocol.get("freeze_status") == "resolved_before_training",
+        "main protocol must be resolved before training",
+    )
+    _require(
+        protocol.get("campaign_mode") == "sagodi_primary_main_v3",
+        "main campaign mode changed",
+    )
+    source = _require_mapping(protocol.get("source_protocol"), "source_protocol")
+    _require(
+        source.get("path")
+        == "repro/sagodi_protocol/SAGODI_PRIMARY_V3_FREEZE_ko.md",
+        "main source protocol path changed",
+    )
+    _validate_sha256(source.get("sha256"), "main source protocol hash")
+
+    parent = _require_mapping(protocol.get("parent_selector"), "parent_selector")
+    _require(
+        parent.get("campaign_id") == "sagodi_six_model_lr_selection_v3",
+        "main parent selector campaign id changed",
+    )
+    for key in (
+        "scientific_identity",
+        "manifest_sha256",
+        "summary_sha256",
+        "selection_receipt_sha256",
+        "completion_receipt_sha256",
+    ):
+        _validate_sha256(parent.get(key), f"parent_selector.{key}")
+
+    reporting = _require_mapping(protocol.get("reporting"), "reporting")
+    _require(
+        reporting.get("training_track") == SAGODI_PRIMARY_MAIN_TRACK,
+        "main reporting track changed",
+    )
+    _require(
+        reporting.get("analysis_role") == "primary_comparative_training",
+        "main reporting role changed",
+    )
+    _require(
+        reporting.get("bit_exact_official_implementation") is False,
+        "mixed project baselines are not a bit-exact official implementation",
+    )
+
+    seeds = _require_mapping(protocol.get("seed_policy"), "seed_policy")
+    _require(
+        tuple(seeds.get("selection_model_seeds", []))
+        == SAGODI_PRIMARY_SELECTION_SEEDS,
+        "main must preserve selector seeds as provenance",
+    )
+    _require(
+        tuple(seeds.get("main_model_seeds", [])) == SAGODI_PRIMARY_MAIN_SEEDS,
+        f"main seeds must be {SAGODI_PRIMARY_MAIN_SEEDS!r}",
+    )
+    _unique(seeds["main_model_seeds"], "main model seeds")
+    for key in (
+        "task_seed",
+        "data_stream_seed",
+        "evaluation_bank_seed",
+        "perturbation_bank_seed",
+    ):
+        _require(seeds.get(key) == 0, f"main {key} must be zero")
+
+    phase0 = _require_mapping(protocol.get("phase0_state_audit"), "phase0_state_audit")
+    _require(phase0.get("enabled") is True, "main Phase 0 must be enabled")
+    _require(
+        phase0.get("blocks_dependents_on_failure") is True,
+        "main Phase 0 must block training on failure",
+    )
+    _require(
+        tuple(phase0.get("models", [])) == SAGODI_PRIMARY_MODELS,
+        f"main Phase-0 models must be {SAGODI_PRIMARY_MODELS!r}",
+    )
+    _require(
+        phase0.get("primary_state_rule") == "minimum_full_markov_recurrent_state",
+        "main must audit the minimum full Markov state",
+    )
+
+    phase1 = _require_mapping(protocol.get("phase1_ring_pilot"), "phase1_ring_pilot")
+    _require(phase1.get("enabled") is True, "main training must be enabled")
+    _require(
+        phase1.get("confirmatory") is True,
+        "resolved main task/training comparison must remain preregistered confirmatory",
+    )
+    _require(
+        phase1.get("protocol_track") == SAGODI_PRIMARY_MAIN_TRACK,
+        "main protocol track changed",
+    )
+    _require(
+        phase1.get("purpose") == "six_model_primary_main_training",
+        "main purpose changed",
+    )
+    AngularTaskSpec.from_protocol(protocol)
+    model_specs = _require_sequence(phase1.get("models"), "phase1.models")
+    model_ids = tuple(_require_mapping(item, "model spec").get("id") for item in model_specs)
+    _require(model_ids == SAGODI_PRIMARY_MODELS, "main model order changed")
+    for model_spec in model_specs:
+        item = _require_mapping(model_spec, "main model spec")
+        model_id = str(item["id"])
+        _require(
+            item.get("hidden_width") == SAGODI_PRIMARY_MODEL_WIDTHS[model_id],
+            f"main {model_id} width changed",
+        )
+        _require(
+            item.get("parameter_count") == SAGODI_PRIMARY_PARAMETER_COUNTS[model_id],
+            f"main {model_id} parameter count changed",
+        )
+
+    training = _require_mapping(phase1.get("training"), "phase1.training")
+    _require(training.get("batch_size") == 64, "main batch size must be 64")
+    _require(training.get("optimizer_updates") == 5000, "main must run 5000 updates")
+    _require(
+        training.get("optimizer")
+        == {
+            "name": "Adam",
+            "betas": [0.9, 0.999],
+            "epsilon": 0.00000001,
+            "weight_decay": 0.0,
+        },
+        "main Adam configuration changed",
+    )
+    noise = _require_mapping(training.get("state_noise"), "state_noise")
+    _require(noise.get("enabled") is True, "main state noise must be enabled")
+    _require(
+        noise.get("coordinate_standard_deviation") == 0.1,
+        "main state-noise std must be 0.1",
+    )
+    _require(
+        noise.get("target") == "minimum_full_markov_recurrent_state",
+        "main state-noise target changed",
+    )
+    _require(
+        training.get("gradient_clipping")
+        == {"policy": "none", "frozen_numeric_value": None},
+        "main training must not clip gradients",
+    )
+    learning_rate = _require_mapping(training.get("learning_rate"), "learning_rate")
+    _require(
+        tuple(learning_rate.get("grid", [])) == SAGODI_LR_SELECTION_GRID,
+        "main must preserve the selector grid",
+    )
+    _require(
+        learning_rate.get("source") == "selector_bound",
+        "main learning rates must be selector-bound",
+    )
+    selected = _require_mapping(
+        learning_rate.get("selected_by_model"), "selected_by_model"
+    )
+    _require(
+        set(selected) == set(SAGODI_PRIMARY_MODELS),
+        "main selected-LR model set changed",
+    )
+    selected_values = tuple(float(selected[model]) for model in SAGODI_PRIMARY_MODELS)
+    _require(
+        all(value in SAGODI_LR_SELECTION_GRID for value in selected_values),
+        "main selected LR lies outside the preregistered grid",
+    )
+    active = tuple(float(value) for value in learning_rate.get("active_launch_values", []))
+    _require(len(active) == len(set(active)), "main active LR values contain duplicates")
+    _require(
+        set(active) == set(selected_values),
+        "main active LR set must equal the modelwise selector winners",
+    )
+
+    rp = _require_mapping(training.get("rp_schedule_for_ca_lru"), "RP schedule")
+    expected_rp = {
+        "enabled_during_training": True,
+        "warmup_updates": 1500,
+        "interval_updates": 50,
+        "calls_after_warmup": 70,
+        "probe_batch_size": 256,
+        "probe_horizon": 256,
+        "blank_ablation_horizon": 256,
+        "probe_noise_enabled": False,
+        "eta_lambda": 3000.0,
+        "damage_epsilon": 0.00003,
+    }
+    _require(dict(rp) == expected_rp, "main CA-LRU RP schedule changed")
+
+    run_matrix = _require_mapping(phase1.get("run_matrix"), "run_matrix")
+    _require(
+        run_matrix.get("expected_training_runs") == 60,
+        "main run matrix must contain exactly 60 runs",
+    )
+    evaluation = _require_mapping(protocol.get("evaluation"), "evaluation")
+    _require(evaluation.get("id_test_trials") == 2048, "main ID bank must use 2048 trials")
+    gates = _require_mapping(protocol.get("claim_gates"), "claim_gates")
+    _require(
+        gates.get("all_approximate_ca_claims_enabled") is False,
+        "main training cannot enable numerical CA claim gates",
+    )
+
+
 def validate_protocol(protocol: Mapping[str, Any]) -> None:
     """Validate the frozen scope and conservative ambiguity resolutions."""
 
+    if protocol.get("freeze_id") == SAGODI_PRIMARY_LR_SELECTION_FREEZE_ID:
+        _validate_sagodi_primary_lr_selection_protocol(protocol)
+        return
+    if protocol.get("freeze_id") == SAGODI_PRIMARY_MAIN_FREEZE_ID:
+        _validate_sagodi_primary_main_protocol(protocol)
+        return
     _require(protocol.get("schema_version") == "1.0.0", "unsupported schema_version")
     _require(protocol.get("freeze_status") == "pilot_only", "freeze must be pilot_only")
     if protocol.get("freeze_id") == SAGODI_LR_SELECTION_FREEZE_ID:
@@ -1450,7 +1998,10 @@ def expand_phase1_runs(protocol: Mapping[str, Any]) -> tuple[dict[str, Any], ...
     phase1 = protocol["phase1_ring_pilot"]
     training = phase1["training"]
     seed_policy = protocol["seed_policy"]
-    selection_freeze = phase1["protocol_track"] == SAGODI_LR_SELECTION_TRACK
+    selection_freeze = phase1["protocol_track"] in {
+        SAGODI_LR_SELECTION_TRACK,
+        SAGODI_PRIMARY_LR_SELECTION_TRACK,
+    }
     model_seeds = seed_policy[
         "selection_model_seeds" if selection_freeze else "pilot_model_seeds"
     ]

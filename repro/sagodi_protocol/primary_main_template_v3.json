@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "template_id": "sagodi_primary_main_v3_template",
+  "campaign_mode": "sagodi_primary_main_v3",
+  "scope": "primary_main_training_only_no_manifold_analysis",
+  "selector_contract": {
+    "campaign_type": "six_model_lr_selection_v3",
+    "scope": "training_only_lr_selection_no_manifold_analysis_no_ca_evidence",
+    "model_order": [
+      "rnn_param206",
+      "gru_sagodi_param135",
+      "lstm_param109",
+      "lru_param96",
+      "no_rp",
+      "ca_lru"
+    ],
+    "selection_seed_count": 5,
+    "optimizer_updates": 100,
+    "expected_training_runs": 120
+  },
+  "main_model_seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+  "training": {
+    "optimizer_updates": 5000,
+    "batch_size": 64,
+    "optimizer": {
+      "name": "Adam",
+      "betas": [0.9, 0.999],
+      "epsilon": 0.00000001,
+      "weight_decay": 0.0
+    },
+    "state_noise_coordinate_standard_deviation": 0.1,
+    "state_noise_coordinate_variance": 0.01,
+    "gradient_clipping_policy": "none",
+    "gradient_clipping_numeric_value": null
+  },
+  "retention_plasticity": {
+    "enabled_model": "ca_lru",
+    "warmup_updates": 1500,
+    "interval_updates": 50,
+    "calls_after_warmup": 70,
+    "probe_batch_size": 256,
+    "probe_horizon": 256,
+    "blank_ablation_horizon": 256,
+    "probe_noise_enabled": false,
+    "eta_lambda": 3000.0,
+    "damage_epsilon": 0.00003
+  },
+  "run_matrix": {
+    "expected_training_runs": 60,
+    "task_seed_fixed": 0,
+    "data_stream_seed_fixed": 0
+  }
+}

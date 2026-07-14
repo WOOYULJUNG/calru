@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "freeze_id": "calru_engineering_benefit_v1",
+  "analysis_role": "project_engineering_utility_not_sagodi_matched_analysis",
+  "claim_policy": {
+    "binary_continuous_attractor_gates": false,
+    "expected_direction_pass_thresholds": false,
+    "model_or_seed_exclusion": "forbidden",
+    "primary_outputs": "individual_errors_and_descriptive_summaries",
+    "sagodi_metric_association": "deferred_join_on_model_id_and_model_seed"
+  },
+  "parent_contract": {
+    "campaign_type": "sagodi_primary_main_v3",
+    "required_completed_training_runs": 60,
+    "model_order": [
+      "rnn_param206",
+      "gru_sagodi_param135",
+      "lstm_param109",
+      "lru_param96",
+      "no_rp",
+      "ca_lru"
+    ],
+    "model_seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    "checkpoint_selection": "final_update_5000",
+    "failed_seed_replacement_policy": "forbidden"
+  },
+  "evaluation": {
+    "trial_count": 256,
+    "task_horizon": 256,
+    "task_base_seed": 731942,
+    "task": {
+      "name": "angular_integration",
+      "dimensions": 1,
+      "init_mode": "hidden-init",
+      "delta_t": 0.1,
+      "gp_length_scale": 1.0,
+      "gp_standard_deviation": 1.0,
+      "gp_cholesky_jitter": 0.000001,
+      "block_construction": "sixteen_independent_deterministic_in_distribution_256_step_GP_velocity_blocks",
+      "angle_construction": "one_continuous_angle_integrated_across_concatenated_blocks",
+      "prefix_pairing": true
+    },
+    "temporal_ood": {
+      "length_multipliers": [1, 2, 4, 8, 16],
+      "execution": "one_causal_16T_rollout_with_nested_prefix_readouts",
+      "individual_metrics": [
+        "final_absolute_circular_error_radians",
+        "prefix_mean_absolute_circular_error_radians"
+      ]
+    },
+    "velocity_scale_ood": {
+      "scales": [1.0, 2.0, 4.0],
+      "base_bank": "temporal_ood_first_block",
+      "scale_one_execution": "reuse_temporal_ood_first_T_prefix",
+      "target_rule": "integrate_scaled_velocity_from_the_same_initial_angle",
+      "individual_metrics": [
+        "final_absolute_circular_error_radians",
+        "sequence_mean_absolute_circular_error_radians"
+      ]
+    },
+    "state_perturbation_retention": {
+      "endpoint_source": "noise_free_first_task_block_endpoint",
+      "state_space": "full_primary_Markov_state",
+      "relative_rms_magnitudes": [0.0, 0.01, 0.1, 1.0],
+      "blank_horizon_multipliers": [1, 4, 16],
+      "direction_distribution": "isotropic_standard_normal_normalized_to_unit_coordinate_RMS_per_trial",
+      "direction_seed": 918273,
+      "magnitude_rule": "perturbation_coordinate_RMS_equals_relative_magnitude_times_endpoint_state_coordinate_RMS_per_trial",
+      "references": [
+        "pre_perturbation_decoded_memory",
+        "clean_paired_blank_trajectory"
+      ],
+      "interpretation": "engineering_robustness_not_manifold_recovery"
+    },
+    "numerics": {
+      "model_evaluation_noise": false,
+      "torch_gradients": false,
+      "stored_float_dtype": "float32",
+      "angle_decoder": "atan2_sin_cos",
+      "circular_error_range": "zero_to_pi",
+      "utility_scalar_nonfinite_policy": "null_unless_all_registered_trial_values_are_finite",
+      "angle_utility_radius_policy": "null_unless_all_corresponding_estimate_and_reference_radii_are_finite_and_at_least_epsilon",
+      "undefined_angle_radius_reporting_epsilon": 1e-12
+    }
+  },
+  "smoke_override": {
+    "trial_count": 8,
+    "task_horizon": 8,
+    "temporal_length_multipliers": [1, 2, 4, 8, 16],
+    "velocity_scales": [1.0, 2.0, 4.0],
+    "perturbation_relative_rms_magnitudes": [0.0, 0.01, 0.1, 1.0],
+    "perturbation_blank_horizon_multipliers": [1, 4, 16]
+  }
+}

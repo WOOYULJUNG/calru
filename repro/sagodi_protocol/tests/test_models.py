@@ -9,7 +9,13 @@ from repro.sagodi_protocol.models import (
     INITIAL_ENCODER_PYTORCH_DEFAULT,
     INITIAL_ENCODER_SAGODI_W_OTR,
     INITIAL_ENCODER_TANH,
+    LRU_PARAM96,
+    LSTM_PARAM109,
     ModelConfig,
+    PROJECT_PARAM_BASELINE_NAMES,
+    PROJECT_PARAM_BASELINE_PARAMETER_COUNTS,
+    PROJECT_PARAM_BASELINE_WIDTHS,
+    RNN_PARAM206,
     SAGODI_GRU_PARAM135,
     SAGODI_GRU_WIDTH96,
     SagodiGRUBaseline,
@@ -181,3 +187,137 @@ def test_sagodi_grus_expose_phase0_step_interface() -> None:
         adapter = StateAdapter(model.core)
         assert adapter.input_dim == 1
         assert adapter.primary_dim == width
+
+
+@pytest.mark.parametrize(
+    ("name", "width", "primary_dim", "reported_dim", "expected_count", "legacy_variant"),
+    (
+        (RNN_PARAM206, 206, 206, 206, 56844, "RNN"),
+        (LSTM_PARAM109, 109, 218, 218, 56438, "LSTM"),
+        (LRU_PARAM96, 96, 192, 288, 56834, "LRU full"),
+    ),
+)
+def test_project_parameter_baselines_are_fixed_and_explicitly_labeled(
+    name: str,
+    width: int,
+    primary_dim: int,
+    reported_dim: int,
+    expected_count: int,
+    legacy_variant: str,
+) -> None:
+    protocol = load_protocol(NATIVE_RECIPE_PROTOCOL_PATH)
+    config = model_config_from_protocol(protocol, name)
+    model = build_protocol_model(config)
+
+    assert config.width == width
+    assert config.initial_encoder_bias is False
+    assert config.initial_encoder_weight_init == INITIAL_ENCODER_SAGODI_W_OTR
+    assert model.initial_encoder.bias is None
+    assert model.primary_state_size == primary_dim
+    assert model.reported_state_size == reported_dim
+    assert model.state_size == reported_dim
+
+    metadata = model.metadata()
+    assert metadata["legacy_variant"] == legacy_variant
+    assert metadata["parameters_total"] == expected_count
+    assert metadata["parameters_trainable"] == expected_count
+    contract = metadata["project_parameter_matched_baseline_contract"]
+    assert contract["official_sagodi_architecture"] is False
+    assert contract["architecture_provenance"] == "project_legacy_comparison_scaffold"
+    assert contract["matching_role"] == "nearest_parameter_match_to_CA_LRU_56834"
+    assert contract["target_parameter_count"] == 56834
+    assert contract["actual_parameter_count"] == expected_count
+    assert contract["parameter_count_delta"] == expected_count - 56834
+
+    adapter = StateAdapter(model.core)
+    assert adapter.primary_dim == primary_dim
+    assert adapter.reported_dim == reported_dim
+    memory = torch.randn(3, 2)
+    output, states = model.forward_sequence(
+        torch.zeros(2, 3, 1),
+        initial_memory=memory,
+        return_states=True,
+    )
+    assert output.shape == (2, 3, 2)
+    assert states.shape == (2, 3, reported_dim)
+    assert torch.isfinite(output).all()
+
+
+def test_project_parameter_baseline_registry_counts_and_widths_are_complete() -> None:
+    assert PROJECT_PARAM_BASELINE_NAMES == (RNN_PARAM206, LSTM_PARAM109, LRU_PARAM96)
+    assert PROJECT_PARAM_BASELINE_WIDTHS == {
+        RNN_PARAM206: 206,
+        LSTM_PARAM109: 109,
+        LRU_PARAM96: 96,
+    }
+    assert PROJECT_PARAM_BASELINE_PARAMETER_COUNTS == {
+        RNN_PARAM206: 56844,
+        LSTM_PARAM109: 56438,
+        LRU_PARAM96: 56834,
+    }
+
+
+def test_lstm_param109_initializes_and_evolves_the_full_h_c_markov_state() -> None:
+    protocol = load_protocol(NATIVE_RECIPE_PROTOCOL_PATH)
+    model = build_protocol_model(model_config_from_protocol(protocol, LSTM_PARAM109))
+    memory = torch.randn(4, 2)
+    state = model.initial_state(4, "cpu", memory)
+    expected = torch.tanh(model.initial_encoder(memory))
+    torch.testing.assert_close(state, expected)
+    h, c = state.split(109, dim=-1)
+    assert h.shape == c.shape == (4, 109)
+    next_state = model.step(torch.zeros(4, 1), state)
+    assert next_state.shape == (4, 218)
+    assert model.metadata()["project_parameter_matched_baseline_contract"][
+        "state_semantics"
+    ] == "full_concatenated_h_c_Markov_state"
+
+
+def test_lru_param96_uses_existing_full_complex_project_baseline() -> None:
+    protocol = load_protocol(NATIVE_RECIPE_PROTOCOL_PATH)
+    model = build_protocol_model(model_config_from_protocol(protocol, LRU_PARAM96))
+    core = model.core
+    recurrence = core.blocks[0].rec
+
+    assert core.variant == "LRU-Block"
+    assert core.encoder.bias is None
+    assert isinstance(core.blocks[0].norm_in, torch.nn.Identity)
+    assert recurrence.__class__.__name__ == "ComplexLRURec"
+    assert recurrence.B_re.shape == recurrence.B_im.shape == (96, 96)
+    assert model.primary_state_size == 2 * 96
+    assert model.reported_state_size == 3 * 96
+    initial = model.initial_state(2, "cpu", torch.randn(2, 2))
+    assert initial[:, :192].shape == (2, 192)
+    torch.testing.assert_close(initial[:, 192:], torch.zeros(2, 96))
+    contract = model.metadata()["project_parameter_matched_baseline_contract"]
+    assert contract["state_semantics"] == (
+        "full_real_imaginary_complex_carrier_excluding_overwritten_stream"
+    )
+    assert contract["raw_LRU_Block_excluded_reason"] == (
+        "enables_encoder_bias_and_affine_input_LayerNorm"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "width", "activation"),
+    (
+        (RNN_PARAM206, 205, INITIAL_ENCODER_IDENTITY),
+        (LSTM_PARAM109, 108, INITIAL_ENCODER_TANH),
+        (LRU_PARAM96, 95, INITIAL_ENCODER_IDENTITY),
+    ),
+)
+def test_project_parameter_baseline_widths_are_fail_closed(
+    name: str, width: int, activation: str
+) -> None:
+    with pytest.raises(ValueError, match="freezes hidden width"):
+        build_protocol_model(
+            ModelConfig(
+                name,
+                1,
+                2,
+                width=width,
+                initial_encoder_bias=False,
+                initial_encoder_weight_init=INITIAL_ENCODER_SAGODI_W_OTR,
+                initial_encoder_activation=activation,
+            )
+        )
