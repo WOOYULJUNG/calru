@@ -1,14 +1,16 @@
 """Checkpoint runner for the Ságodi-based, explicitly adapted ring analysis.
 
 This module deliberately keeps the primary analysis separate from
-``phase1_analysis.py``.  The latter contains project-specific settling,
-recovery, projected-JVP, and C1--C4 diagnostics; none of those diagnostics is
-called here.
+``phase1_analysis.py``.  The latter contains legacy project-specific settling,
+isotropic recovery, projected-JVP, and C1--C4 diagnostics; none of those
+diagnostics is called here.  This runner instead adds a separately labelled,
+threshold-free carrier tangent-complement recovery diagnostic to the primary
+evaluation.
 
 Two project resolutions are made explicit in every result:
 
-* a noise-free, length-``T`` task rollout is followed by an exact ``16T``
-  zero-input rollout; and
+* a state-noise-disabled held-out GP task rollout of length ``T`` is followed
+  by an exact ``16T`` deterministic zero-input rollout; and
 * for a possibly nonlinear decoder, projected flow is the common discrete
   finite-step displacement ``D(F0(s)) - D(s)``.
 
@@ -52,6 +54,7 @@ from .sagodi_primary_analysis import (
     StructuralNotEstimableError,
     angle_from_output,
     asymptotic_memory_metrics,
+    carrier_ambient_normal_recovery,
     circular_absolute_error,
     cyclic_flow_reversal_topology,
     dense_full_jacobian_eigenspectrum,
@@ -71,7 +74,18 @@ FULL_BLANK_HORIZON = 16 * FULL_TASK_HORIZON
 INCLUSION_NMSE_DB = -20.0
 SLOW_RELATIVE_SPEED = 1.0e-3
 DEFAULT_SPECTRUM_CHUNK_SIZE = 32
+NORMAL_RECOVERY_SEED = 314159
+NORMAL_RECOVERY_ANCHOR_COUNT = 32
+NORMAL_RECOVERY_AMBIENT_DIRECTIONS = 4
+NORMAL_RECOVERY_RADII_OVER_MANIFOLD_SCALE = (0.01, 0.05, 0.1)
+NORMAL_RECOVERY_HORIZONS = (0, 1, 4, 16, 64, 256, 1024, 4096)
 SCHEMA_VERSION = 1
+
+
+def primary_analysis_spec_payload(spec: PrimaryAnalysisSpec) -> dict[str, Any]:
+    """Return the frozen spec using only JSON-native container types."""
+
+    return json.loads(json.dumps(asdict(spec)))
 
 
 def primary_analysis_identity_payload(
@@ -101,7 +115,9 @@ def primary_analysis_identity_payload(
         "protocol_sha256": protocol_sha256,
         "protocol_fingerprint": protocol_fingerprint_value,
         "model_name": model_name,
-        "spec": asdict(spec),
+        # Dataclass tuples must cross the JSON artifact boundary as lists so
+        # the campaign can compare the persisted identity payload exactly.
+        "spec": primary_analysis_spec_payload(spec),
     }
 
 
@@ -116,6 +132,13 @@ class PrimaryAnalysisSpec:
     slow_relative_speed: float = SLOW_RELATIVE_SPEED
     inclusion_nmse_db: float = INCLUSION_NMSE_DB
     flow_zero_tolerance: float = 0.0
+    normal_recovery_seed: int = NORMAL_RECOVERY_SEED
+    normal_recovery_anchor_count: int = NORMAL_RECOVERY_ANCHOR_COUNT
+    normal_recovery_ambient_directions: int = NORMAL_RECOVERY_AMBIENT_DIRECTIONS
+    normal_recovery_radii_over_manifold_scale: tuple[float, ...] = (
+        NORMAL_RECOVERY_RADII_OVER_MANIFOLD_SCALE
+    )
+    normal_recovery_horizons: tuple[int, ...] = NORMAL_RECOVERY_HORIZONS
     smoke: bool = False
 
     def validate(self) -> None:
@@ -139,6 +162,26 @@ class PrimaryAnalysisSpec:
             raise ValueError("inclusion_nmse_db must be finite")
         if not math.isfinite(self.flow_zero_tolerance) or self.flow_zero_tolerance < 0:
             raise ValueError("flow_zero_tolerance must be finite and non-negative")
+        if self.normal_recovery_seed < 0:
+            raise ValueError("normal_recovery_seed must be non-negative")
+        if self.normal_recovery_anchor_count <= 0:
+            raise ValueError("normal_recovery_anchor_count must be positive")
+        if self.normal_recovery_ambient_directions <= 0:
+            raise ValueError("normal_recovery_ambient_directions must be positive")
+        if tuple(self.normal_recovery_radii_over_manifold_scale) != tuple(
+            sorted(set(self.normal_recovery_radii_over_manifold_scale))
+        ) or any(
+            not math.isfinite(value) or value <= 0.0
+            for value in self.normal_recovery_radii_over_manifold_scale
+        ):
+            raise ValueError("normal recovery radius fractions must be positive and increasing")
+        if (
+            not self.normal_recovery_horizons
+            or self.normal_recovery_horizons[0] != 0
+            or tuple(self.normal_recovery_horizons)
+            != tuple(sorted(set(self.normal_recovery_horizons)))
+        ):
+            raise ValueError("normal recovery horizons must be increasing and start at zero")
         if not self.smoke:
             expected = {
                 "trajectory_count": FULL_TRAJECTORY_COUNT,
@@ -147,6 +190,11 @@ class PrimaryAnalysisSpec:
                 "blank_horizon": FULL_BLANK_HORIZON,
                 "slow_relative_speed": SLOW_RELATIVE_SPEED,
                 "inclusion_nmse_db": INCLUSION_NMSE_DB,
+                "normal_recovery_seed": NORMAL_RECOVERY_SEED,
+                "normal_recovery_anchor_count": NORMAL_RECOVERY_ANCHOR_COUNT,
+                "normal_recovery_ambient_directions": NORMAL_RECOVERY_AMBIENT_DIRECTIONS,
+                "normal_recovery_radii_over_manifold_scale": NORMAL_RECOVERY_RADII_OVER_MANIFOLD_SCALE,
+                "normal_recovery_horizons": NORMAL_RECOVERY_HORIZONS,
             }
             for name, frozen in expected.items():
                 if getattr(self, name) != frozen:
@@ -208,6 +256,248 @@ def _finite_summary(values: np.ndarray | torch.Tensor) -> dict[str, float] | Non
         "q95": float(np.quantile(finite, 0.95)),
         "min": float(finite.min()),
         "max": float(finite.max()),
+    }
+
+
+def _registered_numeric_summary(
+    values: np.ndarray | torch.Tensor,
+) -> dict[str, float | int]:
+    """Summarize a registered array without silently dropping non-finite cells."""
+
+    array = _as_numpy(values) if isinstance(values, torch.Tensor) else np.asarray(values)
+    flat = np.asarray(array, dtype=np.float64).reshape(-1)
+    finite_mask = np.isfinite(flat)
+    registered = int(flat.size)
+    finite_count = int(finite_mask.sum())
+    missing = registered - finite_count
+    if not registered:
+        raise ValueError("registered numeric summary requires at least one value")
+    if missing:
+        raise StructuralNotEstimableError(
+            f"registered recovery metric has {missing}/{registered} non-finite values"
+        )
+    return {
+        "registered_count": registered,
+        "finite_count": finite_count,
+        "missing_or_nonfinite_count": missing,
+        "mean": float(flat.mean()),
+        "population_std": float(flat.std(ddof=0)),
+        "median": float(np.median(flat)),
+        "q05": float(np.quantile(flat, 0.05)),
+        "q95": float(np.quantile(flat, 0.95)),
+        "min": float(flat.min()),
+        "max": float(flat.max()),
+    }
+
+
+def _canonical_radius_key(value: float) -> str:
+    return format(float(value), ".12g")
+
+
+def _persisted_direction_arrays_and_qa(
+    recovery: Any,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Recompute QA from the exact direction arrays persisted in the NPZ.
+
+    Torch float32 norm/dot reductions can differ from a verifier's float64
+    recomputation of the persisted float32 components.  The persisted QA must
+    describe the artifact itself, not a device-dependent intermediate value.
+    """
+
+    direction = _as_numpy(recovery.direction)
+    tangent = _as_numpy(recovery.tangent)
+    direction64 = np.asarray(direction, dtype=np.float64)
+    tangent64 = np.asarray(tangent, dtype=np.float64)
+    direction_norm_error = np.abs(np.linalg.norm(direction64, axis=1) - 1.0)
+    absolute_tangent_dot_direction = np.abs(
+        np.sum(direction64 * tangent64, axis=1)
+    )
+    return (
+        direction,
+        tangent,
+        direction_norm_error,
+        absolute_tangent_dot_direction,
+    )
+
+
+def _carrier_normal_recovery_summary(
+    recovery: Any,
+    *,
+    seed: int,
+    anchor_count: int,
+    ambient_directions_per_anchor: int,
+    radii_over_manifold_scale: tuple[float, ...],
+    horizons: tuple[int, ...],
+    smoke: bool,
+) -> dict[str, Any]:
+    """Build denominator-preserving summaries, keeping direction families apart."""
+
+    family = np.asarray(recovery.family, dtype="U32")
+    radius = _as_numpy(recovery.radius_over_manifold_scale, dtype=np.float64)
+    horizon = _as_numpy(recovery.horizon, dtype=np.int64)
+    metric_arrays = {
+        "manifold_distance": _as_numpy(recovery.manifold_distance),
+        "manifold_distance_ratio": _as_numpy(recovery.manifold_distance_ratio),
+        "same_memory_error_radians": _as_numpy(
+            recovery.same_memory_error_radians
+        ),
+        "clean_manifold_distance": _as_numpy(recovery.clean_manifold_distance),
+        "clean_same_memory_error_radians": _as_numpy(
+            recovery.clean_same_memory_error_radians
+        ),
+        "excess_same_memory_error_radians": _as_numpy(
+            recovery.excess_same_memory_error_radians
+        ),
+        "manifold_distance_minus_clean": _as_numpy(
+            recovery.manifold_distance_minus_clean
+        ),
+        "distance_to_matched_clean_state": _as_numpy(
+            recovery.distance_to_matched_clean_state
+        ),
+        "distance_to_matched_clean_state_ratio": _as_numpy(
+            recovery.distance_to_matched_clean_state_ratio
+        ),
+    }
+    if any(value.shape != (family.size, horizon.size) for value in metric_arrays.values()):
+        raise ValueError("carrier recovery metric arrays do not share [trial,horizon]")
+
+    metrics_by_family: dict[str, Any] = {}
+    base_count_by_family: dict[str, int] = {}
+    horizon_count_by_family: dict[str, int] = {}
+    for family_name in ("ambient_normal", "in_plane_radial"):
+        family_mask = family == family_name
+        family_count = int(family_mask.sum())
+        if family_count <= 0:
+            raise StructuralNotEstimableError(
+                f"registered carrier direction family {family_name} is empty"
+            )
+        base_count_by_family[family_name] = family_count
+        horizon_count_by_family[family_name] = family_count * int(horizon.size)
+        by_radius: dict[str, Any] = {}
+        for radius_value in radii_over_manifold_scale:
+            radius_mask = family_mask & np.isclose(
+                radius, float(radius_value), rtol=0.0, atol=1.0e-12
+            )
+            if not bool(radius_mask.any()):
+                raise StructuralNotEstimableError(
+                    f"registered radius {radius_value} is absent for {family_name}"
+                )
+            by_horizon: dict[str, Any] = {}
+            for column, horizon_value in enumerate(horizon.tolist()):
+                by_horizon[str(int(horizon_value))] = {
+                    name: _registered_numeric_summary(values[radius_mask, column])
+                    for name, values in metric_arrays.items()
+                }
+            by_radius[_canonical_radius_key(radius_value)] = {
+                "registered_base_perturbation_count": int(radius_mask.sum()),
+                "registered_horizon_record_count": int(radius_mask.sum())
+                * int(horizon.size),
+                "by_horizon": by_horizon,
+            }
+        metrics_by_family[family_name] = {
+            "registered_base_perturbation_count": family_count,
+            "registered_horizon_record_count": family_count * int(horizon.size),
+            "by_radius": by_radius,
+        }
+
+    ambient_mask = family == "ambient_normal"
+    ambient_aggregate = {
+        name: {
+            str(int(horizon_value)): _registered_numeric_summary(
+                values[ambient_mask, column]
+            )
+            for column, horizon_value in enumerate(horizon.tolist())
+        }
+        for name, values in metric_arrays.items()
+    }
+    observed_anchor_index = _as_numpy(recovery.anchor_index, dtype=np.int64)
+    unique_anchor_index = np.unique(observed_anchor_index)
+    if unique_anchor_index.size != int(anchor_count):
+        raise StructuralNotEstimableError(
+            "carrier recovery did not retain every registered unique anchor"
+        )
+    (
+        _,
+        _,
+        direction_norm_error,
+        tangent_dot_direction,
+    ) = _persisted_direction_arrays_and_qa(recovery)
+    initial_distance = metric_arrays["manifold_distance"][:, 0]
+    return {
+        "role": (
+            "project_defined_primary_descriptive_carrier_normal_recovery_"
+            "no_threshold_or_binary_gate"
+        ),
+        "state_space": "minimum_causal_primary_carrier_state",
+        "manifold_source": "reconstructed_primary_carrier_periodic_cubic_spline",
+        "distance_definition": (
+            "Euclidean nearest distance to the registered sampled carrier spline"
+        ),
+        "tangent_definition": (
+            "normalized central periodic finite difference of carrier spline state"
+        ),
+        "direction_families": {
+            "ambient_normal": (
+                "seeded Gaussian full-state direction projected by I-tt^T"
+            ),
+            "in_plane_radial": (
+                "two signed tangent-orthogonal directions in global carrier two-PC plane"
+            ),
+        },
+        "matched_clean_control": (
+            "same carrier anchor rolled under identical deterministic blank dynamics; "
+            "excess metrics subtract ordinary clean on-manifold drift"
+        ),
+        "scope": (
+            "sampled Euclidean tangent-complement recovery on the reconstructed "
+            "carrier spline; this is not a proof of an invariant stable normal "
+            "bundle over the entire continuous manifold"
+        ),
+        "deterministic_design": {
+            "seed": int(seed),
+            "anchor_count": int(anchor_count),
+            "anchor_indices": unique_anchor_index.tolist(),
+            "ambient_directions_per_anchor": int(ambient_directions_per_anchor),
+            "in_plane_radial_directions_per_anchor": 2,
+            "radii_over_manifold_scale": [
+                float(value) for value in radii_over_manifold_scale
+            ],
+            "horizons": [int(value) for value in horizons],
+            "smoke_reduction": bool(smoke),
+            "registered_base_perturbation_count_by_family": base_count_by_family,
+            "registered_base_perturbation_count": int(family.size),
+            "registered_horizon_record_count_by_family": horizon_count_by_family,
+            "registered_horizon_record_count": int(family.size * horizon.size),
+        },
+        "manifold_scale": float(recovery.manifold_scale.detach().cpu()),
+        "numerical_qa": {
+            "unique_anchor_count": int(unique_anchor_index.size),
+            "expected_anchor_count": int(anchor_count),
+            "maximum_direction_norm_error": float(direction_norm_error.max()),
+            "maximum_absolute_tangent_dot_direction": float(
+                tangent_dot_direction.max()
+            ),
+            "initial_manifold_distance": _registered_numeric_summary(
+                initial_distance
+            ),
+            "initial_manifold_distance_all_finite": bool(
+                np.isfinite(initial_distance).all()
+            ),
+            "ambient_normal_base_perturbation_count": int(
+                base_count_by_family["ambient_normal"]
+            ),
+            "in_plane_radial_base_perturbation_count": int(
+                base_count_by_family["in_plane_radial"]
+            ),
+            "manifold_scale_finite_positive": bool(
+                math.isfinite(float(recovery.manifold_scale.detach().cpu()))
+                and float(recovery.manifold_scale.detach().cpu()) > 0.0
+            ),
+        },
+        "metrics_by_family": metrics_by_family,
+        # These ambient-only aliases are the primary cross-seed campaign fields.
+        **ambient_aggregate,
+        "claim_gate": False,
     }
 
 
@@ -1452,17 +1742,22 @@ def _publish_structural_not_estimable(
     model_name: str,
     task_trajectory_path: Path,
     failed_stage: str,
-    error: BaseException,
+    error: StructuralNotEstimableError,
     completed_artifacts: Sequence[Path] = (),
 ) -> Path:
     """Publish a terminal, denominator-preserving numerical non-estimability.
 
-    This path is reserved for domain/numerical failures represented by the
-    caller as ``ValueError`` (and the reconstruction-specific failures already
-    classified by that caller).  CUDA OOMs, killed processes, I/O failures,
-    source drift, and other infrastructure errors are intentionally not caught
-    here; the campaign leaves those attempts retryable under the same seed.
+    This path is reserved for the dedicated structural/domain exception.
+    Ordinary ``ValueError`` programmer-contract failures, CUDA OOMs, killed
+    processes, I/O failures, source drift, and other infrastructure errors are
+    intentionally not classified here; the campaign leaves retryable failures
+    under the same seed.
     """
+
+    if not isinstance(error, StructuralNotEstimableError):
+        raise TypeError(
+            "only StructuralNotEstimableError can publish scientific non-estimability"
+        )
 
     reason = f"{type(error).__name__}:{error}"
     base_summary["analysis_status"] = "structural_analysis_not_estimable"
@@ -1714,6 +2009,8 @@ def run_primary_analysis(
         endpoint_primary_state=_as_numpy(
             adapter.primary_from_reported(endpoint_reported)
         ),
+        analysis_recurrent_state_noise_enabled=np.asarray(False, dtype=np.bool_),
+        analysis_recurrent_state_noise_std=np.asarray(0.0, dtype=np.float64),
     )
     eligible = bool(
         bound_validation_metrics is not None
@@ -1742,11 +2039,12 @@ def run_primary_analysis(
             _retention_finite_precision_diagnostics(model)
         ),
         "state_spec": adapter.state_spec(),
-        "analysis_spec": asdict(active_spec),
+        "analysis_spec": primary_analysis_spec_payload(active_spec),
         "project_resolutions": {
             "task_to_blank_staging": (
-                "direct noise-free T-step task endpoint followed by exact 16T "
-                "zero-input rollout; explicit project resolution of paper ambiguity"
+                "state-noise-disabled held-out GP task rollout for T steps, followed "
+                "by exact 16T deterministic zero-input dynamics; the sampled GP "
+                "velocity is task signal, not additive recurrent-state noise"
             ),
             "nonlinear_decoder_projected_flow": (
                 "D(F0(s))-D(s), common one-step discrete adaptation of the paper's "
@@ -1756,6 +2054,13 @@ def run_primary_analysis(
                 "nearest in Euclidean actual decoded output space to 1024 uniform "
                 "unit-ring targets"
             ),
+            "analysis_state_noise": {
+                "enabled": False,
+                "task_rollout_call": "ProtocolModel.step(..., state_noise=None)",
+                "blank_rollout_call": "deterministic StateAdapter blank-input map",
+                "model_mode": "eval",
+                "training_noise_is_not_replayed": True,
+            },
         },
         "frozen_main_id_validation": {
             "metrics": bound_validation_metrics,
@@ -1858,7 +2163,9 @@ def run_primary_analysis(
     )
     base_summary["manifold_reconstruction"] = {
         "status": "estimated",
-        "trajectory_source": "direct_exact_count_noise_free_task_trajectories",
+        "trajectory_source": (
+            "direct_exact_count_state_noise_disabled_held_out_GP_task_trajectories"
+        ),
         "task_horizon": active_spec.task_horizon,
         "autonomous_blank_horizon": active_spec.blank_horizon,
         "slow_relative_speed": active_spec.slow_relative_speed,
@@ -1866,6 +2173,127 @@ def run_primary_analysis(
         "qa": reconstruction.qa,
         "claim_gate": False,
     }
+
+    normal_anchor_count = int(active_spec.normal_recovery_anchor_count)
+    normal_horizons = tuple(active_spec.normal_recovery_horizons)
+    if active_spec.smoke:
+        normal_anchor_count = min(normal_anchor_count, active_spec.spline_count)
+        normal_horizons = tuple(
+            value for value in normal_horizons if value <= active_spec.blank_horizon
+        )
+        if active_spec.blank_horizon not in normal_horizons:
+            normal_horizons = (*normal_horizons, int(active_spec.blank_horizon))
+    atomic_json(
+        progress,
+        {
+            "schema_version": SCHEMA_VERSION,
+            "analysis_identity": identity,
+            "stage": "carrier_ambient_normal_recovery",
+            "updated_unix_seconds": time.time(),
+        },
+    )
+    try:
+        recovery = carrier_ambient_normal_recovery(
+            reconstruction.spline_state,
+            reconstruction.spline_angle,
+            adapter.actual_f0,
+            lambda state: _blank_decode_primary(model, adapter, state),
+            anchor_count=normal_anchor_count,
+            ambient_directions_per_anchor=(
+                active_spec.normal_recovery_ambient_directions
+            ),
+            radii_over_manifold_scale=tuple(
+                active_spec.normal_recovery_radii_over_manifold_scale
+            ),
+            horizons=normal_horizons,
+            seed=active_spec.normal_recovery_seed,
+            distance_chunk_size=active_spec.candidate_distance_chunk_size,
+        )
+        recovery_summary = _carrier_normal_recovery_summary(
+            recovery,
+            seed=active_spec.normal_recovery_seed,
+            anchor_count=normal_anchor_count,
+            ambient_directions_per_anchor=(
+                active_spec.normal_recovery_ambient_directions
+            ),
+            radii_over_manifold_scale=tuple(
+                active_spec.normal_recovery_radii_over_manifold_scale
+            ),
+            horizons=normal_horizons,
+            smoke=active_spec.smoke,
+        )
+    except torch.cuda.OutOfMemoryError:
+        raise
+    except StructuralNotEstimableError as error:
+        return _publish_structural_not_estimable(
+            destination=destination,
+            base_summary=base_summary,
+            progress=progress,
+            completion=completion,
+            identity=identity,
+            model_name=model.config.name,
+            task_trajectory_path=task_trajectory_path,
+            failed_stage="carrier_ambient_normal_recovery",
+            error=error,
+            completed_artifacts=(reconstruction_path,),
+        )
+    recovery_path = destination / "carrier_ambient_normal_recovery.npz"
+    (
+        persisted_direction,
+        persisted_tangent,
+        persisted_direction_norm_error,
+        persisted_absolute_tangent_dot_direction,
+    ) = _persisted_direction_arrays_and_qa(recovery)
+    _atomic_npz(
+        recovery_path,
+        family=np.asarray(recovery.family, dtype="U32"),
+        anchor_index=_as_numpy(recovery.anchor_index, dtype=np.int64),
+        anchor_angle=_as_numpy(recovery.anchor_angle),
+        direction_index=_as_numpy(recovery.direction_index, dtype=np.int64),
+        radius_over_manifold_scale=_as_numpy(
+            recovery.radius_over_manifold_scale
+        ),
+        radius_absolute=_as_numpy(recovery.radius_absolute),
+        direction=persisted_direction,
+        tangent=persisted_tangent,
+        direction_norm_error=persisted_direction_norm_error,
+        absolute_tangent_dot_direction=(
+            persisted_absolute_tangent_dot_direction
+        ),
+        horizon=_as_numpy(recovery.horizon, dtype=np.int64),
+        nearest_manifold_index=_as_numpy(
+            recovery.nearest_manifold_index, dtype=np.int64
+        ),
+        manifold_distance=_as_numpy(recovery.manifold_distance),
+        manifold_distance_ratio=_as_numpy(recovery.manifold_distance_ratio),
+        decoded_angle=_as_numpy(recovery.decoded_angle),
+        same_memory_error_radians=_as_numpy(
+            recovery.same_memory_error_radians
+        ),
+        clean_manifold_distance=_as_numpy(recovery.clean_manifold_distance),
+        clean_decoded_angle=_as_numpy(recovery.clean_decoded_angle),
+        clean_same_memory_error_radians=_as_numpy(
+            recovery.clean_same_memory_error_radians
+        ),
+        excess_same_memory_error_radians=_as_numpy(
+            recovery.excess_same_memory_error_radians
+        ),
+        manifold_distance_minus_clean=_as_numpy(
+            recovery.manifold_distance_minus_clean
+        ),
+        distance_to_matched_clean_state=_as_numpy(
+            recovery.distance_to_matched_clean_state
+        ),
+        distance_to_matched_clean_state_ratio=_as_numpy(
+            recovery.distance_to_matched_clean_state_ratio
+        ),
+        manifold_scale=np.asarray(
+            float(recovery.manifold_scale.detach().cpu()), dtype=np.float64
+        ),
+        analysis_recurrent_state_noise_enabled=np.asarray(False, dtype=np.bool_),
+        analysis_recurrent_state_noise_std=np.asarray(0.0, dtype=np.float64),
+    )
+    base_summary["carrier_ambient_normal_recovery"] = recovery_summary
 
     try:
         with torch.no_grad():
@@ -1894,7 +2322,7 @@ def run_primary_analysis(
             task_trajectory_path=task_trajectory_path,
             failed_stage="projected_flow_and_fixed_point_topology",
             error=error,
-            completed_artifacts=(reconstruction_path,),
+            completed_artifacts=(reconstruction_path, recovery_path),
         )
     projected_path = destination / "projected_flow_and_topology.npz"
     _atomic_npz(
@@ -1957,7 +2385,11 @@ def run_primary_analysis(
             task_trajectory_path=task_trajectory_path,
             failed_stage="full_local_jacobian_eigenspectrum",
             error=error,
-            completed_artifacts=(reconstruction_path, projected_path),
+            completed_artifacts=(
+                reconstruction_path,
+                recovery_path,
+                projected_path,
+            ),
         )
     atomic_json(
         progress,
@@ -1989,6 +2421,7 @@ def run_primary_analysis(
             error=error,
             completed_artifacts=(
                 reconstruction_path,
+                recovery_path,
                 projected_path,
                 spectrum_path,
             ),
@@ -2016,6 +2449,7 @@ def run_primary_analysis(
             error=error,
             completed_artifacts=(
                 reconstruction_path,
+                recovery_path,
                 projected_path,
                 spectrum_path,
                 finite_path,
@@ -2053,6 +2487,7 @@ def run_primary_analysis(
             progress,
             task_trajectory_path,
             reconstruction_path,
+            recovery_path,
             projected_path,
             spectrum_path,
             finite_path,

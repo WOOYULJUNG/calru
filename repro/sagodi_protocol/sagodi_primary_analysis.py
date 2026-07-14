@@ -2,9 +2,11 @@ r"""Numerical core for the Ságodi-based, explicitly adapted ring analysis.
 
 This module contains only model-independent definitions used by the primary
 continuous-attractor analysis.  It intentionally does not contain claim
-thresholds, binary gates, settling/recovery experiments, or projected-JVP
-proxies.  A campaign runner supplies a flattened full Markov state, its
-blank-input transition ``F0``, and the task-output decoder.
+thresholds, binary gates, legacy settling/isotropic-recovery experiments, or
+projected-JVP proxies.  It does contain the explicitly project-defined,
+threshold-free carrier tangent-complement recovery diagnostic.  A campaign
+runner supplies a flattened full Markov state, its blank-input transition
+``F0``, and the task-output decoder.
 
 The recurrent models in this repository are discrete-time systems.  We
 therefore retain both conventions needed for an auditable comparison:
@@ -141,6 +143,44 @@ class AngularMemoryMetrics:
 
 
 @dataclass(frozen=True)
+class CarrierNormalRecovery:
+    """Deterministic perturbation/recovery traces in the causal carrier state.
+
+    ``family`` distinguishes Gaussian ambient directions projected onto the
+    local tangent complement from the two signed radial directions in the
+    carrier manifold's global two-PC plane.  Every other tensor whose leading
+    dimension is ``trial`` uses the same flattened trial order.  Distances are
+    nearest-neighbour distances to the supplied reconstructed carrier spline;
+    they are not output-space or diagnostic-stream distances.
+    """
+
+    family: tuple[str, ...]
+    anchor_index: torch.Tensor
+    anchor_angle: torch.Tensor
+    direction_index: torch.Tensor
+    radius_over_manifold_scale: torch.Tensor
+    radius_absolute: torch.Tensor
+    direction: torch.Tensor
+    tangent: torch.Tensor
+    direction_norm_error: torch.Tensor
+    absolute_tangent_dot_direction: torch.Tensor
+    horizon: torch.Tensor
+    nearest_manifold_index: torch.Tensor
+    manifold_distance: torch.Tensor
+    manifold_distance_ratio: torch.Tensor
+    decoded_angle: torch.Tensor
+    same_memory_error_radians: torch.Tensor
+    clean_manifold_distance: torch.Tensor
+    clean_decoded_angle: torch.Tensor
+    clean_same_memory_error_radians: torch.Tensor
+    excess_same_memory_error_radians: torch.Tensor
+    manifold_distance_minus_clean: torch.Tensor
+    distance_to_matched_clean_state: torch.Tensor
+    distance_to_matched_clean_state_ratio: torch.Tensor
+    manifold_scale: torch.Tensor
+
+
+@dataclass(frozen=True)
 class StableBasinCapacity:
     """Geometric stable-basin widths and entropy on a one-dimensional ring."""
 
@@ -263,6 +303,392 @@ def angle_from_output(output: torch.Tensor) -> torch.Tensor:
             "angle is undefined for a zero output vector"
         )
     return torch.atan2(output[..., 1], output[..., 0])
+
+
+def _nearest_carrier_manifold_sample(
+    state: torch.Tensor,
+    manifold_state: torch.Tensor,
+    *,
+    chunk_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return exact nearest-sample distance/index without a large 3-D tensor."""
+
+    if chunk_size <= 0:
+        raise ValueError("distance chunk_size must be positive")
+    distance_parts: list[torch.Tensor] = []
+    index_parts: list[torch.Tensor] = []
+    manifold_squared = manifold_state.square().sum(dim=1).unsqueeze(0)
+    for start in range(0, int(state.shape[0]), int(chunk_size)):
+        values = state[start : start + int(chunk_size)]
+        squared = (
+            values.square().sum(dim=1, keepdim=True)
+            + manifold_squared
+            - 2.0 * values @ manifold_state.transpose(0, 1)
+        ).clamp_min_(0.0)
+        observed, nearest = squared.min(dim=1)
+        distance_parts.append(torch.sqrt(observed))
+        index_parts.append(nearest)
+    distance = torch.cat(distance_parts)
+    nearest = torch.cat(index_parts)
+    if not bool(torch.isfinite(distance).all()):
+        raise StructuralNotEstimableError(
+            "carrier-to-manifold nearest distances are non-finite"
+        )
+    return distance, nearest
+
+
+@torch.no_grad()
+def carrier_ambient_normal_recovery(
+    manifold_state: torch.Tensor,
+    manifold_angle: torch.Tensor,
+    autonomous_map: TensorMap,
+    decoder: Decoder,
+    *,
+    anchor_count: int,
+    ambient_directions_per_anchor: int,
+    radii_over_manifold_scale: tuple[float, ...],
+    horizons: tuple[int, ...],
+    seed: int,
+    distance_chunk_size: int = 1024,
+) -> CarrierNormalRecovery:
+    """Perturb the reconstructed carrier ring only in tangent-normal directions.
+
+    Tangents are normalized central periodic finite differences of the
+    reconstructed minimum causal carrier-state spline.  Ambient directions
+    are seeded CPU-float64 Gaussian vectors projected by ``I - tt^T`` and then
+    normalized.  The separate ``in_plane_radial`` family consists of the two
+    signed directions perpendicular to the projected tangent in the global
+    two-PC carrier plane.  This diagnostic never applies a success threshold.
+    """
+
+    _require_state_matrix("manifold_state", manifold_state)
+    _require_floating_tensor("manifold_angle", manifold_angle)
+    point_count, state_dimension = manifold_state.shape
+    if manifold_angle.shape != (point_count,):
+        raise ValueError("manifold_angle must align with manifold_state as [M]")
+    if manifold_angle.dtype != manifold_state.dtype or manifold_angle.device != manifold_state.device:
+        raise ValueError("manifold_angle and manifold_state must share dtype and device")
+    if point_count < 4:
+        raise ValueError("carrier normal recovery requires at least four spline points")
+    if not 1 <= int(anchor_count) <= int(point_count):
+        raise ValueError("anchor_count must be in [1, manifold point count]")
+    if int(ambient_directions_per_anchor) <= 0:
+        raise ValueError("ambient_directions_per_anchor must be positive")
+    if not isinstance(seed, int) or seed < 0:
+        raise ValueError("seed must be a non-negative integer")
+    if not radii_over_manifold_scale:
+        raise ValueError("radii_over_manifold_scale must be non-empty")
+    radii = tuple(float(value) for value in radii_over_manifold_scale)
+    if any(not math.isfinite(value) or value <= 0.0 for value in radii):
+        raise ValueError("all radius fractions must be finite and positive")
+    if tuple(sorted(set(radii))) != radii:
+        raise ValueError("radius fractions must be unique and strictly increasing")
+    if not horizons:
+        raise ValueError("horizons must be non-empty")
+    horizon_values = tuple(int(value) for value in horizons)
+    if tuple(sorted(set(horizon_values))) != horizon_values or horizon_values[0] != 0:
+        raise ValueError("horizons must be unique, increasing, and start at zero")
+
+    centered = manifold_state - manifold_state.mean(dim=0, keepdim=True)
+    scale = torch.sqrt(centered.square().sum(dim=1).mean())
+    scale_floor = 100.0 * torch.finfo(manifold_state.dtype).eps * max(
+        1.0, float(torch.linalg.vector_norm(manifold_state, dim=1).max().item())
+    )
+    if not bool(torch.isfinite(scale)) or float(scale.item()) <= scale_floor:
+        raise StructuralNotEstimableError(
+            "carrier manifold has degenerate RMS scale"
+        )
+
+    central = torch.roll(manifold_state, shifts=-1, dims=0) - torch.roll(
+        manifold_state, shifts=1, dims=0
+    )
+    tangent_norm = torch.linalg.vector_norm(central, dim=1)
+    tangent_floor = 100.0 * torch.finfo(manifold_state.dtype).eps * float(
+        scale.item()
+    )
+    if not bool(torch.isfinite(tangent_norm).all()) or bool(
+        (tangent_norm <= tangent_floor).any()
+    ):
+        raise StructuralNotEstimableError(
+            "central periodic carrier tangent is structurally degenerate"
+        )
+    tangent = central / tangent_norm[:, None]
+
+    anchor_index = torch.div(
+        torch.arange(anchor_count, device=manifold_state.device, dtype=torch.int64)
+        * int(point_count),
+        int(anchor_count),
+        rounding_mode="floor",
+    )
+    anchor_state = manifold_state[anchor_index]
+    anchor_angle = manifold_angle[anchor_index]
+    anchor_tangent = tangent[anchor_index]
+
+    # Generate on CPU in float64 so the registered random vectors do not
+    # depend on CUDA generator implementations or the checkpoint dtype.
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(seed))
+    gaussian = torch.randn(
+        int(anchor_count),
+        int(ambient_directions_per_anchor),
+        int(state_dimension),
+        generator=generator,
+        dtype=torch.float64,
+        device="cpu",
+    ).to(device=manifold_state.device, dtype=manifold_state.dtype)
+    projected = gaussian - (
+        gaussian * anchor_tangent[:, None, :]
+    ).sum(dim=-1, keepdim=True) * anchor_tangent[:, None, :]
+    projected_norm = torch.linalg.vector_norm(projected, dim=-1)
+    direction_floor = 100.0 * torch.finfo(manifold_state.dtype).eps
+    if not bool(torch.isfinite(projected_norm).all()) or bool(
+        (projected_norm <= direction_floor).any()
+    ):
+        raise StructuralNotEstimableError(
+            "seeded Gaussian direction is degenerate after tangent projection"
+        )
+    ambient_direction = projected / projected_norm[..., None]
+
+    # A radial control must remain separate from full ambient-normal draws.
+    # Use the two-dimensional global carrier plane and rotate the tangent's
+    # plane coordinates by 90 degrees.  Its two signs are both registered.
+    try:
+        _, singular, right = torch.linalg.svd(centered, full_matrices=False)
+    except torch.linalg.LinAlgError as error:
+        raise StructuralNotEstimableError(
+            "carrier two-PC plane SVD did not converge"
+        ) from error
+    if singular.numel() < 2 or not bool(torch.isfinite(singular).all()):
+        raise StructuralNotEstimableError(
+            "carrier two-PC plane is not estimable"
+        )
+    rank_floor = 100.0 * torch.finfo(manifold_state.dtype).eps * float(
+        singular[0].item()
+    )
+    if float(singular[1].item()) <= rank_floor:
+        raise StructuralNotEstimableError(
+            "carrier manifold lacks a nondegenerate two-dimensional plane"
+        )
+    plane_basis = right[:2]
+    tangent_in_plane = anchor_tangent @ plane_basis.transpose(0, 1)
+    tangent_in_plane_norm = torch.linalg.vector_norm(tangent_in_plane, dim=1)
+    if not bool(torch.isfinite(tangent_in_plane_norm).all()) or bool(
+        (tangent_in_plane_norm <= direction_floor).any()
+    ):
+        raise StructuralNotEstimableError(
+            "carrier tangent has a degenerate projection into its two-PC plane"
+        )
+    radial_coordinates = torch.stack(
+        (-tangent_in_plane[:, 1], tangent_in_plane[:, 0]), dim=1
+    )
+    radial = radial_coordinates @ plane_basis
+    radial = radial / torch.linalg.vector_norm(radial, dim=1, keepdim=True)
+    radial_direction = torch.stack((radial, -radial), dim=1)
+
+    family_values: list[str] = []
+    trial_anchor: list[int] = []
+    trial_direction_index: list[int] = []
+    trial_radius: list[float] = []
+    trial_direction: list[torch.Tensor] = []
+    trial_tangent: list[torch.Tensor] = []
+    for family, directions in (
+        ("ambient_normal", ambient_direction),
+        ("in_plane_radial", radial_direction),
+    ):
+        for anchor in range(int(anchor_count)):
+            for direction_index in range(int(directions.shape[1])):
+                for radius in radii:
+                    family_values.append(family)
+                    trial_anchor.append(anchor)
+                    trial_direction_index.append(direction_index)
+                    trial_radius.append(radius)
+                    trial_direction.append(directions[anchor, direction_index])
+                    trial_tangent.append(anchor_tangent[anchor])
+
+    trial_anchor_position = torch.as_tensor(
+        trial_anchor, device=manifold_state.device, dtype=torch.int64
+    )
+    direction_tensor = torch.stack(trial_direction)
+    tangent_tensor = torch.stack(trial_tangent)
+    direction_norm_error = (
+        torch.linalg.vector_norm(direction_tensor, dim=1) - 1.0
+    ).abs()
+    tangent_dot_direction = (tangent_tensor * direction_tensor).sum(dim=1).abs()
+    orthogonality_tolerance = (
+        1000.0
+        * torch.finfo(manifold_state.dtype).eps
+        * math.sqrt(float(state_dimension))
+    )
+    if (
+        not bool(
+            torch.isfinite(direction_norm_error).all()
+            and torch.isfinite(tangent_dot_direction).all()
+        )
+        or float(direction_norm_error.max().item()) > orthogonality_tolerance
+        or float(tangent_dot_direction.max().item()) > orthogonality_tolerance
+    ):
+        raise StructuralNotEstimableError(
+            "constructed carrier-normal directions failed normalization/orthogonality QA"
+        )
+    # Keep the preregistered dimensionless radii as float64 metadata.  The
+    # model-state arithmetic still uses the carrier dtype below.  Without this
+    # split, a float32 carrier rounds 0.01/0.05/0.1 before the runner validates
+    # the registered cells against the frozen Python float values.
+    registered_radius_fraction = torch.as_tensor(
+        trial_radius, device=manifold_state.device, dtype=torch.float64
+    )
+    runtime_radius_fraction = registered_radius_fraction.to(
+        dtype=manifold_state.dtype
+    )
+    absolute_radius = runtime_radius_fraction * scale
+    state = anchor_state[trial_anchor_position] + absolute_radius[:, None] * direction_tensor
+    trial_target_angle = anchor_angle[trial_anchor_position]
+
+    horizon_tensor = torch.as_tensor(
+        horizon_values, device=manifold_state.device, dtype=torch.int64
+    )
+    trial_count = int(state.shape[0])
+    observed_distance = torch.empty(
+        trial_count,
+        len(horizon_values),
+        device=manifold_state.device,
+        dtype=manifold_state.dtype,
+    )
+    observed_nearest = torch.empty(
+        trial_count,
+        len(horizon_values),
+        device=manifold_state.device,
+        dtype=torch.int64,
+    )
+    observed_angle = torch.empty_like(observed_distance)
+    clean_distance_by_anchor = torch.empty(
+        int(anchor_count),
+        len(horizon_values),
+        device=manifold_state.device,
+        dtype=manifold_state.dtype,
+    )
+    clean_angle_by_anchor = torch.empty_like(clean_distance_by_anchor)
+    distance_to_clean = torch.empty_like(observed_distance)
+    clean_state = anchor_state.clone()
+    horizon_to_column = {value: index for index, value in enumerate(horizon_values)}
+    for step in range(horizon_values[-1] + 1):
+        if step in horizon_to_column:
+            column = horizon_to_column[step]
+            distance, nearest = _nearest_carrier_manifold_sample(
+                state,
+                manifold_state,
+                chunk_size=int(distance_chunk_size),
+            )
+            output = decoder(state)
+            if not isinstance(output, torch.Tensor) or output.shape != (trial_count, 2):
+                raise ValueError("decoder must return [trial,2]")
+            if output.dtype != state.dtype or output.device != state.device:
+                raise ValueError("decoder must preserve carrier state dtype and device")
+            if not bool(torch.isfinite(output).all()):
+                raise StructuralNotEstimableError(
+                    "carrier recovery decoder returned non-finite output"
+                )
+            observed_distance[:, column] = distance
+            observed_nearest[:, column] = nearest
+            observed_angle[:, column] = angle_from_output(output)
+            clean_distance, _ = _nearest_carrier_manifold_sample(
+                clean_state,
+                manifold_state,
+                chunk_size=int(distance_chunk_size),
+            )
+            clean_output = decoder(clean_state)
+            if not isinstance(clean_output, torch.Tensor) or clean_output.shape != (
+                int(anchor_count),
+                2,
+            ):
+                raise ValueError("decoder must return [clean_anchor,2]")
+            if clean_output.dtype != state.dtype or clean_output.device != state.device:
+                raise ValueError("decoder must preserve clean carrier dtype and device")
+            if not bool(torch.isfinite(clean_output).all()):
+                raise StructuralNotEstimableError(
+                    "clean carrier recovery decoder returned non-finite output"
+                )
+            clean_distance_by_anchor[:, column] = clean_distance
+            clean_angle_by_anchor[:, column] = angle_from_output(clean_output)
+            distance_to_clean[:, column] = torch.linalg.vector_norm(
+                state - clean_state[trial_anchor_position], dim=1
+            )
+        if step < horizon_values[-1]:
+            state = _apply_matrix_callback(
+                autonomous_map, state, label="autonomous_map"
+            )
+            clean_state = _apply_matrix_callback(
+                autonomous_map, clean_state, label="autonomous_map_clean_anchor"
+            )
+
+    initial_distance = observed_distance[:, :1]
+    distance_floor = 100.0 * torch.finfo(manifold_state.dtype).eps * float(
+        scale.item()
+    )
+    if bool((initial_distance <= distance_floor).any()):
+        raise StructuralNotEstimableError(
+            "normal perturbation has numerically zero initial carrier distance"
+        )
+    if bool((distance_to_clean[:, :1] <= distance_floor).any()):
+        raise StructuralNotEstimableError(
+            "normal perturbation has numerically zero matched-clean distance"
+        )
+    ratio = observed_distance / initial_distance
+    memory_error = circular_absolute_error(
+        observed_angle, trial_target_angle[:, None]
+    )
+    clean_distance = clean_distance_by_anchor[trial_anchor_position]
+    clean_angle = clean_angle_by_anchor[trial_anchor_position]
+    clean_memory_error = circular_absolute_error(
+        clean_angle, trial_target_angle[:, None]
+    )
+    excess_memory_error = memory_error - clean_memory_error
+    distance_to_clean_ratio = distance_to_clean / distance_to_clean[:, :1]
+    manifold_distance_minus_clean = observed_distance - clean_distance
+    finite_metrics = (
+        ratio,
+        memory_error,
+        clean_distance,
+        clean_memory_error,
+        excess_memory_error,
+        distance_to_clean,
+        distance_to_clean_ratio,
+        manifold_distance_minus_clean,
+    )
+    if not all(bool(torch.isfinite(value).all()) for value in finite_metrics):
+        raise StructuralNotEstimableError(
+            "carrier recovery metrics contain non-finite values"
+        )
+    return CarrierNormalRecovery(
+        family=tuple(family_values),
+        anchor_index=anchor_index[trial_anchor_position],
+        anchor_angle=trial_target_angle,
+        direction_index=torch.as_tensor(
+            trial_direction_index,
+            device=manifold_state.device,
+            dtype=torch.int64,
+        ),
+        radius_over_manifold_scale=registered_radius_fraction,
+        radius_absolute=absolute_radius,
+        direction=direction_tensor,
+        tangent=tangent_tensor,
+        direction_norm_error=direction_norm_error,
+        absolute_tangent_dot_direction=tangent_dot_direction,
+        horizon=horizon_tensor,
+        nearest_manifold_index=observed_nearest,
+        manifold_distance=observed_distance,
+        manifold_distance_ratio=ratio,
+        decoded_angle=observed_angle,
+        same_memory_error_radians=memory_error,
+        clean_manifold_distance=clean_distance,
+        clean_decoded_angle=clean_angle,
+        clean_same_memory_error_radians=clean_memory_error,
+        excess_same_memory_error_radians=excess_memory_error,
+        manifold_distance_minus_clean=manifold_distance_minus_clean,
+        distance_to_matched_clean_state=distance_to_clean,
+        distance_to_matched_clean_state_ratio=distance_to_clean_ratio,
+        manifold_scale=scale,
+    )
 
 
 def discrete_vector_field(state: torch.Tensor, autonomous_map: TensorMap) -> torch.Tensor:

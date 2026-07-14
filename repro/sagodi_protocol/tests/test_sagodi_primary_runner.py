@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
@@ -10,20 +11,25 @@ from torch import nn
 
 import repro.sagodi_protocol.sagodi_primary_runner as primary_runner
 from repro.sagodi_protocol.sagodi_primary_analysis import (
+    StructuralNotEstimableError,
+    carrier_ambient_normal_recovery,
     cyclic_flow_reversal_topology,
 )
 from repro.sagodi_protocol.sagodi_primary_runner import (
     PrimaryAnalysisSpec,
     _asymptotic_summary,
     _bound_main_validation_metrics,
+    _carrier_normal_recovery_summary,
     _deterministic_knot_indices,
     _nearest_output_candidates,
     _nearest_output_candidates_torch,
+    _persisted_direction_arrays_and_qa,
     _publish_structural_not_estimable,
     _spectrum_chunk_payload_is_complete,
     compute_resumable_full_spectrum,
     finite_blank_memory,
     periodic_cubic_resample,
+    primary_analysis_identity_payload,
     reconstruct_slow_manifold,
 )
 from repro.sagodi_protocol.artifacts import sha256_file, strict_json_load, verify_completion_receipt
@@ -76,6 +82,32 @@ def test_full_spec_rejects_scientific_count_override() -> None:
         PrimaryAnalysisSpec(trajectory_count=8).validate()
 
 
+def test_analysis_identity_spec_is_json_round_trip_exact() -> None:
+    payload = primary_analysis_identity_payload(
+        checkpoint_sha256="a" * 64,
+        protocol_sha256="b" * 64,
+        protocol_fingerprint_value="c" * 64,
+        model_name="ca_lru",
+        spec=_smoke_spec(),
+    )
+    assert payload == json.loads(json.dumps(payload))
+    assert payload["spec"]["normal_recovery_radii_over_manifold_scale"] == [
+        0.01,
+        0.05,
+        0.1,
+    ]
+    assert payload["spec"]["normal_recovery_horizons"] == [
+        0,
+        1,
+        4,
+        16,
+        64,
+        256,
+        1024,
+        4096,
+    ]
+
+
 def test_numerical_failure_publishes_terminal_not_estimable_receipt(
     tmp_path: Path,
 ) -> None:
@@ -97,7 +129,7 @@ def test_numerical_failure_publishes_terminal_not_estimable_receipt(
         model_name="ca_lru",
         task_trajectory_path=task,
         failed_stage="projected_flow_and_fixed_point_topology",
-        error=ValueError("undefined output angle"),
+        error=StructuralNotEstimableError("undefined output angle"),
     )
 
     summary = strict_json_load(summary_path)
@@ -112,6 +144,192 @@ def test_numerical_failure_publishes_terminal_not_estimable_receipt(
         },
     )
     assert valid, reason
+
+
+def test_programmer_value_error_cannot_publish_not_estimable(tmp_path: Path) -> None:
+    destination = tmp_path / "analysis"
+    destination.mkdir()
+    progress = destination / "progress.json"
+    task = destination / "direct_task_trajectories.npz"
+    (destination / "analysis_identity.json").write_text("{}\n", encoding="utf-8")
+    progress.write_text("{}\n", encoding="utf-8")
+    task.write_bytes(b"task")
+    with pytest.raises(TypeError, match="only StructuralNotEstimableError"):
+        _publish_structural_not_estimable(
+            destination=destination,
+            base_summary={"schema_version": 1},
+            progress=progress,
+            completion=destination / "completion_receipt.json",
+            identity="d" * 64,
+            model_name="ca_lru",
+            task_trajectory_path=task,
+            failed_stage="carrier_ambient_normal_recovery",
+            error=ValueError("bad tensor contract"),  # type: ignore[arg-type]
+        )
+    assert not (destination / "completion_receipt.json").exists()
+
+
+def test_carrier_recovery_summary_preserves_registered_denominators() -> None:
+    count = 16
+    angle = torch.arange(count, dtype=torch.float64) * (2.0 * math.pi / count)
+    manifold = torch.stack(
+        (torch.cos(angle), torch.sin(angle), torch.zeros_like(angle)), dim=1
+    )
+
+    def contraction(state: torch.Tensor) -> torch.Tensor:
+        planar = state[:, :2]
+        radius = torch.linalg.vector_norm(planar, dim=1, keepdim=True)
+        next_planar = planar / radius * (1.0 + 0.5 * (radius - 1.0))
+        return torch.cat((next_planar, 0.25 * state[:, 2:3]), dim=1)
+
+    recovery = carrier_ambient_normal_recovery(
+        manifold,
+        angle,
+        contraction,
+        lambda state: state[:, :2],
+        anchor_count=4,
+        ambient_directions_per_anchor=2,
+        radii_over_manifold_scale=(0.01, 0.1),
+        horizons=(0, 1, 4),
+        seed=314159,
+    )
+    summary = _carrier_normal_recovery_summary(
+        recovery,
+        seed=314159,
+        anchor_count=4,
+        ambient_directions_per_anchor=2,
+        radii_over_manifold_scale=(0.01, 0.1),
+        horizons=(0, 1, 4),
+        smoke=True,
+    )
+    design = summary["deterministic_design"]
+    assert design["registered_base_perturbation_count_by_family"] == {
+        "ambient_normal": 16,
+        "in_plane_radial": 16,
+    }
+    assert design["registered_base_perturbation_count"] == 32
+    assert design["registered_horizon_record_count"] == 96
+    stats = summary["manifold_distance_ratio"]["1"]
+    assert stats["registered_count"] == 16
+    assert stats["finite_count"] == 16
+    assert stats["missing_or_nonfinite_count"] == 0
+    assert set(stats) == {
+        "registered_count",
+        "finite_count",
+        "missing_or_nonfinite_count",
+        "mean",
+        "population_std",
+        "median",
+        "q05",
+        "q95",
+        "min",
+        "max",
+    }
+    assert "not a proof of an invariant stable normal bundle" in summary["scope"]
+    assert summary["numerical_qa"]["unique_anchor_count"] == 4
+    assert summary["claim_gate"] is False
+
+
+def test_carrier_recovery_float32_keeps_exact_registered_radius_metadata() -> None:
+    count = 16
+    angle = torch.arange(count, dtype=torch.float32) * (2.0 * math.pi / count)
+    manifold = torch.stack(
+        (torch.cos(angle), torch.sin(angle), torch.zeros_like(angle)), dim=1
+    )
+
+    def contraction(state: torch.Tensor) -> torch.Tensor:
+        planar = state[:, :2]
+        radius = torch.linalg.vector_norm(planar, dim=1, keepdim=True)
+        next_planar = planar / radius * (1.0 + 0.5 * (radius - 1.0))
+        return torch.cat((next_planar, 0.25 * state[:, 2:3]), dim=1)
+
+    registered_radii = (0.01, 0.05, 0.1)
+    recovery = carrier_ambient_normal_recovery(
+        manifold,
+        angle,
+        contraction,
+        lambda state: state[:, :2],
+        anchor_count=4,
+        ambient_directions_per_anchor=2,
+        radii_over_manifold_scale=registered_radii,
+        horizons=(0, 1, 4),
+        seed=314159,
+    )
+
+    assert recovery.radius_over_manifold_scale.dtype == torch.float64
+    assert recovery.radius_absolute.dtype == torch.float32
+    observed_radii = np.unique(
+        recovery.radius_over_manifold_scale.detach().cpu().numpy()
+    )
+    np.testing.assert_array_equal(observed_radii, np.asarray(registered_radii))
+
+    summary = _carrier_normal_recovery_summary(
+        recovery,
+        seed=314159,
+        anchor_count=4,
+        ambient_directions_per_anchor=2,
+        radii_over_manifold_scale=registered_radii,
+        horizons=(0, 1, 4),
+        smoke=True,
+    )
+    for family in ("ambient_normal", "in_plane_radial"):
+        assert set(summary["metrics_by_family"][family]["by_radius"]) == {
+            "0.01",
+            "0.05",
+            "0.1",
+        }
+    direction, tangent, norm_error, abs_dot = _persisted_direction_arrays_and_qa(
+        recovery
+    )
+    assert direction.dtype == np.float32
+    assert tangent.dtype == np.float32
+    np.testing.assert_allclose(
+        norm_error,
+        np.abs(np.linalg.norm(direction.astype(np.float64), axis=1) - 1.0),
+        rtol=0.0,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        abs_dot,
+        np.abs(
+            np.sum(
+                direction.astype(np.float64) * tangent.astype(np.float64), axis=1
+            )
+        ),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
+def test_not_estimable_receipt_keeps_completed_carrier_recovery_artifact(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "analysis"
+    destination.mkdir()
+    identity_file = destination / "analysis_identity.json"
+    progress = destination / "progress.json"
+    task = destination / "direct_task_trajectories.npz"
+    reconstruction = destination / "slow_manifold_reconstruction.npz"
+    recovery = destination / "carrier_ambient_normal_recovery.npz"
+    identity_file.write_text("{}\n", encoding="utf-8")
+    progress.write_text("{}\n", encoding="utf-8")
+    task.write_bytes(b"task")
+    reconstruction.write_bytes(b"reconstruction")
+    recovery.write_bytes(b"recovery")
+    _publish_structural_not_estimable(
+        destination=destination,
+        base_summary={"schema_version": 1},
+        progress=progress,
+        completion=destination / "completion_receipt.json",
+        identity="c" * 64,
+        model_name="ca_lru",
+        task_trajectory_path=task,
+        failed_stage="full_local_jacobian_eigenspectrum",
+        error=StructuralNotEstimableError("spectrum unavailable"),
+        completed_artifacts=(reconstruction, recovery),
+    )
+    receipt = strict_json_load(destination / "completion_receipt.json")
+    assert "carrier_ambient_normal_recovery.npz" in receipt["artifacts"]
 
 
 def _minimal_main_validation_binding(tmp_path: Path) -> tuple[Path, Path, dict[str, object], dict[str, object]]:

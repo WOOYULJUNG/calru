@@ -1,23 +1,132 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from repro.sagodi_protocol.artifacts import atomic_json, canonical_hash, write_completion_receipt
 from repro.sagodi_protocol.lr_selection_v3 import EXPECTED_MODEL_IDS
 from repro.sagodi_protocol.primary_analysis_campaign import (
     AnalysisRun,
+    NORMAL_RECOVERY_DIRECTIONS,
+    NORMAL_RECOVERY_METRICS,
+    NORMAL_RECOVERY_RADII,
     VerifiedMain,
     _analysis_command,
     _analysis_identity,
     _analysis_output,
     _analysis_spec,
     _require_exact_main_commit,
+    _normal_recovery_design,
+    _prepare_root,
+    _validate_carrier_normal_recovery_artifact,
+    _validate_carrier_normal_recovery_summary,
     _recover_or_resume_attempt,
     aggregate_results,
     verify_analysis_output,
 )
+
+
+def _stats(value: float, count: int) -> dict:
+    return {
+        "registered_count": count,
+        "finite_count": count,
+        "missing_or_nonfinite_count": 0,
+        "mean": value,
+        "population_std": 0.0,
+        "median": value,
+        "q05": value,
+        "q95": value,
+        "min": value,
+        "max": value,
+    }
+
+
+def _normal_recovery_fixture(output: Path, spec) -> dict:
+    design = _normal_recovery_design(spec)
+    metrics_by_family = {}
+    rows = []
+    for family, direction_count in NORMAL_RECOVERY_DIRECTIONS.items():
+        by_radius = {}
+        for radius in NORMAL_RECOVERY_RADII:
+            by_horizon = {}
+            for horizon in design["horizons"]:
+                count = design["anchor_count"] * direction_count
+                by_horizon[str(horizon)] = {
+                    metric: _stats(0.5, count) for metric in NORMAL_RECOVERY_METRICS
+                }
+            for anchor in range(design["anchor_count"]):
+                for direction in range(direction_count):
+                    rows.append((family, anchor, direction, radius))
+            by_radius[format(radius, "g")] = {"by_horizon": by_horizon}
+        metrics_by_family[family] = {"by_radius": by_radius}
+
+    family = np.asarray([row[0] for row in rows], dtype="U32")
+    anchor_index = np.asarray([row[1] for row in rows], dtype=np.int64)
+    direction_index = np.asarray([row[2] for row in rows], dtype=np.int64)
+    radius = np.asarray([row[3] for row in rows], dtype=np.float64)
+    horizon = np.asarray(design["horizons"], dtype=np.int64)
+    count = len(rows)
+    directions = np.tile(np.asarray([[0.0, 1.0, 0.0]]), (count, 1))
+    tangents = np.tile(np.asarray([[1.0, 0.0, 0.0]]), (count, 1))
+    numeric = np.full((count, len(horizon)), 0.5, dtype=np.float64)
+    np.savez(
+        output / "carrier_ambient_normal_recovery.npz",
+        family=family,
+        anchor_index=anchor_index,
+        anchor_angle=np.linspace(-3.0, 3.0, count),
+        direction_index=direction_index,
+        radius_over_manifold_scale=radius,
+        radius_absolute=radius * 2.0,
+        direction=directions,
+        tangent=tangents,
+        direction_norm_error=np.zeros(count),
+        absolute_tangent_dot_direction=np.zeros(count),
+        horizon=horizon,
+        manifold_distance=numeric,
+        manifold_distance_ratio=numeric,
+        decoded_angle=numeric,
+        same_memory_error_radians=numeric,
+        nearest_manifold_index=np.tile(anchor_index[:, None], (1, len(horizon))),
+        clean_manifold_distance=numeric,
+        clean_decoded_angle=numeric,
+        clean_same_memory_error_radians=numeric,
+        excess_same_memory_error_radians=numeric,
+        distance_to_matched_clean_state=numeric,
+        distance_to_matched_clean_state_ratio=numeric,
+        manifold_distance_minus_clean=numeric,
+        manifold_scale=np.asarray(2.0),
+    )
+    return {
+        "role": "project_defined_descriptive_primary_extension_no_threshold",
+        "state_space": "minimum_causal_primary_carrier_state",
+        "manifold_source": "reconstructed_carrier_spline",
+        "distance_definition": "nearest_spline_euclidean",
+        "tangent_definition": "normalized_periodic_spline_derivative",
+        "deterministic_design": design,
+        "manifold_scale": 2.0,
+        "numerical_qa": {
+            "unique_anchor_count": design["anchor_count"],
+            "expected_anchor_count": design["anchor_count"],
+            "maximum_direction_norm_error": 0.0,
+            "maximum_absolute_tangent_dot_direction": 0.0,
+            "initial_manifold_distance": _stats(
+                0.5, design["registered_base_perturbation_count"]
+            ),
+            "initial_manifold_distance_all_finite": True,
+            "ambient_normal_base_perturbation_count": design[
+                "registered_base_perturbation_count_by_family"
+            ]["ambient_normal"],
+            "in_plane_radial_base_perturbation_count": design[
+                "registered_base_perturbation_count_by_family"
+            ]["in_plane_radial"],
+            "manifold_scale_finite_positive": True,
+        },
+        "metrics_by_family": metrics_by_family,
+        "claim_gate": False,
+    }
 
 
 def _main_and_manifest(tmp_path: Path, *, all_runs: bool = False):
@@ -129,6 +238,7 @@ def _write_analysis(
         "structural_summary_eligibility": {"eligible": eligible},
     }
     if status == "complete_structural_summary_eligible":
+        recovery = _normal_recovery_fixture(output, spec)
         summary.update(
             {
                 "projected_flow": {"uniform_norm": 0.0125},
@@ -180,6 +290,7 @@ def _write_analysis(
                     "asymptotic_mean_error_radians": 0.2,
                     "asymptotic_maximum_error_radians": 0.4,
                 },
+                "carrier_ambient_normal_recovery": recovery,
             }
         )
     elif status == "structural_analysis_not_estimable":
@@ -204,9 +315,11 @@ def _write_analysis(
             "full_local_eigenspectrum.npz",
             "finite_time_angular_memory.npz",
             "asymptotic_structure.npz",
+            "carrier_ambient_normal_recovery.npz",
         ):
             path = output / name
-            path.write_bytes(b"fixture")
+            if not path.exists():
+                path.write_bytes(b"fixture")
             artifact_paths.append(path)
     write_completion_receipt(
         output / "completion_receipt.json",
@@ -247,6 +360,38 @@ def test_smoke_command_uses_reduced_fixture_sizes_without_changing_single_runner
     assert command[command.index("--task-horizon") + 1] == "8"
     assert command[command.index("--blank-horizon") + 1] == "16"
     assert spec.candidate_distance_chunk_size == 16384
+
+
+def test_campaign_root_spec_round_trips_with_json_native_tuple_fields(
+    tmp_path: Path,
+) -> None:
+    main, _ = _main_and_manifest(tmp_path)
+    spec = _analysis_spec(smoke=True)
+    root = tmp_path / "analysis-root"
+
+    _prepare_root(root, main, spec, smoke=True)
+    # A second invocation performs the immutable on-disk equality check that
+    # previously compared JSON lists against in-memory tuples.
+    _prepare_root(root, main, spec, smoke=True)
+
+    marker = __import__("json").loads(
+        (root / ".calru_sagodi_primary_analysis_v3_root.json").read_text()
+    )
+    assert marker["analysis_spec"]["normal_recovery_radii_over_manifold_scale"] == [
+        0.01,
+        0.05,
+        0.1,
+    ]
+    assert marker["analysis_spec"]["normal_recovery_horizons"] == [
+        0,
+        1,
+        4,
+        16,
+        64,
+        256,
+        1024,
+        4096,
+    ]
 
 
 @pytest.mark.parametrize(
@@ -330,6 +475,16 @@ def test_aggregation_keeps_all_ten_seed_outcomes_and_no_binary_c1_c4_gate(
         assert conditional["eligible_and_estimable_conditional_denominator"] == 8
         assert conditional["finite_value_count"] == 8
         assert conditional["mean"] == pytest.approx(0.0125)
+        recovery = numeric[
+            "sagodi_metrics_conditional_on_eligible_and_estimable"
+        ]["carrier_recovery_ambient_normal_r0.01_h0_manifold_distance_ratio_trial_mean"]
+        assert recovery["registered_seed_denominator"] == 10
+        assert recovery["eligible_and_estimable_conditional_denominator"] == 8
+        assert recovery["finite_value_count"] == 8
+        assert recovery["missing_or_nonfinite_within_conditional_denominator"] == 0
+        assert recovery["mean"] == pytest.approx(0.5)
+        assert recovery["q05"] == pytest.approx(0.5)
+        assert recovery["q95"] == pytest.approx(0.5)
     assert not _contains_key(
         summary,
         {
@@ -350,6 +505,120 @@ def test_aggregation_keeps_all_ten_seed_outcomes_and_no_binary_c1_c4_gate(
         row for row in summary["runs"] if row["included_in_primary_structural_summary"]
     ]
     assert all(row["sagodi_metrics"]["uniform_flow_norm"] == 0.0125 for row in included)
+    assert all(
+        row["sagodi_metrics"]["carrier_ambient_normal_recovery"]["claim_gate"]
+        is False
+        for row in included
+    )
+
+
+def test_carrier_normal_recovery_missing_or_nonfinite_fails_closed(tmp_path: Path):
+    spec = _analysis_spec(smoke=True)
+    output = tmp_path / "recovery"
+    output.mkdir()
+    summary = _normal_recovery_fixture(output, spec)
+    _validate_carrier_normal_recovery_summary(summary, spec)
+    _validate_carrier_normal_recovery_artifact(
+        output / "carrier_ambient_normal_recovery.npz", spec, summary
+    )
+
+    damaged = dict(summary)
+    damaged_families = {
+        key: dict(value) for key, value in summary["metrics_by_family"].items()
+    }
+    damaged["metrics_by_family"] = damaged_families
+    ambient = dict(damaged_families["ambient_normal"])
+    damaged_families["ambient_normal"] = ambient
+    radii = dict(ambient["by_radius"])
+    ambient["by_radius"] = radii
+    radius = dict(radii["0.01"])
+    radii["0.01"] = radius
+    horizons = dict(radius["by_horizon"])
+    radius["by_horizon"] = horizons
+    horizon = dict(horizons["0"])
+    horizons["0"] = horizon
+    metric = dict(horizon["manifold_distance_ratio"])
+    horizon["manifold_distance_ratio"] = metric
+    metric["finite_count"] -= 1
+    metric["missing_or_nonfinite_count"] = 1
+    with pytest.raises(RuntimeError, match="omits a finite registered value"):
+        _validate_carrier_normal_recovery_summary(damaged, spec)
+
+    with np.load(output / "carrier_ambient_normal_recovery.npz") as arrays:
+        payload = {name: arrays[name].copy() for name in arrays.files}
+
+    nonorthogonal = {name: value.copy() for name, value in payload.items()}
+    nonorthogonal["direction"] = nonorthogonal["tangent"].copy()
+    nonorthogonal["direction_norm_error"] = np.abs(
+        np.linalg.norm(nonorthogonal["direction"], axis=1) - 1.0
+    )
+    nonorthogonal["absolute_tangent_dot_direction"] = np.abs(
+        np.sum(nonorthogonal["direction"] * nonorthogonal["tangent"], axis=1)
+    )
+    np.savez(output / "carrier_ambient_normal_recovery.npz", **nonorthogonal)
+    with pytest.raises(RuntimeError, match="tangent-orthogonality tolerance"):
+        _validate_carrier_normal_recovery_artifact(
+            output / "carrier_ambient_normal_recovery.npz", spec, summary
+        )
+
+    np.savez(output / "carrier_ambient_normal_recovery.npz", **payload)
+    tampered_summary = copy.deepcopy(summary)
+    tampered_summary["metrics_by_family"]["ambient_normal"]["by_radius"]["0.01"][
+        "by_horizon"
+    ]["0"]["manifold_distance_ratio"]["mean"] += 0.125
+    with pytest.raises(RuntimeError, match="summary statistic differs from NPZ"):
+        _validate_carrier_normal_recovery_artifact(
+            output / "carrier_ambient_normal_recovery.npz", spec, tampered_summary
+        )
+
+    payload["same_memory_error_radians"][0] = np.nan
+    np.savez(output / "carrier_ambient_normal_recovery.npz", **payload)
+    with pytest.raises(RuntimeError, match="NaN or Inf"):
+        _validate_carrier_normal_recovery_artifact(
+            output / "carrier_ambient_normal_recovery.npz", spec, summary
+        )
+
+
+def test_normal_recovery_artifact_accepts_float32_directions_with_canonical_qa(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    spec = _analysis_spec(smoke=True)
+    summary = _normal_recovery_fixture(output, spec)
+    artifact = output / "carrier_ambient_normal_recovery.npz"
+    with np.load(artifact) as arrays:
+        payload = {name: arrays[name].copy() for name in arrays.files}
+
+    count = int(payload["direction"].shape[0])
+    root_half = np.float32(np.sqrt(0.5))
+    direction = np.tile(
+        np.asarray([[root_half, root_half, 0.0]], dtype=np.float32),
+        (count, 1),
+    )
+    tangent = np.tile(
+        np.asarray([[-root_half, root_half, 0.0]], dtype=np.float32),
+        (count, 1),
+    )
+    direction64 = direction.astype(np.float64)
+    tangent64 = tangent.astype(np.float64)
+    payload["direction"] = direction
+    payload["tangent"] = tangent
+    payload["direction_norm_error"] = np.abs(
+        np.linalg.norm(direction64, axis=1) - 1.0
+    )
+    payload["absolute_tangent_dot_direction"] = np.abs(
+        np.sum(direction64 * tangent64, axis=1)
+    )
+    summary["numerical_qa"]["maximum_direction_norm_error"] = float(
+        payload["direction_norm_error"].max()
+    )
+    summary["numerical_qa"]["maximum_absolute_tangent_dot_direction"] = float(
+        payload["absolute_tangent_dot_direction"].max()
+    )
+    np.savez(artifact, **payload)
+
+    _validate_carrier_normal_recovery_artifact(artifact, spec, summary)
 
 
 def test_partial_attempt_with_matching_identity_is_resumed_not_replaced(tmp_path: Path):

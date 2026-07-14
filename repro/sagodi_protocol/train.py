@@ -567,6 +567,15 @@ def train_one(spec: TrainSpec) -> Path:
     rp_probe_horizon = min(int(rp["probe_horizon"]), 8) if spec.smoke else int(rp["probe_horizon"])
     configured_blank_horizon = int(rp.get("blank_ablation_horizon", rp["probe_horizon"]))
     rp_blank_horizon = min(configured_blank_horizon, 8) if spec.smoke else configured_blank_horizon
+    rp_frozen_contract = dict(rp)
+    rp_effective_runtime = {
+        "enabled_by_protocol": rp_enabled_by_protocol,
+        "probe_batch_size": rp_probe_batch,
+        "probe_horizon": rp_probe_horizon,
+        "blank_ablation_horizon": rp_blank_horizon,
+        "eta_lambda": eta_lambda,
+        "damage_epsilon": damage_epsilon,
+    }
     expected_rp_steps = _expected_rp_steps(
         model,
         steps=steps,
@@ -651,6 +660,8 @@ def train_one(spec: TrainSpec) -> Path:
             "rp_blank_ablation_horizon": rp_blank_horizon,
             "rp_enabled_by_protocol": rp_enabled_by_protocol,
             "expected_rp_steps": list(expected_rp_steps),
+            "rp_frozen_contract": rp_frozen_contract,
+            "rp_effective_runtime": rp_effective_runtime,
         },
         "seeds": {
             "task_seed": int(seed_policy["task_seed"]),
@@ -915,6 +926,8 @@ def train_one(spec: TrainSpec) -> Path:
             "actual_steps": list(actual_rp_steps),
             "calls": len(rp_trace),
         },
+        "rp_frozen_contract": rp_frozen_contract,
+        "rp_effective_runtime": rp_effective_runtime,
         "task_metrics_path": "task_metrics.json",
         "pilot_only": pilot_only,
         "ca_evidence": False,
@@ -944,6 +957,8 @@ def train_one(spec: TrainSpec) -> Path:
         ),
         "state_spec_sha256": state_spec_sha256,
         "rp_calls": len(rp_trace),
+        "rp_frozen_contract": rp_frozen_contract,
+        "rp_effective_runtime": rp_effective_runtime,
     }
     _require_finite_payload(receipt_metadata, "receipt_metadata")
     receipt_artifacts = [

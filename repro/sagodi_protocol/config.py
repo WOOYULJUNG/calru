@@ -963,7 +963,7 @@ def _validate_sagodi_primary_lr_selection_protocol(
         == "repro/sagodi_protocol/SAGODI_PRIMARY_V3_FREEZE_ko.md",
         "primary selector source path changed",
     )
-    _require(source.get("version") == "3.0", "primary selector source version changed")
+    _require(source.get("version") == "3.1", "primary selector source version changed")
     digest = str(source.get("sha256", ""))
     _require(
         len(digest) == 64 and all(character in "0123456789abcdef" for character in digest),
@@ -1420,9 +1420,9 @@ def _validate_sagodi_primary_main_protocol(protocol: Mapping[str, Any]) -> None:
         "warmup_updates": 1500,
         "interval_updates": 50,
         "calls_after_warmup": 70,
-        "probe_batch_size": 256,
+        "probe_batch_size": 96,
         "probe_horizon": 256,
-        "blank_ablation_horizon": 256,
+        "blank_ablation_horizon": 500,
         "probe_noise_enabled": False,
         "eta_lambda": 3000.0,
         "damage_epsilon": 0.00003,

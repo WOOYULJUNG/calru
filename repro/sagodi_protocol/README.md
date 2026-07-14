@@ -12,8 +12,9 @@ Phase 0: six-model full-Markov-state / blank-map audit
     ↓ verified selector receipt + atomic resolved-main freeze
 Primary main training: 6 models × 10 seeds × 5,000 updates
     ↓ validation NMSE < -20 dB (all attempted seeds still reported)
-Ságodi-based primary analysis: slow spline, full spectrum, projected drift,
-fixed-point topology, finite/asymptotic memory
+Ságodi-based primary analysis v3.1: slow spline, full spectrum, projected drift,
+fixed-point topology, finite/asymptotic memory, and project-defined carrier
+ambient-normal finite-perturbation recovery
     ↓
 Engineering benefit: temporal/velocity OOD and state-perturbation retention
     ↓
@@ -40,6 +41,25 @@ baselines, not bit-exact Ságodi architectures.
   `dynamics_utility_association.py`: seed-level 기술적 연관 분석
 - `primary_v3_pipeline.py`: 위 다섯 단계를 같은 clean commit에서 순차 실행·재개
 - `phase1_analysis.py`: historical CA-LRU-specific **supplementary** diagnostics only
+
+v3.1의 carrier recovery는 reconstructed spline의 output이나 diagnostic stream이
+아니라 각 모델의 minimum causal full Markov carrier state에서 수행한다. 고정된
+32 anchors, anchor당 4 ambient-normal directions, 3 normalized radii, 8 blank
+horizons에서 nearest-manifold distance ratio와 same-memory circular error를 함께
+보고한다. 이는 Ságodi 원문 실험의 bit-exact 재현이 아니라 normal attraction을
+직접 확인하는 project-defined primary extension이며, threshold나 binary gate는
+사용하지 않는다. 기존 isotropic state kick은 tangent/normal 성분이 섞인 별도
+engineering robustness 결과로만 유지한다.
+
+분석은 held-out GP task trajectory로 endpoint를 만든 뒤 additive recurrent-state
+training noise를 끄고 수행한다. 따라서 문서와 결과에서는 `noise-free task` 대신
+`state-noise-disabled deterministic evaluation` 및 `autonomous zero-input rollout
+with training state noise disabled`를 사용한다.
+
+CA-LRU main training의 RP는 manuscript recipe에 맞춰 probe batch 96, task probe
+`T=256`, autonomous blank damage horizon `H_RP=500`을 사용한다. 5,000 optimization
+updates 중 처음 1,500 updates(30%)는 warmup이고, 이후 50 updates마다 총 70회의
+RP decision을 수행한다. `H_RP=500`, 30% warmup, 70 decisions는 서로 다른 수량이다.
 
 아래 v1/v2 설명은 과거 artifact의 provenance와 재분석을 위해 보존한다.
 

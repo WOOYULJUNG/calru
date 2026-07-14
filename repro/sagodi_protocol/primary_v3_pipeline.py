@@ -45,9 +45,10 @@ from .orchestrate import (
 
 
 PIPELINE_ID = "calru_sagodi_primary_v3_pipeline"
+PIPELINE_PROTOCOL_REVISION = "sagodi_primary_v3_1"
 PIPELINE_SCOPE = (
     "sequential_launcher_lr_selection_main_primary_analysis_"
-    "engineering_benefit_descriptive_association"
+    "carrier_ambient_normal_recovery_engineering_benefit_descriptive_association"
 )
 STAGE_ORDER = (
     "selector",
@@ -332,6 +333,7 @@ def build_dry_run_plan(
     return {
         "schema_version": 1,
         "pipeline_id": PIPELINE_ID,
+        "protocol_revision": PIPELINE_PROTOCOL_REVISION,
         "dry_run": True,
         "artifact_root": str(root),
         "python": resolved_python,
@@ -357,6 +359,7 @@ def _pipeline_identity_payload(
     return {
         "schema_version": 1,
         "pipeline_id": PIPELINE_ID,
+        "protocol_revision": PIPELINE_PROTOCOL_REVISION,
         "scope": PIPELINE_SCOPE,
         "artifact_root": str(root),
         "repository_root": str(repo_root),
@@ -703,6 +706,7 @@ def run_primary_v3_pipeline(
     marker_payload = {
         "schema_version": 1,
         "pipeline_id": PIPELINE_ID,
+        "protocol_revision": PIPELINE_PROTOCOL_REVISION,
         "pipeline_scientific_identity": scientific_identity,
     }
     _prepare_root(root, marker_payload)

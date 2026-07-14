@@ -67,6 +67,7 @@ def test_dry_run_is_side_effect_free_and_uses_immutable_copy_paths(
     )
 
     assert plan["dry_run"] is True
+    assert plan["protocol_revision"] == "sagodi_primary_v3_1"
     assert plan["execution_performed"] is False
     assert plan["stage_order"] == list(pipeline.STAGE_ORDER)
     assert not root.exists()

@@ -74,7 +74,7 @@ legacy model tag를 보존한 코드가 있다. 환경 버전과 대표 명령�
 디렉터리에 저장해야 한다. 새 결과가 기존 표를 재현한다고 주장하려면 환경,
 명령, seed, hardware, wall time과 차이를 별도로 보고해야 한다.
 
-### 3. Ságodi-aligned ring pilot: 실행 pipeline 제공
+### 3. Ságodi-based primary v3.1: 실행 pipeline 제공
 
 [`repro/sagodi_protocol/analysis_protocol.yaml`](repro/sagodi_protocol/analysis_protocol.yaml)은
 Phase 0 state/blank-map audit와 Phase 1 ring pilot만 활성화한다. 공통 fixed bank,
@@ -84,6 +84,17 @@ clean-paired radial/ambient perturbation, source/checkpoint-bound receipt를 사
 검토 후 새 freeze가 있어야 실행한다. 세부 해석 규칙은
 [`repro/sagodi_protocol/EXPERIMENT_RECONSTRUCTION_ko.md`](repro/sagodi_protocol/EXPERIMENT_RECONSTRUCTION_ko.md)를
 따른다.
+
+현재 primary 경로의 규범 문서는
+[`SAGODI_PRIMARY_V3_FREEZE_ko.md`](repro/sagodi_protocol/SAGODI_PRIMARY_V3_FREEZE_ko.md)다.
+v3.1은 6개 모델 × 10개 main seed의 Ságodi-based 분석에 minimum causal carrier
+state의 ambient-normal finite-perturbation recovery를 추가한다. normal distance
+ratio와 same-memory angular error를 함께 보고하되 threshold/pass gate는 두지
+않는다. 이 항목은 Ságodi 원문의 bit-exact 재현이 아니라 normal attraction을
+검사하는 project-defined primary extension이다. Isotropic perturbation은 별도
+engineering robustness로만 해석한다. 평가 시에는 학습 중 additive recurrent-state
+noise를 끄므로 `noise-free task`가 아니라 `state-noise-disabled deterministic
+evaluation`이라고 표기한다.
 
 ## 저장소 구조
 

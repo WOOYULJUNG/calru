@@ -6,8 +6,10 @@ import pytest
 import torch
 
 from repro.sagodi_protocol.sagodi_primary_analysis import (
+    StructuralNotEstimableError,
     angle_from_output,
     asymptotic_memory_metrics,
+    carrier_ambient_normal_recovery,
     circular_absolute_error,
     circular_difference,
     cyclic_flow_reversal_topology,
@@ -22,6 +24,96 @@ from repro.sagodi_protocol.sagodi_primary_analysis import (
 
 
 DTYPE = torch.float64
+
+
+def _contracting_carrier_ring(state: torch.Tensor) -> torch.Tensor:
+    planar = state[:, :2]
+    radius = torch.linalg.vector_norm(planar, dim=1, keepdim=True)
+    unit = planar / radius
+    contracted_radius = 1.0 + 0.5 * (radius - 1.0)
+    return torch.cat((unit * contracted_radius, 0.25 * state[:, 2:3]), dim=1)
+
+
+def test_carrier_normal_recovery_uses_tangent_complement_and_clean_control():
+    point_count = 64
+    angle = torch.arange(point_count, dtype=DTYPE) * (2.0 * math.pi / point_count)
+    manifold = torch.stack(
+        (torch.cos(angle), torch.sin(angle), torch.zeros_like(angle)), dim=1
+    )
+    kwargs = {
+        "anchor_count": 8,
+        "ambient_directions_per_anchor": 2,
+        "radii_over_manifold_scale": (0.05,),
+        "horizons": (0, 1, 4),
+        "seed": 314159,
+    }
+    result = carrier_ambient_normal_recovery(
+        manifold,
+        angle,
+        _contracting_carrier_ring,
+        lambda state: state[:, :2],
+        **kwargs,
+    )
+    repeated = carrier_ambient_normal_recovery(
+        manifold,
+        angle,
+        _contracting_carrier_ring,
+        lambda state: state[:, :2],
+        **kwargs,
+    )
+
+    assert result.family.count("ambient_normal") == 8 * 2
+    assert result.family.count("in_plane_radial") == 8 * 2
+    torch.testing.assert_close(result.direction, repeated.direction, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(
+        result.manifold_distance, repeated.manifold_distance, rtol=0.0, atol=0.0
+    )
+    assert float(result.direction_norm_error.max()) < 1.0e-12
+    assert float(result.absolute_tangent_dot_direction.max()) < 1.0e-12
+    torch.testing.assert_close(
+        result.manifold_distance_ratio[:, 0],
+        torch.ones(result.manifold_distance_ratio.shape[0], dtype=DTYPE),
+    )
+    assert float(result.manifold_distance_ratio[:, 1].max()) <= 0.5 + 1.0e-10
+    assert float(result.manifold_distance_ratio[:, 2].max()) <= 0.5**4 + 1.0e-9
+    assert float(result.clean_manifold_distance.max()) < 2.0e-8
+    assert float(result.clean_same_memory_error_radians.max()) < 1.0e-12
+    assert float(result.same_memory_error_radians.max()) < 1.0e-12
+    assert float(result.excess_same_memory_error_radians.abs().max()) < 1.0e-12
+    torch.testing.assert_close(
+        result.distance_to_matched_clean_state_ratio[:, 0],
+        torch.ones(result.manifold_distance_ratio.shape[0], dtype=DTYPE),
+    )
+
+
+def test_carrier_normal_recovery_separates_structural_and_programmer_errors():
+    angle = torch.arange(8, dtype=DTYPE) * (2.0 * math.pi / 8.0)
+    ring = torch.stack(
+        (torch.cos(angle), torch.sin(angle), torch.zeros_like(angle)), dim=1
+    )
+    kwargs = {
+        "anchor_count": 4,
+        "ambient_directions_per_anchor": 1,
+        "radii_over_manifold_scale": (0.05,),
+        "horizons": (0, 1),
+        "seed": 314159,
+    }
+    with pytest.raises(StructuralNotEstimableError, match="degenerate RMS scale"):
+        carrier_ambient_normal_recovery(
+            torch.zeros_like(ring),
+            angle,
+            lambda state: state,
+            lambda state: state[:, :2],
+            **kwargs,
+        )
+    with pytest.raises(ValueError, match=r"decoder must return \[trial,2\]"):
+        carrier_ambient_normal_recovery(
+            ring,
+            angle,
+            lambda state: state,
+            lambda state: state,
+            **kwargs,
+        )
 
 
 def test_circular_angle_helpers_use_cos_sin_order_and_shortest_arc():

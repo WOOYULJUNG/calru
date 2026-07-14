@@ -5,9 +5,11 @@ of three terminal states: eligible and structurally estimable, ineligible by
 the registered task-NMSE rule, or structurally not estimable.  The latter two
 states are retained in the denominator and never replaced by another seed.
 
-Only the Ságodi-primary runner is launched here.  C1--C4, recovery, settling,
-and projected-JVP diagnostics belong to the separate project-specific track
-and are neither scheduled nor aggregated by this module.
+Only the Ságodi-based primary runner is launched here.  Its v3.1 scope includes
+one explicitly project-defined extension: finite carrier ambient-normal
+recovery without a threshold or binary gate.  Legacy C1--C4 recovery,
+settling, and projected-JVP diagnostics remain in the separate supplementary
+track and are neither scheduled nor aggregated by this module.
 """
 
 from __future__ import annotations
@@ -22,9 +24,11 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+import numpy as np
 
 from .artifacts import (
     RECEIPT_IDENTITY_ENV,
@@ -58,11 +62,16 @@ from .primary_main_campaign import (
 from .sagodi_primary_runner import (
     PrimaryAnalysisSpec,
     primary_analysis_identity_payload,
+    primary_analysis_spec_payload,
 )
 
 
 CAMPAIGN_MODE = "sagodi_primary_analysis_v3"
-SCOPE = "sagodi_primary_analysis_only_no_custom_ca_lru_gates"
+PROTOCOL_REVISION = "sagodi_primary_v3_1"
+SCOPE = (
+    "sagodi_based_primary_plus_project_defined_carrier_ambient_normal_"
+    "recovery_no_binary_ca_lru_gates"
+)
 EXPECTED_RUN_COUNT = 60
 EXPECTED_MODEL_SEEDS = tuple(range(10))
 TERMINAL_ANALYSIS_STATUSES = (
@@ -77,6 +86,34 @@ STATUS = "status.json"
 SUMMARY = "primary_analysis_summary.json"
 COMPLETE = "COMPLETE"
 COMPLETION_RECEIPT = "completion_receipt.json"
+
+NORMAL_RECOVERY_ARTIFACT = "carrier_ambient_normal_recovery.npz"
+NORMAL_RECOVERY_SEED = 314159
+NORMAL_RECOVERY_FULL_ANCHOR_COUNT = 32
+NORMAL_RECOVERY_DIRECTIONS = {"ambient_normal": 4, "in_plane_radial": 2}
+NORMAL_RECOVERY_RADII = (0.01, 0.05, 0.1)
+NORMAL_RECOVERY_FULL_HORIZONS = (0, 1, 4, 16, 64, 256, 1024, 4096)
+NORMAL_RECOVERY_DIRECTION_QA_MAX = 1.0e-4
+NORMAL_RECOVERY_METRICS = (
+    "manifold_distance",
+    "manifold_distance_ratio",
+    "same_memory_error_radians",
+    "clean_manifold_distance",
+    "clean_same_memory_error_radians",
+    "excess_same_memory_error_radians",
+    "distance_to_matched_clean_state",
+    "distance_to_matched_clean_state_ratio",
+    "manifold_distance_minus_clean",
+)
+NORMAL_RECOVERY_STATISTICS = (
+    "mean",
+    "population_std",
+    "median",
+    "q05",
+    "q95",
+    "min",
+    "max",
+)
 
 
 @dataclass(frozen=True)
@@ -427,6 +464,428 @@ def _validate_finite_number(value: Any, label: str) -> float:
     return number
 
 
+def _normal_recovery_design(spec: PrimaryAnalysisSpec) -> dict[str, Any]:
+    anchor_count = (
+        min(NORMAL_RECOVERY_FULL_ANCHOR_COUNT, int(spec.spline_count))
+        if spec.smoke
+        else NORMAL_RECOVERY_FULL_ANCHOR_COUNT
+    )
+    if spec.smoke:
+        horizons = tuple(
+            value
+            for value in NORMAL_RECOVERY_FULL_HORIZONS
+            if value <= int(spec.blank_horizon)
+        )
+        if int(spec.blank_horizon) not in horizons:
+            horizons = (*horizons, int(spec.blank_horizon))
+    else:
+        horizons = NORMAL_RECOVERY_FULL_HORIZONS
+    base_by_family = {
+        family: anchor_count * direction_count * len(NORMAL_RECOVERY_RADII)
+        for family, direction_count in NORMAL_RECOVERY_DIRECTIONS.items()
+    }
+    records_by_family = {
+        family: count * len(horizons) for family, count in base_by_family.items()
+    }
+    return {
+        "seed": NORMAL_RECOVERY_SEED,
+        "anchor_count": anchor_count,
+        "anchor_indices": [
+            (index * int(spec.spline_count)) // anchor_count
+            for index in range(anchor_count)
+        ],
+        "ambient_directions_per_anchor": NORMAL_RECOVERY_DIRECTIONS[
+            "ambient_normal"
+        ],
+        "in_plane_radial_directions_per_anchor": NORMAL_RECOVERY_DIRECTIONS[
+            "in_plane_radial"
+        ],
+        "radii_over_manifold_scale": list(NORMAL_RECOVERY_RADII),
+        "horizons": list(horizons),
+        "smoke_reduction": bool(spec.smoke),
+        "registered_base_perturbation_count_by_family": base_by_family,
+        "registered_base_perturbation_count": sum(base_by_family.values()),
+        "registered_horizon_record_count_by_family": records_by_family,
+        "registered_horizon_record_count": sum(records_by_family.values()),
+    }
+
+
+def _validate_normal_recovery_statistics(
+    value: Any, *, expected_count: int, label: str
+) -> Mapping[str, Any]:
+    stats = _require_mapping(value, label)
+    if int(stats.get("registered_count", -1)) != int(expected_count):
+        raise RuntimeError(f"{label} registered count differs from the freeze")
+    if int(stats.get("finite_count", -1)) != int(expected_count):
+        raise RuntimeError(f"{label} omits a finite registered value")
+    if int(stats.get("missing_or_nonfinite_count", -1)) != 0:
+        raise RuntimeError(f"{label} contains a missing or non-finite value")
+    numeric = {
+        name: _validate_finite_number(stats.get(name), f"{label} {name}")
+        for name in NORMAL_RECOVERY_STATISTICS
+    }
+    if numeric["population_std"] < 0.0:
+        raise RuntimeError(f"{label} population_std is negative")
+    if not (
+        numeric["min"]
+        <= numeric["q05"]
+        <= numeric["median"]
+        <= numeric["q95"]
+        <= numeric["max"]
+    ):
+        raise RuntimeError(f"{label} order statistics are inconsistent")
+    return stats
+
+
+def _validate_carrier_normal_recovery_summary(
+    value: Any, spec: PrimaryAnalysisSpec
+) -> Mapping[str, Any]:
+    recovery = _require_mapping(value, "carrier ambient-normal recovery")
+    if recovery.get("state_space") != "minimum_causal_primary_carrier_state":
+        raise RuntimeError("normal recovery does not use the minimum causal carrier state")
+    role = str(recovery.get("role", ""))
+    if "project_defined" not in role or "descriptive" not in role:
+        raise RuntimeError(
+            "normal recovery must identify itself as a project-defined descriptive extension"
+        )
+    design = _require_mapping(
+        recovery.get("deterministic_design"), "normal recovery deterministic design"
+    )
+    expected = _normal_recovery_design(spec)
+    for key in (
+        "seed",
+        "anchor_count",
+        "anchor_indices",
+        "ambient_directions_per_anchor",
+        "in_plane_radial_directions_per_anchor",
+        "radii_over_manifold_scale",
+        "horizons",
+        "smoke_reduction",
+        "registered_base_perturbation_count_by_family",
+        "registered_base_perturbation_count",
+        "registered_horizon_record_count_by_family",
+        "registered_horizon_record_count",
+    ):
+        if design.get(key) != expected[key]:
+            raise RuntimeError(f"normal recovery frozen design differs: {key}")
+    manifold_scale = _validate_finite_number(
+        recovery.get("manifold_scale"), "normal recovery manifold scale"
+    )
+    if manifold_scale <= 0.0:
+        raise RuntimeError("normal recovery manifold scale must be positive")
+    qa = _require_mapping(recovery.get("numerical_qa"), "normal recovery numerical QA")
+    if int(qa.get("unique_anchor_count", -1)) != int(expected["anchor_count"]):
+        raise RuntimeError("normal recovery QA unique-anchor count differs")
+    if int(qa.get("expected_anchor_count", -1)) != int(expected["anchor_count"]):
+        raise RuntimeError("normal recovery QA expected-anchor count differs")
+    if qa.get("initial_manifold_distance_all_finite") is not True:
+        raise RuntimeError("normal recovery initial manifold distance is not all finite")
+    if qa.get("manifold_scale_finite_positive") is not True:
+        raise RuntimeError("normal recovery QA rejects its manifold scale")
+    for name in (
+        "maximum_direction_norm_error",
+        "maximum_absolute_tangent_dot_direction",
+    ):
+        qa_value = _validate_finite_number(qa.get(name), f"normal recovery QA {name}")
+        if qa_value < 0.0:
+            raise RuntimeError(f"normal recovery QA {name} is negative")
+        if qa_value > NORMAL_RECOVERY_DIRECTION_QA_MAX:
+            raise RuntimeError(f"normal recovery QA {name} exceeds construction tolerance")
+    _validate_normal_recovery_statistics(
+        qa.get("initial_manifold_distance"),
+        expected_count=int(expected["registered_base_perturbation_count"]),
+        label="normal recovery QA initial manifold distance",
+    )
+    for family in NORMAL_RECOVERY_DIRECTIONS:
+        qa_key = f"{family}_base_perturbation_count"
+        if int(qa.get(qa_key, -1)) != int(
+            expected["registered_base_perturbation_count_by_family"][family]
+        ):
+            raise RuntimeError(f"normal recovery QA count differs: {family}")
+    metrics_by_family = _require_mapping(
+        recovery.get("metrics_by_family"), "normal recovery family metrics"
+    )
+    if set(metrics_by_family) != set(NORMAL_RECOVERY_DIRECTIONS):
+        raise RuntimeError("normal recovery direction families differ from the freeze")
+    for family, direction_count in NORMAL_RECOVERY_DIRECTIONS.items():
+        family_payload = _require_mapping(
+            metrics_by_family.get(family), f"normal recovery {family}"
+        )
+        by_radius = _require_mapping(
+            family_payload.get("by_radius"), f"normal recovery {family} by radius"
+        )
+        expected_radius_keys = {format(radius, "g") for radius in NORMAL_RECOVERY_RADII}
+        if set(by_radius) != expected_radius_keys:
+            raise RuntimeError(f"normal recovery {family} radii differ from the freeze")
+        expected_count = int(expected["anchor_count"]) * direction_count
+        for radius_key in sorted(expected_radius_keys, key=float):
+            radius_payload = _require_mapping(
+                by_radius.get(radius_key),
+                f"normal recovery {family} radius {radius_key}",
+            )
+            by_horizon = _require_mapping(
+                radius_payload.get("by_horizon"),
+                f"normal recovery {family} radius {radius_key} by horizon",
+            )
+            if set(by_horizon) != {str(value) for value in expected["horizons"]}:
+                raise RuntimeError(
+                    f"normal recovery {family} radius {radius_key} horizons differ"
+                )
+            for horizon in expected["horizons"]:
+                horizon_payload = _require_mapping(
+                    by_horizon.get(str(horizon)),
+                    f"normal recovery {family} radius {radius_key} horizon {horizon}",
+                )
+                for metric in NORMAL_RECOVERY_METRICS:
+                    _validate_normal_recovery_statistics(
+                        horizon_payload.get(metric),
+                        expected_count=expected_count,
+                        label=(
+                            f"normal recovery {family} radius {radius_key} "
+                            f"horizon {horizon} {metric}"
+                        ),
+                    )
+    if recovery.get("claim_gate") is not False:
+        raise RuntimeError("normal recovery must explicitly disable its claim gate")
+    for forbidden in ("threshold", "pass_threshold", "passed", "expected_direction_gate"):
+        if forbidden in recovery:
+            raise RuntimeError(f"normal recovery may not define {forbidden}")
+    return recovery
+
+
+def _validate_carrier_normal_recovery_artifact(
+    path: Path,
+    spec: PrimaryAnalysisSpec,
+    recovery_summary: Mapping[str, Any],
+) -> None:
+    expected = _normal_recovery_design(spec)
+    base_arrays = {
+        "family",
+        "anchor_index",
+        "anchor_angle",
+        "direction_index",
+        "radius_over_manifold_scale",
+        "radius_absolute",
+        "direction",
+        "tangent",
+        "direction_norm_error",
+        "absolute_tangent_dot_direction",
+    }
+    matrix_arrays = {
+        "nearest_manifold_index",
+        "manifold_distance",
+        "manifold_distance_ratio",
+        "decoded_angle",
+        "same_memory_error_radians",
+        "clean_manifold_distance",
+        "clean_decoded_angle",
+        "clean_same_memory_error_radians",
+        "excess_same_memory_error_radians",
+        "distance_to_matched_clean_state",
+        "distance_to_matched_clean_state_ratio",
+        "manifold_distance_minus_clean",
+    }
+    required = base_arrays | matrix_arrays | {
+        "horizon",
+        "manifold_scale",
+    }
+    try:
+        with np.load(path, allow_pickle=False) as arrays:
+            missing = sorted(required - set(arrays.files))
+            if missing:
+                raise RuntimeError(
+                    f"normal recovery artifact omits registered arrays: {missing}"
+                )
+            base_count = int(expected["registered_base_perturbation_count"])
+            horizon_count = len(expected["horizons"])
+            for name in base_arrays:
+                array = np.asarray(arrays[name])
+                if array.ndim < 1 or int(array.shape[0]) != base_count:
+                    raise RuntimeError(
+                        f"normal recovery artifact {name} has the wrong base-trial count"
+                    )
+                if name != "family" and not np.isfinite(array).all():
+                    raise RuntimeError(
+                        f"normal recovery artifact {name} contains NaN or Inf"
+                    )
+            for name in matrix_arrays:
+                array = np.asarray(arrays[name])
+                if array.shape != (base_count, horizon_count):
+                    raise RuntimeError(
+                        f"normal recovery artifact {name} must have [trial,horizon] shape"
+                    )
+                if not np.isfinite(array).all():
+                    raise RuntimeError(
+                        f"normal recovery artifact {name} contains NaN or Inf"
+                    )
+            families = np.asarray(arrays["family"]).astype(str)
+            if set(families.tolist()) != set(NORMAL_RECOVERY_DIRECTIONS):
+                raise RuntimeError("normal recovery artifact families differ from freeze")
+            horizons = np.asarray(arrays["horizon"], dtype=np.int64)
+            if horizons.shape != (horizon_count,) or horizons.tolist() != expected[
+                "horizons"
+            ]:
+                raise RuntimeError("normal recovery artifact horizons differ from freeze")
+            radii = np.asarray(arrays["radius_over_manifold_scale"], dtype=np.float64)
+            anchors = np.asarray(arrays["anchor_index"], dtype=np.int64)
+            direction_indices = np.asarray(arrays["direction_index"], dtype=np.int64)
+            directions = np.asarray(arrays["direction"], dtype=np.float64)
+            tangents = np.asarray(arrays["tangent"], dtype=np.float64)
+            if directions.ndim != 2 or tangents.shape != directions.shape:
+                raise RuntimeError(
+                    "normal recovery direction/tangent arrays must share [trial,state]"
+                )
+            computed_norm_error = np.abs(np.linalg.norm(directions, axis=1) - 1.0)
+            computed_abs_dot = np.abs(np.sum(directions * tangents, axis=1))
+            stored_norm_error = np.asarray(
+                arrays["direction_norm_error"], dtype=np.float64
+            )
+            stored_abs_dot = np.asarray(
+                arrays["absolute_tangent_dot_direction"], dtype=np.float64
+            )
+            if not np.allclose(
+                stored_norm_error, computed_norm_error, rtol=1e-6, atol=1e-10
+            ):
+                raise RuntimeError("normal recovery direction-norm QA is inconsistent")
+            if not np.allclose(
+                stored_abs_dot, computed_abs_dot, rtol=1e-6, atol=1e-10
+            ):
+                raise RuntimeError("normal recovery tangent-orthogonality QA is inconsistent")
+            if (
+                float(computed_norm_error.max())
+                > NORMAL_RECOVERY_DIRECTION_QA_MAX
+            ):
+                raise RuntimeError(
+                    "normal recovery directions exceed the normalization tolerance"
+                )
+            if (
+                float(computed_abs_dot.max())
+                > NORMAL_RECOVERY_DIRECTION_QA_MAX
+            ):
+                raise RuntimeError(
+                    "normal recovery directions exceed the tangent-orthogonality tolerance"
+                )
+            scale = np.asarray(arrays["manifold_scale"], dtype=np.float64)
+            if scale.shape != () or not np.isfinite(scale).all() or float(scale) <= 0.0:
+                raise RuntimeError("normal recovery artifact manifold scale is invalid")
+            if not math.isclose(
+                float(scale),
+                _validate_finite_number(
+                    recovery_summary.get("manifold_scale"),
+                    "normal recovery summary manifold scale",
+                ),
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            ):
+                raise RuntimeError("normal recovery summary manifold scale differs from NPZ")
+            summary_families = _require_mapping(
+                recovery_summary.get("metrics_by_family"),
+                "normal recovery summary family metrics",
+            )
+            for family, direction_count in NORMAL_RECOVERY_DIRECTIONS.items():
+                for radius in NORMAL_RECOVERY_RADII:
+                    mask = (families == family) & np.isclose(
+                        radii, radius, rtol=0.0, atol=1e-12
+                    )
+                    expected_cell = int(expected["anchor_count"]) * direction_count
+                    if int(mask.sum()) != expected_cell:
+                        raise RuntimeError(
+                            "normal recovery artifact has an incomplete "
+                            f"family/radius cell: {family}/{radius:g}"
+                        )
+                    if set(anchors[mask].tolist()) != set(expected["anchor_indices"]):
+                        raise RuntimeError(
+                            "normal recovery artifact omits a registered anchor: "
+                            f"{family}/{radius:g}"
+                        )
+                    for anchor in expected["anchor_indices"]:
+                        at_anchor = mask & (anchors == int(anchor))
+                        if set(direction_indices[at_anchor].tolist()) != set(
+                            range(direction_count)
+                        ):
+                            raise RuntimeError(
+                                "normal recovery artifact direction indices differ: "
+                                f"{family}/{radius:g}/anchor={anchor}"
+                            )
+                    radius_key = format(radius, "g")
+                    family_summary = _require_mapping(
+                        summary_families.get(family),
+                        f"normal recovery summary {family}",
+                    )
+                    radius_summary = _require_mapping(
+                        _require_mapping(
+                            family_summary.get("by_radius"),
+                            f"normal recovery summary {family} radii",
+                        ).get(radius_key),
+                        f"normal recovery summary {family}/{radius_key}",
+                    )
+                    horizon_summaries = _require_mapping(
+                        radius_summary.get("by_horizon"),
+                        f"normal recovery summary {family}/{radius_key} horizons",
+                    )
+                    for column, horizon in enumerate(expected["horizons"]):
+                        horizon_summary = _require_mapping(
+                            horizon_summaries.get(str(horizon)),
+                            f"normal recovery summary {family}/{radius_key}/{horizon}",
+                        )
+                        for metric in NORMAL_RECOVERY_METRICS:
+                            values = np.asarray(arrays[metric], dtype=np.float64)[
+                                mask, column
+                            ]
+                            recomputed = {
+                                "registered_count": int(values.size),
+                                "finite_count": int(np.isfinite(values).sum()),
+                                "missing_or_nonfinite_count": int(
+                                    values.size - np.isfinite(values).sum()
+                                ),
+                                "mean": float(values.mean()),
+                                "population_std": float(values.std(ddof=0)),
+                                "median": float(np.median(values)),
+                                "q05": float(np.quantile(values, 0.05)),
+                                "q95": float(np.quantile(values, 0.95)),
+                                "min": float(values.min()),
+                                "max": float(values.max()),
+                            }
+                            observed = _require_mapping(
+                                horizon_summary.get(metric),
+                                (
+                                    "normal recovery summary "
+                                    f"{family}/{radius_key}/{horizon}/{metric}"
+                                ),
+                            )
+                            for count_name in (
+                                "registered_count",
+                                "finite_count",
+                                "missing_or_nonfinite_count",
+                            ):
+                                if int(observed.get(count_name, -1)) != recomputed[
+                                    count_name
+                                ]:
+                                    raise RuntimeError(
+                                        "normal recovery summary count differs from NPZ: "
+                                        f"{family}/{radius_key}/{horizon}/{metric}/{count_name}"
+                                    )
+                            for statistic in NORMAL_RECOVERY_STATISTICS:
+                                if not math.isclose(
+                                    _validate_finite_number(
+                                        observed.get(statistic),
+                                        (
+                                            "normal recovery summary "
+                                            f"{family}/{radius_key}/{horizon}/{metric}/{statistic}"
+                                        ),
+                                    ),
+                                    recomputed[statistic],
+                                    rel_tol=1e-9,
+                                    abs_tol=1e-12,
+                                ):
+                                    raise RuntimeError(
+                                        "normal recovery summary statistic differs from NPZ: "
+                                        f"{family}/{radius_key}/{horizon}/{metric}/{statistic}"
+                                    )
+    except (OSError, ValueError, TypeError) as error:
+        raise RuntimeError(f"normal recovery artifact is unreadable: {error}") from error
+
+
 def verify_analysis_output(
     output: Path,
     run: AnalysisRun,
@@ -444,9 +903,12 @@ def verify_analysis_output(
         )
     except (OSError, ValueError, TypeError, KeyError) as error:
         return False, f"analysis output unreadable: {error}", None
-    if identity_file.get("analysis_identity") != identity or identity_file.get(
-        "identity_payload"
-    ) != identity_payload:
+    observed_identity_payload = identity_file.get("identity_payload")
+    if (
+        identity_file.get("analysis_identity") != identity
+        or not isinstance(observed_identity_payload, Mapping)
+        or canonical_hash(observed_identity_payload) != canonical_hash(identity_payload)
+    ):
         return False, "analysis identity differs from checkpoint/protocol/spec binding", None
     status = summary.get("analysis_status")
     if status not in TERMINAL_ANALYSIS_STATUSES:
@@ -480,20 +942,27 @@ def verify_analysis_output(
         }
         prefix_by_failed_stage = {
             "slow_manifold_reconstruction": set(),
-            "projected_flow_and_fixed_point_topology": {
+            "carrier_ambient_normal_recovery": {
                 "slow_manifold_reconstruction.npz"
+            },
+            "projected_flow_and_fixed_point_topology": {
+                "slow_manifold_reconstruction.npz",
+                NORMAL_RECOVERY_ARTIFACT,
             },
             "full_local_jacobian_eigenspectrum": {
                 "slow_manifold_reconstruction.npz",
+                NORMAL_RECOVERY_ARTIFACT,
                 "projected_flow_and_topology.npz",
             },
             "finite_time_blank_memory": {
                 "slow_manifold_reconstruction.npz",
+                NORMAL_RECOVERY_ARTIFACT,
                 "projected_flow_and_topology.npz",
                 "full_local_eigenspectrum.npz",
             },
             "asymptotic_memory_structure": {
                 "slow_manifold_reconstruction.npz",
+                NORMAL_RECOVERY_ARTIFACT,
                 "projected_flow_and_topology.npz",
                 "full_local_eigenspectrum.npz",
                 "finite_time_angular_memory.npz",
@@ -502,6 +971,7 @@ def verify_analysis_output(
         if status == "complete_structural_summary_eligible":
             required_artifacts = base_artifacts | {
                 "slow_manifold_reconstruction.npz",
+                NORMAL_RECOVERY_ARTIFACT,
                 "projected_flow_and_topology.npz",
                 "full_local_eigenspectrum.npz",
                 "finite_time_angular_memory.npz",
@@ -522,6 +992,13 @@ def verify_analysis_output(
         if missing_artifacts:
             raise RuntimeError(
                 f"analysis receipt omits required artifacts: {missing_artifacts}"
+            )
+        if NORMAL_RECOVERY_ARTIFACT in required_artifacts:
+            recovery_summary = _validate_carrier_normal_recovery_summary(
+                summary.get("carrier_ambient_normal_recovery"), spec
+            )
+            _validate_carrier_normal_recovery_artifact(
+                output / NORMAL_RECOVERY_ARTIFACT, spec, recovery_summary
             )
         checkpoint = _require_mapping(summary.get("checkpoint"), "analysis checkpoint")
         protocol = _require_mapping(summary.get("protocol"), "analysis protocol")
@@ -616,7 +1093,7 @@ def _prepare_root(
         "campaign_mode": CAMPAIGN_MODE,
         "scope": SCOPE,
         "main_binding": main.binding,
-        "analysis_spec": asdict(spec),
+        "analysis_spec": primary_analysis_spec_payload(spec),
         "smoke": bool(smoke),
     }
     root.mkdir(parents=True, exist_ok=True)
@@ -651,7 +1128,7 @@ def _build_manifest(
         "protocol_canonical_fingerprint": main.binding[
             "protocol_canonical_fingerprint"
         ],
-        "analysis_spec": asdict(spec),
+        "analysis_spec": primary_analysis_spec_payload(spec),
         "run_matrix": [run.payload(main.root) for run in main.runs],
         "expected_analysis_runs": EXPECTED_RUN_COUNT,
         "code": _git_state(repo_root),
@@ -967,6 +1444,10 @@ def _estimable_metrics(summary: Mapping[str, Any]) -> dict[str, Any]:
     spectrum = _require_mapping(summary["full_local_eigenspectrum"], "spectrum")
     finite = _require_mapping(summary["finite_time_angular_memory"], "finite memory")
     asymptotic = _require_mapping(summary["asymptotic_structure"], "asymptotic")
+    normal_recovery = _require_mapping(
+        summary["carrier_ambient_normal_recovery"],
+        "carrier ambient-normal recovery",
+    )
     return {
         "uniform_flow_norm": _validate_finite_number(
             flow["uniform_norm"], "uniform flow norm"
@@ -1022,6 +1503,7 @@ def _estimable_metrics(summary: Mapping[str, Any]) -> dict[str, Any]:
                 "fixed_point_basin_capacity",
             )
         },
+        "carrier_ambient_normal_recovery": dict(normal_recovery),
     }
 
 
@@ -1056,15 +1538,30 @@ def _descriptive_values(
         "mean": None,
         "population_std": None,
         "median": None,
+        "q05": None,
+        "q95": None,
         "min": None,
         "max": None,
     }
     if finite:
+        ordered = sorted(finite)
+
+        def quantile(probability: float) -> float:
+            if len(ordered) == 1:
+                return float(ordered[0])
+            position = probability * (len(ordered) - 1)
+            lower = int(math.floor(position))
+            upper = int(math.ceil(position))
+            weight = position - lower
+            return float(ordered[lower] * (1.0 - weight) + ordered[upper] * weight)
+
         result.update(
             {
                 "mean": float(math.fsum(finite) / len(finite)),
                 "population_std": float(statistics.pstdev(finite)),
                 "median": float(statistics.median(finite)),
+                "q05": quantile(0.05),
+                "q95": quantile(0.95),
                 "min": float(min(finite)),
                 "max": float(max(finite)),
             }
@@ -1072,7 +1569,9 @@ def _descriptive_values(
     return result
 
 
-def _model_numeric_summaries(group: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _model_numeric_summaries(
+    group: Sequence[Mapping[str, Any]], spec: PrimaryAnalysisSpec
+) -> dict[str, Any]:
     """Summarize registered metrics without hiding any seed denominator."""
 
     included = [
@@ -1135,6 +1634,25 @@ def _model_numeric_summaries(group: Sequence[Mapping[str, Any]]) -> dict[str, An
                 horizon,
                 field,
             )
+    design = _normal_recovery_design(spec)
+    for family in NORMAL_RECOVERY_DIRECTIONS:
+        for radius in NORMAL_RECOVERY_RADII:
+            radius_key = format(radius, "g")
+            for horizon in design["horizons"]:
+                for metric in NORMAL_RECOVERY_METRICS:
+                    metric_paths[
+                        f"carrier_recovery_{family}_r{radius_key}_h{horizon}_{metric}_trial_mean"
+                    ] = (
+                        "carrier_ambient_normal_recovery",
+                        "metrics_by_family",
+                        family,
+                        "by_radius",
+                        radius_key,
+                        "by_horizon",
+                        str(horizon),
+                        metric,
+                        "mean",
+                    )
 
     conditional: dict[str, Any] = {}
     for label, path in metric_paths.items():
@@ -1153,7 +1671,8 @@ def _model_numeric_summaries(group: Sequence[Mapping[str, Any]]) -> dict[str, An
     )
     return {
         "interpretation": (
-            "Ságodi metrics are conditional on frozen-NMSE eligibility and structural "
+            "Ságodi-based metrics and the project-defined descriptive carrier normal-"
+            "recovery extension are conditional on frozen-NMSE eligibility and structural "
             "estimability; registered ten-seed and finite-value denominators are explicit"
         ),
         "validation_masked_nmse_db_all_registered_seeds": validation,
@@ -1235,7 +1754,7 @@ def aggregate_results(
             / 10.0,
             "analysis_status_counts": dict(sorted(statuses.items())),
             "failed_seed_replacements": 0,
-            "numeric_descriptive_summaries": _model_numeric_summaries(group),
+            "numeric_descriptive_summaries": _model_numeric_summaries(group, spec),
         }
     total_eligible = sum(bool(row["eligible_by_nmse_rule"]) for row in rows)
     total_included = sum(
@@ -1246,7 +1765,11 @@ def aggregate_results(
         "campaign_mode": CAMPAIGN_MODE,
         "campaign_scientific_identity": manifest["scientific_identity"],
         "scope": SCOPE,
-        "analysis_role": "Ságodi_evaluation_tool_not_CA_LRU_method",
+        "protocol_revision": PROTOCOL_REVISION,
+        "analysis_role": (
+            "Ságodi_based_evaluation_with_project_defined_descriptive_"
+            "carrier_normal_recovery_not_CA_LRU_method"
+        ),
         "smoke": bool(spec.smoke),
         "registered_training_outcome_count": len(rows),
         "verified_analysis_receipt_count": len(child_receipts),

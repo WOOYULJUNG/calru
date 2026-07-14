@@ -12,6 +12,7 @@ from repro.sagodi_protocol.lr_selection_v3 import EXPECTED_MODEL_IDS
 from repro.sagodi_protocol.primary_main_campaign import (
     CAMPAIGN_MODE,
     EXPECTED_MAIN_SEEDS,
+    EXPECTED_RP_CONTRACT,
     EXPECTED_RP_STEPS,
     MainModel,
     MainRun,
@@ -81,6 +82,14 @@ def test_committed_template_encodes_exact_main_contract() -> None:
     assert template["training"]["optimizer_updates"] == 5000
     assert template["training"]["batch_size"] == 64
     assert template["retention_plasticity"]["calls_after_warmup"] == 70
+    assert template["retention_plasticity"] == {
+        "enabled_model": "ca_lru",
+        **{
+            key: value
+            for key, value in EXPECTED_RP_CONTRACT.items()
+            if key != "enabled_during_training"
+        },
+    }
 
 
 def test_template_validation_fails_closed_on_training_change(tmp_path: Path) -> None:
@@ -89,6 +98,31 @@ def test_template_validation_fails_closed_on_training_change(tmp_path: Path) -> 
     changed = tmp_path / "changed.json"
     changed.write_text(json.dumps(payload))
     with pytest.raises(MainTemplateError, match="training contract"):
+        load_main_template(changed)
+
+
+@pytest.mark.parametrize(
+    ("field", "changed_value"),
+    (
+        ("warmup_updates", 1499),
+        ("interval_updates", 49),
+        ("calls_after_warmup", 69),
+        ("probe_batch_size", 95),
+        ("probe_horizon", 255),
+        ("blank_ablation_horizon", 499),
+        ("probe_noise_enabled", True),
+        ("eta_lambda", 2999.0),
+        ("damage_epsilon", 4e-5),
+    ),
+)
+def test_template_validation_fails_closed_on_rp_numeric_change(
+    tmp_path: Path, field: str, changed_value: object
+) -> None:
+    payload = json.loads(TEMPLATE.read_text())
+    payload["retention_plasticity"][field] = changed_value
+    changed = tmp_path / f"changed_{field}.json"
+    changed.write_text(json.dumps(payload))
+    with pytest.raises(MainTemplateError, match="Retention Plasticity"):
         load_main_template(changed)
 
 
@@ -108,18 +142,22 @@ def test_materialized_protocol_is_valid_and_selector_bound() -> None:
     }
     assert training["learning_rate"]["source"] == "selector_bound"
     assert training["gradient_clipping"]["frozen_numeric_value"] is None
-    assert training["rp_schedule_for_ca_lru"] == {
-        "enabled_during_training": True,
-        "warmup_updates": 1500,
-        "interval_updates": 50,
-        "calls_after_warmup": 70,
-        "probe_batch_size": 256,
-        "probe_horizon": 256,
-        "blank_ablation_horizon": 256,
-        "probe_noise_enabled": False,
-        "eta_lambda": 3000.0,
-        "damage_epsilon": 3e-5,
-    }
+    assert training["rp_schedule_for_ca_lru"] == EXPECTED_RP_CONTRACT
+
+
+@pytest.mark.parametrize(
+    ("field", "changed_value"),
+    (("probe_batch_size", 256), ("blank_ablation_horizon", 256)),
+)
+def test_resolved_protocol_validator_fails_closed_on_old_rp_values(
+    field: str, changed_value: int
+) -> None:
+    resolved = materialize_resolved_protocol(load_main_template(TEMPLATE), _parent())
+    resolved["phase1_ring_pilot"]["training"]["rp_schedule_for_ca_lru"][
+        field
+    ] = changed_value
+    with pytest.raises(ValueError, match="RP schedule"):
+        validate_protocol(resolved)
 
 
 def test_materialization_does_not_mutate_selector_protocol() -> None:

@@ -14,7 +14,7 @@ import json
 import math
 import sys
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -52,7 +52,7 @@ from .primary_analysis_campaign import (
     verify_campaign_completion as verify_primary_campaign_completion,
     verify_main_artifacts as verify_primary_main_artifacts,
 )
-from .sagodi_primary_runner import PrimaryAnalysisSpec
+from .sagodi_primary_runner import PrimaryAnalysisSpec, primary_analysis_spec_payload
 
 
 SCHEMA_VERSION = 1
@@ -235,7 +235,7 @@ def verify_primary_parent(
     ):
         raise RuntimeError("primary campaign was not run at the exact clean main commit")
     spec = PrimaryAnalysisSpec()
-    if manifest.get("analysis_spec") != asdict(spec):
+    if manifest.get("analysis_spec") != primary_analysis_spec_payload(spec):
         raise RuntimeError("primary analysis spec differs from the full frozen spec")
     valid, reason = verify_primary_campaign_completion(root, main, manifest, spec)
     if not valid:

@@ -33,6 +33,7 @@ SELECTOR = PACKAGE / "sagodi_primary_lr_selection_v3.json"
 def test_primary_v3_freeze_binds_source_and_exact_120_run_matrix() -> None:
     protocol = load_protocol(PROTOCOL)
     assert protocol["freeze_id"] == SAGODI_PRIMARY_LR_SELECTION_FREEZE_ID
+    assert protocol["source_protocol"]["version"] == "3.1"
     assert source_protocol_matches(protocol, REPOSITORY)
     assert tuple(protocol["phase0_state_audit"]["models"]) == SAGODI_PRIMARY_MODELS
     assert tuple(protocol["seed_policy"]["selection_model_seeds"]) == (

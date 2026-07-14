@@ -5,8 +5,8 @@
   "frozen_at_utc": "2026-07-14",
   "source_protocol": {
     "path": "repro/sagodi_protocol/SAGODI_PRIMARY_V3_FREEZE_ko.md",
-    "version": "3.0",
-    "sha256": "f217b671555db33ba0bb268af002bd8a09ca20be825cb9134712eb6073433593",
+    "version": "3.1",
+    "sha256": "208207cb63e37ee4195033592f9a847a346e42b1b963e40ac1fc81d577900b01",
     "normative_sections": ["3", "4", "5"]
   },
   "reporting": {

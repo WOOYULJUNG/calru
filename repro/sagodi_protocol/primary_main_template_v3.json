@@ -38,9 +38,9 @@
     "warmup_updates": 1500,
     "interval_updates": 50,
     "calls_after_warmup": 70,
-    "probe_batch_size": 256,
+    "probe_batch_size": 96,
     "probe_horizon": 256,
-    "blank_ablation_horizon": 256,
+    "blank_ablation_horizon": 500,
     "probe_noise_enabled": false,
     "eta_lambda": 3000.0,
     "damage_epsilon": 0.00003

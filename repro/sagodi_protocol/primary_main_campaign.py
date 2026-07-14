@@ -71,6 +71,18 @@ EXPECTED_UPDATES = 5000
 EXPECTED_BATCH_SIZE = 64
 EXPECTED_RUN_COUNT = 60
 EXPECTED_RP_STEPS = tuple(range(1550, 5001, 50))
+EXPECTED_RP_CONTRACT = {
+    "enabled_during_training": True,
+    "warmup_updates": 1500,
+    "interval_updates": 50,
+    "calls_after_warmup": 70,
+    "probe_batch_size": 96,
+    "probe_horizon": 256,
+    "blank_ablation_horizon": 500,
+    "probe_noise_enabled": False,
+    "eta_lambda": 3000.0,
+    "damage_epsilon": 3e-5,
+}
 
 ROOT_MARKER = ".calru_primary_main_v3_root.json"
 TEMPLATE_COPY = "primary_main_template.json"
@@ -205,15 +217,11 @@ def load_main_template(path: Path) -> dict[str, Any]:
     rp = payload.get("retention_plasticity")
     if not isinstance(rp, Mapping) or rp != {
         "enabled_model": "ca_lru",
-        "warmup_updates": 1500,
-        "interval_updates": 50,
-        "calls_after_warmup": 70,
-        "probe_batch_size": 256,
-        "probe_horizon": 256,
-        "blank_ablation_horizon": 256,
-        "probe_noise_enabled": False,
-        "eta_lambda": 3000.0,
-        "damage_epsilon": 3e-5,
+        **{
+            key: value
+            for key, value in EXPECTED_RP_CONTRACT.items()
+            if key != "enabled_during_training"
+        },
     }:
         raise MainTemplateError("Retention Plasticity main contract changed")
     if tuple(range(1550, 5001, 50)) != EXPECTED_RP_STEPS:
@@ -378,19 +386,7 @@ def materialize_resolved_protocol(
         "frozen_numeric_value": None,
     }
     training["checkpoint_selection"] = "final_update_5000"
-    rp = template["retention_plasticity"]
-    training["rp_schedule_for_ca_lru"] = {
-        "enabled_during_training": True,
-        "warmup_updates": int(rp["warmup_updates"]),
-        "interval_updates": int(rp["interval_updates"]),
-        "calls_after_warmup": int(rp["calls_after_warmup"]),
-        "probe_batch_size": int(rp["probe_batch_size"]),
-        "probe_horizon": int(rp["probe_horizon"]),
-        "blank_ablation_horizon": int(rp["blank_ablation_horizon"]),
-        "probe_noise_enabled": bool(rp["probe_noise_enabled"]),
-        "eta_lambda": float(rp["eta_lambda"]),
-        "damage_epsilon": float(rp["damage_epsilon"]),
-    }
+    training["rp_schedule_for_ca_lru"] = dict(EXPECTED_RP_CONTRACT)
     phase["run_matrix"] = {
         "cross_product": ["models", "main_model_seeds"],
         "learning_rate_assignment": "selected_by_model",
@@ -709,6 +705,19 @@ def _verify_training_output(
     expected_enabled = run.model.model_id == "ca_lru"
     if training.get("rp_enabled_by_protocol") is not expected_enabled:
         return False, "main training RP enablement mismatch", None
+    expected_effective_rp = {
+        "enabled_by_protocol": expected_enabled,
+        "probe_batch_size": 4 if manifest["smoke"] else 96,
+        "probe_horizon": 8 if manifest["smoke"] else 256,
+        "blank_ablation_horizon": 8 if manifest["smoke"] else 500,
+        "eta_lambda": 3000.0,
+        "damage_epsilon": 3e-5,
+    }
+    if (
+        training.get("rp_frozen_contract") != EXPECTED_RP_CONTRACT
+        or training.get("rp_effective_runtime") != expected_effective_rp
+    ):
+        return False, "main training RP numeric contract mismatch", None
     try:
         observed_noise_std = float(
             training.get("state_noise_coordinate_std", float("nan"))
@@ -738,6 +747,11 @@ def _verify_training_output(
         return False, "main child parent-selector binding mismatch", None
     if child.get("pilot_only") is not False:
         return False, "main child is incorrectly labelled pilot-only", None
+    if (
+        child.get("rp_frozen_contract") != EXPECTED_RP_CONTRACT
+        or child.get("rp_effective_runtime") != expected_effective_rp
+    ):
+        return False, "main child RP numeric contract mismatch", None
     if child.get("ca_evidence") is not False or child.get(
         "manifold_analysis_performed"
     ) is not False:
@@ -763,6 +777,11 @@ def _verify_training_output(
         or receipt_rp_calls != len(expected_rp)
     ):
         return False, "main child receipt scientific labels mismatch", None
+    if (
+        receipt_metadata.get("rp_frozen_contract") != EXPECTED_RP_CONTRACT
+        or receipt_metadata.get("rp_effective_runtime") != expected_effective_rp
+    ):
+        return False, "main child receipt RP numeric contract mismatch", None
     if child.get("evaluation_bank_sha256") != manifest["evaluation_bank"]["sha256"]:
         return False, "main child evaluation-bank binding mismatch", None
     state_path = parent.root / "phase0" / f"model={run.model.model_id}" / "state_spec.json"
