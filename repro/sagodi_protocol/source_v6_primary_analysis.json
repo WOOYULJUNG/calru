@@ -19,6 +19,7 @@
     "finite_time_and_asymptotic_memory": false,
     "carrier_ambient_normal_recovery": false,
     "analysis_state_noise_disabled": true,
-    "eligibility_nmse_db_below": -20.0
+    "eligibility_nmse_db_below": -20.0,
+    "eligibility_policy": "label_only_analyze_all_checkpoints"
   }
 }

@@ -234,6 +234,14 @@ class PrimaryAnalysisSpec:
                     )
 
 
+def _structural_analysis_requested(
+    *, eligible: bool, spec: PrimaryAnalysisSpec
+) -> bool:
+    """Keep task performance as a label, not a gate, for the core pilot."""
+
+    return bool(eligible or spec.smoke or spec.core_only)
+
+
 @dataclass(frozen=True)
 class ReconstructionResult:
     spline_angle: torch.Tensor
@@ -2154,7 +2162,9 @@ def run_primary_analysis(
         "frozen_main_id_validation": {
             "metrics": bound_validation_metrics,
             "binding": bound_validation_binding,
-            "used_for_structural_summary_eligibility": not active_spec.smoke,
+            "used_for_structural_summary_eligibility": (
+                not active_spec.smoke and not active_spec.core_only
+            ),
         },
         "discovery_task_metrics": {
             "metrics": discovery_task_metrics,
@@ -2170,9 +2180,15 @@ def run_primary_analysis(
             "threshold_nmse_db": float(active_spec.inclusion_nmse_db),
             "eligible": bool(eligible),
             "smoke_bypass": bool(active_spec.smoke),
+            "analysis_gate": not active_spec.core_only,
+            "core_policy": (
+                "label_only_analyze_all_checkpoints"
+                if active_spec.core_only
+                else "ineligible_checkpoints_stop_before_structural_analysis"
+            ),
         },
     }
-    if not eligible and not active_spec.smoke:
+    if not _structural_analysis_requested(eligible=eligible, spec=active_spec):
         base_summary["analysis_status"] = "ineligible_for_structural_summary"
         summary_path = destination / "summary.json"
         atomic_json(summary_path, base_summary)
@@ -2500,7 +2516,7 @@ def run_primary_analysis(
     if active_spec.core_only:
         base_summary.update(
             {
-                "analysis_status": "complete_core_structural_summary_eligible",
+                "analysis_status": "complete_core_structural_analysis",
                 "projected_flow": flow_summary,
                 "fixed_point_topology": topology_summary,
                 "full_local_eigenspectrum": spectrum_summary,
@@ -2533,7 +2549,7 @@ def run_primary_analysis(
             ],
             metadata={
                 "analysis_identity": identity,
-                "analysis_status": "complete_core_structural_summary_eligible",
+                "analysis_status": "complete_core_structural_analysis",
                 "model_id": model.config.name,
                 "checkpoint_sha256": sha256_file(checkpoint),
             },

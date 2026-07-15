@@ -6,7 +6,11 @@ import torch
 
 from repro.sagodi_protocol.artifacts import strict_json_load
 from repro.sagodi_protocol.primary_v4 import build_v4_model
-from repro.sagodi_protocol.sagodi_primary_runner import PrimaryAnalysisSpec, run_primary_analysis
+from repro.sagodi_protocol.sagodi_primary_runner import (
+    PrimaryAnalysisSpec,
+    _structural_analysis_requested,
+    run_primary_analysis,
+)
 from repro.sagodi_protocol.source_v6_primary_analysis_campaign import load_config
 
 
@@ -17,6 +21,7 @@ def test_source_v6_core_campaign_freezes_eight_runs() -> None:
     assert config["analysis"]["trajectory_count"] == 256
     assert config["analysis"]["spline_count"] == 128
     assert config["analysis"]["finite_time_and_asymptotic_memory"] is False
+    assert config["analysis"]["eligibility_policy"] == "label_only_analyze_all_checkpoints"
 
 
 def test_source_v6_core_spec_requires_frozen_reduced_sizes() -> None:
@@ -29,6 +34,13 @@ def test_source_v6_core_spec_requires_frozen_reduced_sizes() -> None:
         core_only=True,
     )
     spec.validate()
+    assert _structural_analysis_requested(eligible=False, spec=spec) is True
+    assert (
+        _structural_analysis_requested(
+            eligible=False, spec=PrimaryAnalysisSpec(source_v6=True)
+        )
+        is False
+    )
 
 
 def test_source_v6_lru_checkpoint_runs_primary_smoke(tmp_path: Path) -> None:
@@ -81,10 +93,10 @@ def test_source_v6_lru_checkpoint_runs_primary_smoke(tmp_path: Path) -> None:
     summary = strict_json_load(summary_path)
     assert summary["smoke"] is True
     assert summary["analysis_status"] in {
-        "complete_core_structural_summary_eligible",
+        "complete_core_structural_analysis",
         "structural_analysis_not_estimable",
     }
     assert summary["project_resolutions"]["source_v6_public_code_task"] is True
-    if summary["analysis_status"] == "complete_core_structural_summary_eligible":
+    if summary["analysis_status"] == "complete_core_structural_analysis":
         assert summary["fixed_point_topology"]["status"] == "omitted_from_pilot_core"
         assert summary["finite_time_angular_memory"]["status"] == "omitted_from_pilot_core"

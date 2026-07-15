@@ -26,7 +26,7 @@ PROTOCOL = MODULE_DIR / "analysis_protocol.yaml"
 CAMPAIGN_ID = "source_v6_primary_analysis"
 PROTOCOL_REVISION = "four_baselines_noise_free_vs_positive_noise_sagodi_core_pilot1_v3"
 ROOT_MARKER = ".source_v6_primary_analysis_root.json"
-CONFIG_CONTRACT_SHA256 = "b96d97352efbc54daa43c529deda2604daae92868f4aa06c6f02338cd8624f42"
+CONFIG_CONTRACT_SHA256 = "10f0e721569ac7ea4db4a2dca64f21cb201ecacc8ff17492f910671bf30ccce0"
 MODEL_IDS = (*baseline_v6.MODEL_IDS, "lru_n52")
 CONDITIONS = ("noise_free", "positive_state_noise_training")
 
@@ -62,6 +62,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         "carrier_ambient_normal_recovery": False,
         "analysis_state_noise_disabled": True,
         "eligibility_nmse_db_below": -20.0,
+        "eligibility_policy": "label_only_analyze_all_checkpoints",
     }
     if payload["analysis"] != expected_analysis:
         raise ValueError("source-v6 core analysis contract differs")
@@ -201,7 +202,7 @@ def _complete(spec: AnalysisSpec) -> bool:
     except (OSError, ValueError, TypeError, KeyError):
         return False
     valid, _ = verify_completion_receipt(output / "completion_receipt.json", expected_job_id=f"sagodi-primary-{spec.model_id}-{identity[:12]}", expected_metadata={"analysis_identity": identity})
-    return bool(valid and summary.get("analysis_status") in {"complete_core_structural_summary_eligible", "ineligible_for_structural_summary", "structural_analysis_not_estimable"} and sha256_file(spec.checkpoint) == spec.checkpoint_sha256)
+    return bool(valid and summary.get("analysis_status") in {"complete_core_structural_analysis", "structural_analysis_not_estimable"} and sha256_file(spec.checkpoint) == spec.checkpoint_sha256)
 
 
 def _run(
@@ -277,8 +278,9 @@ def _aggregate(specs: Sequence[AnalysisSpec]) -> dict[str, Any]:
     for spec in specs:
         summary = strict_json_load(Path(spec.output_dir) / "summary.json")
         row = {"run_id": spec.run_id, "model_id": spec.model_id, "condition": spec.condition, "seed": spec.model_seed, "analysis_status": summary["analysis_status"]}
-        if summary["analysis_status"] == "complete_core_structural_summary_eligible":
+        if summary["analysis_status"] == "complete_core_structural_analysis":
             row.update({
+                "task_performance_eligible": summary["structural_summary_eligibility"]["eligible"],
                 "uniform_flow_norm": summary["projected_flow"]["uniform_norm"],
                 "largest_real_part_mean": summary["full_local_eigenspectrum"]["largest_real_part"]["mean"],
                 "top_two_real_part_gap_mean": summary["full_local_eigenspectrum"]["top_two_real_part_gap"]["mean"],
@@ -286,8 +288,7 @@ def _aggregate(specs: Sequence[AnalysisSpec]) -> dict[str, Any]:
             })
         rows.append(row)
     statuses = (
-        "complete_core_structural_summary_eligible",
-        "ineligible_for_structural_summary",
+        "complete_core_structural_analysis",
         "structural_analysis_not_estimable",
     )
     counts = {model: {condition: {status: sum(row["model_id"] == model and row["condition"] == condition and row["analysis_status"] == status for row in rows) for status in statuses} for condition in CONDITIONS} for model in MODEL_IDS}
