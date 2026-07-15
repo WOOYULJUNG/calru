@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "campaign_id": "sagodi_state_noise_search_v1",
+  "protocol_revision": "four_baseline_fixed_noise_free_lr_state_noise_only_v2",
+  "track_classification": "four_baseline_model_specific_training_state_noise_search_before_calru_tuning",
+  "parents": {
+    "baseline_campaign": "sagodi_source_repaired_baselines_v6",
+    "downstream_campaign": "sagodi_source_repaired_lru_calru_v6",
+    "require_verified_baseline_main": true,
+    "require_verified_lru_main": true,
+    "inherit_selected_learning_rates": true
+  },
+  "models": [
+    {"id": "sagodi_rnn_tanh_n128", "family": "source_baseline", "state_dimension": 128, "parameters_trainable": 17154},
+    {"id": "sagodi_gru_n128", "family": "source_baseline", "state_dimension": 128, "parameters_trainable": 50818},
+    {"id": "sagodi_lstm_n64", "family": "source_baseline", "state_dimension": 128, "parameters_trainable": 17538},
+    {"id": "lru_n52", "family": "lru_baseline", "state_dimension": 104, "parameters_trainable": 17058}
+  ],
+  "training": {
+    "optimizer": "inherit_parent_model_recipe",
+    "batch_size": 64,
+    "updates": 5000,
+    "online_batches": true,
+    "trace_interval": 50,
+    "validation_interval": 500,
+    "target_noise_std": 0.0,
+    "output_dropout": 0.0,
+    "state_noise_location": "post_transition_full_recurrent_state",
+    "state_noise_semantics": "iid_gaussian_per_coordinate_standard_deviation",
+    "evaluation_state_noise_std": 0.0,
+    "training_target_semantics": "clean_cos_sin_target_for_initial_q1_and_loss"
+  },
+  "state_noise_search": {
+    "actual_post_transition_state_noise_std_grid": [0.0, 0.003, 0.01, 0.0316228, 0.1],
+    "tuning_seeds": [100, 101, 102, 103, 104],
+    "all_noise_values_all_seeds": true,
+    "analysis_nmse_db_threshold": -20.0,
+    "descriptive_mse_threshold": 0.01,
+    "selection_rule": "max_nmse_eligible_count_then_max_mse_success_count_then_min_median_mse_then_min_mean_mse_then_grid_order",
+    "failed_runs_remain_in_denominator": true
+  },
+  "main": {
+    "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    "fresh_from_tuning": true
+  },
+  "data_contract": {
+    "reuse_exact_parent_tuning_and_main_banks": true,
+    "online_stream_namespace": "sagodi_source_repaired_baselines_v6",
+    "same_initialization_and_online_batch_within_model_seed": true
+  },
+  "scope_contract": {
+    "models": ["RNN", "GRU", "LSTM", "LRU"],
+    "calru_models_excluded": true,
+    "calru_hyperparameter_search_is_a_separate_downstream_campaign": true,
+    "attractor_analysis_is_a_separate_checkpoint_consuming_campaign": true
+  }
+}

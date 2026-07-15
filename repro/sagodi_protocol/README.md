@@ -66,6 +66,32 @@ repro/sagodi_protocol/run_source_repaired_v6_pipeline.sh \
   /path/to/baseline_v6 /path/to/downstream_v6 0,1,2,3,4,5
 ```
 
+## Follow-up: model-specific state-noise search v1
+
+Noise-free parent에서 선택된 RNN, GRU, LSTM, LRU의 모델별 LR을 고정하고, training
+state-noise std `[0,0.003,0.01,0.0316228,0.1]`만 seeds 100--104 모두에서
+탐색한다. Target noise와 dropout은 모든 모델에서 0이고 evaluation도 clean이다.
+Tuning 100 runs 뒤 선택된 std로 fresh main 40 runs를 실행한다. No-RP와 CA-LRU는
+이 단계에서 제외하고, LRU LR 고정 CA-LRU 전용 hyperparameter campaign에서 다룬다.
+
+```bash
+repro/sagodi_protocol/run_state_noise_search_v1.sh \
+  /path/to/baseline_v6 /path/to/downstream_v6 \
+  /path/to/state_noise_search_v1 0,1,2,3,4,5
+```
+
+Noise-free RNN/GRU/LSTM main만 완료된 상태라면 아래 launcher가 LRU 단계만 실행한
+뒤 곧바로 네 baseline의 state-noise search를 시작한다. No-RP/CA-LRU 단계는
+의도적으로 호출하지 않는다.
+
+```bash
+repro/sagodi_protocol/run_lru_then_baseline_noise_v1.sh \
+  /path/to/baseline_v6 /path/to/lru_v6 \
+  /path/to/baseline_state_noise_v1 0,1,2,3,4,5
+```
+
+세부 해석과 재현 계약은 `STATE_NOISE_SEARCH_V1_FREEZE_ko.md`를 따른다.
+
 ## Auxiliary controlled-recovery v1 (historical)
 
 `sagodi_paper_baselines.py`의 T256 dense/q0 controlled benchmark는 historical

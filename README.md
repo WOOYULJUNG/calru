@@ -97,7 +97,17 @@ No-RP의 LR과 공통 noise를 상속한다. 실행 명령과 차이/repair 내�
 [`repro/sagodi_protocol/README.md`](repro/sagodi_protocol/README.md)와
 [`SAGODI_SOURCE_REPAIRED_BASELINES_V6_FREEZE_ko.md`](repro/sagodi_protocol/SAGODI_SOURCE_REPAIRED_BASELINES_V6_FREEZE_ko.md)에 있다.
 
-### 4. Historical Ságodi-based primary v3.1: provenance only
+### 4. Model-specific state-noise search v1: 보조 최적화
+
+Noise-free v6에서 선택된 모델별 LR을 고정한 뒤 RNN, GRU, LSTM, LRU에서만
+training state-noise std
+`[0,0.003,0.01,0.0316228,0.1]`를 5 seeds 모두 탐색한다. Target noise와
+dropout은 계속 0이고 clean evaluation을 사용한다. Tuning은 100 runs, 선택된
+std의 fresh main은 40 runs다. No-RP/CA-LRU와 RP 전용 hyperparameter는 후속
+campaign으로 분리한다. 세부 계약은
+[`STATE_NOISE_SEARCH_V1_FREEZE_ko.md`](repro/sagodi_protocol/STATE_NOISE_SEARCH_V1_FREEZE_ko.md)에 있다.
+
+### 5. Historical Ságodi-based primary v3.1: provenance only
 
 [`repro/sagodi_protocol/analysis_protocol.yaml`](repro/sagodi_protocol/analysis_protocol.yaml)은
 Phase 0 state/blank-map audit와 Phase 1 ring pilot만 활성화한다. 공통 fixed bank,
