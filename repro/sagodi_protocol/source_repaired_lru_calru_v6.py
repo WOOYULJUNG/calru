@@ -2139,7 +2139,18 @@ def _validate_spec(
     else:
         if spec.actual_state_noise_std != _common_state_noise(config):
             raise ValueError("full worker state noise differs from the common contract")
-        if spec.updates != int(config["training"]["updates"]):
+        lr_screen_stage = spec.stage in {
+            "lru_sentinel",
+            "lru_fanout",
+            "no_rp_sentinel",
+            "no_rp_fanout",
+        }
+        expected_updates = (
+            int(config["learning_rate_tuning"]["screening_updates"])
+            if lr_screen_stage
+            else int(config["training"]["updates"])
+        )
+        if spec.updates != expected_updates:
             raise ValueError("full worker update count differs")
         if spec.batch_size != int(config["training"]["batch_size"]):
             raise ValueError("full worker batch size differs")

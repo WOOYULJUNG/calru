@@ -1078,7 +1078,7 @@ def scientific_gate(summary: Mapping[str, Any]) -> dict[str, Any]:
         "campaign_id": CAMPAIGN_ID,
         "all_required_gates_pass": bool(summary["all_required_gates_pass"]),
         "required_gates": [
-            "all_10_fresh_seeds_are_trained_and_reported",
+            "all_registered_fresh_pilot_seeds_are_trained_and_reported",
             "at_least_one_nmse_below_minus20db_analysis_eligible_seed_per_model",
         ],
         "computation_complete_is_not_scientific_pass": True,
@@ -1112,7 +1112,12 @@ def _validate_spec(config: Mapping[str, Any], spec: RunSpec) -> None:
         raise ValueError("unknown full run stage")
     if spec.learning_rate not in tuning["learning_rate_grid"]:
         raise ValueError("run spec LR is outside frozen grid")
-    if spec.updates != int(config["training"]["updates"]):
+    expected_updates = (
+        int(tuning["screening_updates"])
+        if spec.stage in {"sentinel", "fanout"}
+        else int(config["training"]["updates"])
+    )
+    if spec.updates != expected_updates:
         raise ValueError("full run update count differs")
     if spec.batch_size != int(config["training"]["batch_size"]):
         raise ValueError("full run batch size differs")
