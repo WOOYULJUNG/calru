@@ -4,7 +4,8 @@ The input is the receipt-bound ``source_v6_extended_analysis`` artifact.  Each
 figure uses model columns and training-noise rows so that comparisons do not
 depend on matching axes across separate model-specific dashboards.  The
 figures are descriptive seed-0 pilot outputs; they are not confirmatory
-multi-seed summaries.
+multi-seed summaries.  A separate right-hand ``Ideal CA`` panel is explicitly
+schematic and never presented as measured data.
 """
 
 from __future__ import annotations
@@ -103,20 +104,31 @@ def _annotate_not_estimable(ax: plt.Axes, run: Mapping[str, Any]) -> None:
         )
 
 
-def _base_grid(title: str) -> tuple[plt.Figure, np.ndarray]:
-    fig, axes = plt.subplots(
-        2,
-        4,
-        figsize=(14.0, 6.4),
-        squeeze=False,
-        constrained_layout=True,
+def _base_grid(title: str) -> tuple[plt.Figure, np.ndarray, plt.Axes]:
+    fig = plt.figure(figsize=(16.8, 6.4), constrained_layout=True)
+    grid = fig.add_gridspec(2, 5, width_ratios=(1.0, 1.0, 1.0, 1.0, 1.08))
+    axes = np.asarray(
+        [[fig.add_subplot(grid[row, column]) for column in range(4)] for row in range(2)]
     )
+    ideal = fig.add_subplot(grid[:, 4])
     fig.suptitle(title, fontsize=15, fontweight="bold")
     for column, (_, label) in enumerate(MODELS):
         axes[0, column].set_title(label, fontsize=11, fontweight="bold")
     for row, (_, label, _) in enumerate(CONDITIONS):
         axes[row, 0].set_ylabel(label, fontsize=10, fontweight="bold")
-    return fig, axes
+    ideal.set_title("Ideal CA\n(schematic)", fontsize=11, fontweight="bold")
+    ideal.set_facecolor("#f0fff4")
+    ideal.text(
+        0.5,
+        0.02,
+        "conceptual reference · not measured",
+        transform=ideal.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=7,
+        color="#276749",
+    )
+    return fig, axes, ideal
 
 
 def _save(fig: plt.Figure, destination: Path, stem: str) -> None:
@@ -133,7 +145,7 @@ def _nearest_indices(angle: np.ndarray, targets: np.ndarray) -> np.ndarray:
 
 
 def plot_geometry_topology(root: Path, destination: Path) -> None:
-    fig, axes = _base_grid("Baseline geometry and projected topology")
+    fig, axes, ideal = _base_grid("Baseline geometry and projected topology")
     runs = {(m, c): _load_run(root, m, c) for m, _ in MODELS for c, _, _ in CONDITIONS}
     points: list[np.ndarray] = []
     for run in runs.values():
@@ -207,12 +219,45 @@ def plot_geometry_topology(root: Path, destination: Path) -> None:
         plt.Line2D([], [], marker="o", color="none", markerfacecolor="#2f855a", markeredgecolor="white", label="stable"),
         plt.Line2D([], [], marker="^", color="none", markerfacecolor="#c53030", markeredgecolor="white", label="saddle"),
     ]
-    fig.legend(handles=handles, loc="lower center", ncol=2, frameon=False)
+    theta = np.linspace(0.0, 2.0 * np.pi, 256, endpoint=False)
+    ideal.scatter(
+        np.cos(theta),
+        np.sin(theta),
+        c=theta,
+        cmap="twilight",
+        s=9,
+        linewidths=0,
+    )
+    ideal.plot(np.cos(theta), np.sin(theta), color="#68d391", linewidth=1.2)
+    ideal.text(
+        0.5,
+        0.92,
+        "continuous fixed-point ring\nno isolated stable/saddle points\nU = 0",
+        transform=ideal.transAxes,
+        ha="center",
+        va="top",
+        fontsize=8,
+        color="#22543d",
+    )
+    ideal.set_xlim(-limit, limit)
+    ideal.set_ylim(-limit, limit)
+    ideal.set_aspect("equal", adjustable="box")
+    ideal.set_xlabel("output x")
+    ideal.set_ylabel("output y")
+    ideal.grid(alpha=0.18)
+    ideal.legend(
+        handles=handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.055),
+        ncol=2,
+        frameon=False,
+        fontsize=8,
+    )
     _save(fig, destination, "fig_baseline_geometry_topology")
 
 
 def plot_jacobian(root: Path, destination: Path) -> None:
-    fig, axes = _base_grid("Baseline local Jacobian spectrum")
+    fig, axes, ideal = _base_grid("Baseline local Jacobian spectrum")
     runs = {(m, c): _load_run(root, m, c) for m, _ in MODELS for c, _, _ in CONDITIONS}
     values: list[np.ndarray] = []
     for run in runs.values():
@@ -255,11 +300,33 @@ def plot_jacobian(root: Path, destination: Path) -> None:
             if column == 0:
                 ax.set_ylabel(r"real part of $J_F-I$")
     axes[0, 0].legend(frameon=False, fontsize=8, loc="lower left")
+    theta = np.linspace(0.0, 2.0 * np.pi, 256)
+    schematic_normal = -0.30 * bound * np.ones_like(theta)
+    ideal.plot(theta, np.zeros_like(theta), color="#2f855a", linewidth=2.0, label=r"tangent $\lambda=0$")
+    ideal.plot(theta, schematic_normal, color="#276749", linewidth=1.6, label=r"normal $\lambda<0$")
+    ideal.fill_between(theta, schematic_normal, 0.0, color="#68d391", alpha=0.15)
+    ideal.axhline(0.0, color="#718096", linewidth=0.8, linestyle="--")
+    ideal.text(
+        0.5,
+        0.92,
+        "one neutral tangent mode\nall normal modes contracting\nnormal magnitude is schematic",
+        transform=ideal.transAxes,
+        ha="center",
+        va="top",
+        fontsize=8,
+        color="#22543d",
+    )
+    ideal.set_xlim(0.0, 2.0 * np.pi)
+    ideal.set_ylim(-bound, bound)
+    ideal.set_xlabel(r"memory angle $\theta$")
+    ideal.set_ylabel(r"real part of $J_F-I$")
+    ideal.grid(alpha=0.18)
+    ideal.legend(frameon=False, fontsize=7, loc="center right")
     _save(fig, destination, "fig_baseline_jacobian_spectrum")
 
 
 def plot_memory(root: Path, destination: Path) -> None:
-    fig, axes = _base_grid("Baseline finite-time angular memory")
+    fig, axes, ideal = _base_grid("Baseline finite-time angular memory")
     runs = {(m, c): _load_run(root, m, c) for m, _ in MODELS for c, _, _ in CONDITIONS}
     for row, (condition, _, color) in enumerate(CONDITIONS):
         for column, (model, _) in enumerate(MODELS):
@@ -294,6 +361,22 @@ def plot_memory(root: Path, destination: Path) -> None:
                 ax.set_xlabel(r"blank horizon $t/T$")
             if column == 0:
                 ax.set_ylabel("circular error (rad)")
+    ideal.plot((0.0, 8.0), (0.0, 0.0), color="#2f855a", linewidth=2.4)
+    ideal.text(
+        0.5,
+        0.92,
+        "zero angular drift\nfor every stored memory\nerror(t) = 0",
+        transform=ideal.transAxes,
+        ha="center",
+        va="top",
+        fontsize=8,
+        color="#22543d",
+    )
+    ideal.set_xlim(0.0, 8.0)
+    ideal.set_ylim(0.0, np.pi)
+    ideal.set_xlabel(r"blank horizon $t/T$")
+    ideal.set_ylabel("circular error (rad)")
+    ideal.grid(alpha=0.18)
     _save(fig, destination, "fig_baseline_memory_retention")
 
 
@@ -328,7 +411,7 @@ def _normal_series(data: Mapping[str, np.ndarray], radius: float) -> tuple[np.nd
 
 
 def plot_normal_recovery(root: Path, destination: Path) -> None:
-    fig, axes = _base_grid("Baseline finite normal-kick recovery")
+    fig, axes, ideal = _base_grid("Baseline finite normal-kick recovery")
     runs = {(m, c): _load_run(root, m, c) for m, _ in MODELS for c, _, _ in CONDITIONS}
     all_values: list[float] = []
     for run in runs.values():
@@ -374,11 +457,30 @@ def plot_normal_recovery(root: Path, destination: Path) -> None:
             if column == 0:
                 ax.set_ylabel(r"normal distance ratio $d_t/d_0$")
     axes[0, 0].legend(frameon=False, fontsize=8, loc="upper right")
+    ideal_ratio = np.power(1.0 + HORIZONS, -0.5)
+    ideal.plot(HORIZONS, ideal_ratio, color="#2f855a", linewidth=2.2, marker="o", markersize=3)
+    ideal.axhline(1.0, color="#718096", linestyle="--", linewidth=0.8)
+    ideal.text(
+        0.5,
+        0.92,
+        "monotone normal contraction\n$d_t/d_0 < 1$ for $t>0$\nrate is schematic",
+        transform=ideal.transAxes,
+        ha="center",
+        va="top",
+        fontsize=8,
+        color="#22543d",
+    )
+    ideal.set_xscale("symlog", linthresh=1.0)
+    ideal.set_yscale("log")
+    ideal.set_ylim(ymin, ymax)
+    ideal.set_xlabel("blank horizon")
+    ideal.set_ylabel(r"normal distance ratio $d_t/d_0$")
+    ideal.grid(alpha=0.18, which="both")
     _save(fig, destination, "fig_baseline_normal_recovery")
 
 
 def plot_basin_capacity(root: Path, destination: Path) -> None:
-    fig, axes = _base_grid("Baseline asymptotic basin topology")
+    fig, axes, ideal = _base_grid("Baseline asymptotic basin topology")
     runs = {(m, c): _load_run(root, m, c) for m, _ in MODELS for c, _, _ in CONDITIONS}
     max_basins = 1
     for run in runs.values():
@@ -411,6 +513,31 @@ def plot_basin_capacity(root: Path, destination: Path) -> None:
                 fontsize=7,
                 bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
             )
+    theta = np.linspace(0.0, 2.0 * np.pi, 256, endpoint=False)
+    ideal.scatter(
+        np.cos(theta),
+        np.sin(theta),
+        c=theta,
+        cmap="twilight",
+        s=9,
+        linewidths=0,
+    )
+    ideal.plot(np.cos(theta), np.sin(theta), color="#68d391", linewidth=1.2)
+    ideal.text(
+        0.5,
+        0.92,
+        "continuum of memory states\nno discrete basin partition\nfinite $K_{eff}$ not applicable",
+        transform=ideal.transAxes,
+        ha="center",
+        va="top",
+        fontsize=8,
+        color="#22543d",
+    )
+    ideal.set_xlim(-1.35, 1.35)
+    ideal.set_ylim(-1.35, 1.35)
+    ideal.set_aspect("equal", adjustable="box")
+    ideal.set_xticks([])
+    ideal.set_yticks([])
     _save(fig, destination, "fig_baseline_basin_capacity")
 
 
@@ -434,6 +561,14 @@ def main() -> int:
         "models": [label for _, label in MODELS],
         "conditions": [label for _, label, _ in CONDITIONS],
         "seed_scope": "seed00 exploratory pilot",
+        "ideal_reference": {
+            "role": "conceptual_schematic_not_measured_data",
+            "geometry": "continuous fixed-point ring with zero projected flow",
+            "jacobian": "one neutral tangent mode and contracting normal modes",
+            "memory": "zero circular drift",
+            "normal_recovery": "monotone contraction toward the manifold",
+            "basins": "continuous memory without discrete basin partition",
+        },
         "figures": sorted(path.name for path in destination.glob("fig_baseline_*.pdf")),
         "normal_recovery": {
             "family": "ambient_normal",
