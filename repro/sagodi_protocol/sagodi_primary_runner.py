@@ -155,6 +155,7 @@ class PrimaryAnalysisSpec:
     normal_recovery_horizons: tuple[int, ...] = NORMAL_RECOVERY_HORIZONS
     source_v6: bool = False
     core_only: bool = False
+    extended_diagnostics: bool = False
     smoke: bool = False
 
     def validate(self) -> None:
@@ -198,6 +199,11 @@ class PrimaryAnalysisSpec:
             != tuple(sorted(set(self.normal_recovery_horizons)))
         ):
             raise ValueError("normal recovery horizons must be increasing and start at zero")
+        if self.extended_diagnostics and not self.core_only:
+            raise ValueError(
+                "extended_diagnostics is reserved for the reduced core pilot; "
+                "the full analysis already includes these diagnostics"
+            )
         if self.core_only and not self.smoke:
             expected = {
                 "trajectory_count": 256,
@@ -240,6 +246,12 @@ def _structural_analysis_requested(
     """Keep task performance as a label, not a gate, for the core pilot."""
 
     return bool(eligible or spec.smoke or spec.core_only)
+
+
+def _extended_diagnostics_requested(spec: PrimaryAnalysisSpec) -> bool:
+    """Return whether topology, memory, and finite normal recovery are active."""
+
+    return bool(not spec.core_only or spec.extended_diagnostics)
 
 
 @dataclass(frozen=True)
@@ -2114,9 +2126,13 @@ def run_primary_analysis(
         "analysis_identity": identity,
         "analysis_role": "Ságodi_evaluation_tool_not_CA_LRU_method",
         "analysis_scope": (
-            "pilot_core_slow_manifold_timescale_gap_projected_drift"
-            if active_spec.core_only
-            else "full_sagodi_primary"
+            "pilot_extended_sagodi_topology_memory_plus_project_normal_recovery"
+            if active_spec.core_only and active_spec.extended_diagnostics
+            else (
+                "pilot_core_slow_manifold_timescale_gap_projected_drift"
+                if active_spec.core_only
+                else "full_sagodi_primary"
+            )
         ),
         "smoke": bool(active_spec.smoke),
         "checkpoint": {
@@ -2284,7 +2300,8 @@ def run_primary_analysis(
     }
 
     recovery_path: Path | None = None
-    if not active_spec.core_only:
+    extended_diagnostics = _extended_diagnostics_requested(active_spec)
+    if extended_diagnostics:
         normal_anchor_count = int(active_spec.normal_recovery_anchor_count)
         normal_horizons = tuple(active_spec.normal_recovery_horizons)
         if active_spec.smoke:
@@ -2423,7 +2440,7 @@ def run_primary_analysis(
                 projected.output, projected.projected_vector_field
             )
         topology = None
-        if not active_spec.core_only:
+        if extended_diagnostics:
             topology = cyclic_flow_reversal_topology(
                 reconstruction.spline_angle,
                 angular_flow,
@@ -2513,7 +2530,7 @@ def run_primary_analysis(
                 ),
             ),
         )
-    if active_spec.core_only:
+    if active_spec.core_only and not active_spec.extended_diagnostics:
         base_summary.update(
             {
                 "analysis_status": "complete_core_structural_analysis",
@@ -2622,9 +2639,14 @@ def run_primary_analysis(
     asymptotic_path = destination / "asymptotic_structure.npz"
     _atomic_npz(asymptotic_path, **asymptotic_arrays)
 
+    complete_status = (
+        "complete_extended_structural_analysis"
+        if active_spec.core_only
+        else "complete_structural_summary_eligible"
+    )
     base_summary.update(
         {
-            "analysis_status": "complete_structural_summary_eligible",
+            "analysis_status": complete_status,
             "projected_flow": flow_summary,
             "fixed_point_topology": topology_summary,
             "full_local_eigenspectrum": spectrum_summary,
@@ -2660,7 +2682,7 @@ def run_primary_analysis(
         ],
         metadata={
             "analysis_identity": identity,
-            "analysis_status": "complete_structural_summary_eligible",
+            "analysis_status": complete_status,
             "model_id": model.config.name,
             "checkpoint_sha256": sha256_file(checkpoint),
         },
@@ -2677,6 +2699,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--spectrum-chunk-size", type=int, default=DEFAULT_SPECTRUM_CHUNK_SIZE)
     parser.add_argument("--source-v6", action="store_true")
     parser.add_argument("--core-only", action="store_true")
+    parser.add_argument("--extended-diagnostics", action="store_true")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--trajectory-count", type=int)
     parser.add_argument("--spline-count", type=int)
@@ -2718,6 +2741,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         spectrum_chunk_size=args.spectrum_chunk_size,
         source_v6=bool(args.source_v6),
         core_only=bool(args.core_only),
+        extended_diagnostics=bool(args.extended_diagnostics),
         smoke=bool(args.smoke),
     )
     summary = run_primary_analysis(

@@ -24,9 +24,9 @@ DEFAULT_CONFIG = MODULE_DIR / "source_v6_primary_analysis.json"
 FREEZE_DOCUMENT = MODULE_DIR / "SOURCE_V6_PRIMARY_ANALYSIS_FREEZE_ko.md"
 PROTOCOL = MODULE_DIR / "analysis_protocol.yaml"
 CAMPAIGN_ID = "source_v6_primary_analysis"
-PROTOCOL_REVISION = "four_baselines_noise_free_vs_positive_noise_sagodi_core_pilot1_v3"
+PROTOCOL_REVISION = "four_baselines_noise_free_vs_positive_noise_sagodi_extended_pilot1_v4"
 ROOT_MARKER = ".source_v6_primary_analysis_root.json"
-CONFIG_CONTRACT_SHA256 = "10f0e721569ac7ea4db4a2dca64f21cb201ecacc8ff17492f910671bf30ccce0"
+CONFIG_CONTRACT_SHA256 = "e4d633dc23aa955e7cad88f438e34846e650846826de3b60f24e861705676e13"
 MODEL_IDS = (*baseline_v6.MODEL_IDS, "lru_n52")
 CONDITIONS = ("noise_free", "positive_state_noise_training")
 
@@ -49,7 +49,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
     ):
         raise ValueError("source-v6 analysis denominator differs")
     expected_analysis = {
-        "scope": "core_slow_manifold_timescale_separation_projected_drift",
+        "scope": "slow_manifold_timescale_drift_topology_memory_and_finite_normal_recovery",
         "trajectory_count": 256,
         "spline_count": 128,
         "task_horizon": 128,
@@ -57,9 +57,15 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         "slow_relative_speed": 0.001,
         "full_local_jacobian_eigenspectrum": True,
         "projected_flow": True,
-        "flow_reversal_fixed_point_topology": False,
-        "finite_time_and_asymptotic_memory": False,
-        "carrier_ambient_normal_recovery": False,
+        "flow_reversal_fixed_point_topology": True,
+        "flow_zero_tolerance": 0.0,
+        "finite_time_and_asymptotic_memory": True,
+        "carrier_ambient_normal_recovery": True,
+        "normal_recovery_seed": 314159,
+        "normal_recovery_anchor_count": 32,
+        "normal_recovery_ambient_directions_per_anchor": 4,
+        "normal_recovery_radii_over_manifold_scale": [0.01, 0.05, 0.1],
+        "normal_recovery_horizons": [0, 1, 4, 16, 64, 256, 1024, 4096],
         "analysis_state_noise_disabled": True,
         "eligibility_nmse_db_below": -20.0,
         "eligibility_policy": "label_only_analyze_all_checkpoints",
@@ -202,7 +208,7 @@ def _complete(spec: AnalysisSpec) -> bool:
     except (OSError, ValueError, TypeError, KeyError):
         return False
     valid, _ = verify_completion_receipt(output / "completion_receipt.json", expected_job_id=f"sagodi-primary-{spec.model_id}-{identity[:12]}", expected_metadata={"analysis_identity": identity})
-    return bool(valid and summary.get("analysis_status") in {"complete_core_structural_analysis", "structural_analysis_not_estimable"} and sha256_file(spec.checkpoint) == spec.checkpoint_sha256)
+    return bool(valid and summary.get("analysis_status") in {"complete_extended_structural_analysis", "structural_analysis_not_estimable"} and sha256_file(spec.checkpoint) == spec.checkpoint_sha256)
 
 
 def _run(
@@ -234,6 +240,7 @@ def _run(
                     "repro.sagodi_protocol.sagodi_primary_runner",
                     "--source-v6",
                     "--core-only",
+                    "--extended-diagnostics",
                     "--trajectory-count",
                     str(analysis["trajectory_count"]),
                     "--spline-count",
@@ -278,17 +285,45 @@ def _aggregate(specs: Sequence[AnalysisSpec]) -> dict[str, Any]:
     for spec in specs:
         summary = strict_json_load(Path(spec.output_dir) / "summary.json")
         row = {"run_id": spec.run_id, "model_id": spec.model_id, "condition": spec.condition, "seed": spec.model_seed, "analysis_status": summary["analysis_status"]}
-        if summary["analysis_status"] == "complete_core_structural_analysis":
+        if summary["analysis_status"] == "complete_extended_structural_analysis":
+            topology = summary["fixed_point_topology"]
+            asymptotic = summary["asymptotic_structure"]
+            recovery = summary["carrier_ambient_normal_recovery"]
+            final_recovery: dict[str, Any] = {}
+            for family in ("ambient_normal", "in_plane_radial"):
+                family_summary = recovery["metrics_by_family"][family]["by_radius"]
+                final_recovery[family] = {
+                    radius: {
+                        metric: values["by_horizon"]["4096"][metric]
+                        for metric in (
+                            "manifold_distance_ratio",
+                            "same_memory_error_radians",
+                            "excess_same_memory_error_radians",
+                        )
+                    }
+                    for radius, values in family_summary.items()
+                }
             row.update({
                 "task_performance_eligible": summary["structural_summary_eligibility"]["eligible"],
                 "uniform_flow_norm": summary["projected_flow"]["uniform_norm"],
                 "largest_real_part_mean": summary["full_local_eigenspectrum"]["largest_real_part"]["mean"],
                 "top_two_real_part_gap_mean": summary["full_local_eigenspectrum"]["top_two_real_part_gap"]["mean"],
+                "fixed_point_topology": {
+                    "kind": topology["kind"],
+                    "stable_count": topology["stable_count"],
+                    "saddle_count": topology["saddle_count"],
+                    "stable_angles": topology["stable_angles"],
+                    "saddle_angles": topology["saddle_angles"],
+                },
+                "finite_time_terminal_mean_error_radians": summary["finite_time_angular_memory"]["terminal_mean_error_radians"],
+                "finite_time_terminal_maximum_error_radians": summary["finite_time_angular_memory"]["terminal_maximum_error_radians"],
+                "asymptotic_structure": asymptotic,
+                "finite_normal_recovery_at_4096": final_recovery,
                 "manifold_reconstruction_qa": summary["manifold_reconstruction"]["qa"],
             })
         rows.append(row)
     statuses = (
-        "complete_core_structural_analysis",
+        "complete_extended_structural_analysis",
         "structural_analysis_not_estimable",
     )
     counts = {model: {condition: {status: sum(row["model_id"] == model and row["condition"] == condition and row["analysis_status"] == status for row in rows) for status in statuses} for condition in CONDITIONS} for model in MODEL_IDS}

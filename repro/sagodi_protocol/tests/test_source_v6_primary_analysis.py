@@ -20,7 +20,9 @@ def test_source_v6_core_campaign_freezes_eight_runs() -> None:
     assert config["expected_runs"] == 8
     assert config["analysis"]["trajectory_count"] == 256
     assert config["analysis"]["spline_count"] == 128
-    assert config["analysis"]["finite_time_and_asymptotic_memory"] is False
+    assert config["analysis"]["flow_reversal_fixed_point_topology"] is True
+    assert config["analysis"]["finite_time_and_asymptotic_memory"] is True
+    assert config["analysis"]["carrier_ambient_normal_recovery"] is True
     assert config["analysis"]["eligibility_policy"] == "label_only_analyze_all_checkpoints"
 
 
@@ -32,6 +34,7 @@ def test_source_v6_core_spec_requires_frozen_reduced_sizes() -> None:
         blank_horizon=2048,
         source_v6=True,
         core_only=True,
+        extended_diagnostics=True,
     )
     spec.validate()
     assert _structural_analysis_requested(eligible=False, spec=spec) is True
@@ -87,16 +90,18 @@ def test_source_v6_lru_checkpoint_runs_primary_smoke(tmp_path: Path) -> None:
             normal_recovery_horizons=(0, 1, 4),
             source_v6=True,
             core_only=True,
+            extended_diagnostics=True,
             smoke=True,
         ),
     )
     summary = strict_json_load(summary_path)
     assert summary["smoke"] is True
     assert summary["analysis_status"] in {
-        "complete_core_structural_analysis",
+        "complete_extended_structural_analysis",
         "structural_analysis_not_estimable",
     }
     assert summary["project_resolutions"]["source_v6_public_code_task"] is True
-    if summary["analysis_status"] == "complete_core_structural_analysis":
-        assert summary["fixed_point_topology"]["status"] == "omitted_from_pilot_core"
-        assert summary["finite_time_angular_memory"]["status"] == "omitted_from_pilot_core"
+    if summary["analysis_status"] == "complete_extended_structural_analysis":
+        assert "kind" in summary["fixed_point_topology"]
+        assert "terminal_mean_error_radians" in summary["finite_time_angular_memory"]
+        assert summary["carrier_ambient_normal_recovery"]["claim_gate"] is False
