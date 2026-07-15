@@ -1,7 +1,7 @@
 # Source-v6 baseline noise/no-noise Ságodi-primary 분석 동결
 
-RNN, GRU, LSTM, LRU의 main seeds 0--9를 noise-free와 strictly-positive
-state-noise-training 조건에서 모두 등록한다. 총 denominator는 80 checkpoint다.
+RNN, GRU, LSTM, LRU의 pilot main seeds 0--2를 noise-free와 strictly-positive
+state-noise-training 조건에서 모두 등록한다. 총 denominator는 24 checkpoint다.
 
 각 checkpoint에는 Ságodi-primary 분석만 적용한다.
 

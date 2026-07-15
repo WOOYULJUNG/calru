@@ -271,8 +271,9 @@ def test_plan_counts_and_fresh_seed_boundaries(tmp_path: Path) -> None:
     _populate_sentinel(sentinel)
     summary = summarize_sentinel(sentinel, config)
     fanout = build_fanout_plan(tmp_path, config, bank, summary)
-    assert len(fanout) == 96
-    assert {spec.model_seed for spec in fanout} == {101, 102, 103, 104}
+    assert len(fanout) == 24
+    assert {spec.model_seed for spec in fanout} == {101}
+    assert {spec.updates for spec in (*sentinel, *fanout)} == {2000}
     assert {spec.learning_rate for spec in fanout} == set(
         config["hyperparameter_tuning"]["learning_rate_grid"]
     )
@@ -281,8 +282,9 @@ def test_plan_counts_and_fresh_seed_boundaries(tmp_path: Path) -> None:
         _write_result(spec, 0.003 + index * 1e-5, -24.0 + index * 1e-3)
     selection = select_hyperparameters(sentinel, fanout, config)
     main = build_main_plan(tmp_path, config, bank, selection)
-    assert len(main) == 30
-    assert {spec.model_seed for spec in main} == set(range(10))
+    assert len(main) == 9
+    assert {spec.model_seed for spec in main} == set(range(3))
+    assert {spec.updates for spec in main} == {5000}
 
 
 def test_sentinel_and_fanout_never_select_missing_seed(tmp_path: Path) -> None:
@@ -317,7 +319,7 @@ def test_sentinel_and_fanout_never_select_missing_seed(tmp_path: Path) -> None:
             and spec.learning_rate == learning_rate
         )
         _write_result(target, 0.0, -100.0, status="failed")
-    with pytest.raises(RuntimeError, match="no complete five-seed"):
+    with pytest.raises(RuntimeError, match="no complete pilot-screen"):
         select_hyperparameters(sentinel, fanout, config)
 
 
@@ -325,7 +327,7 @@ def test_main_policy_reports_mse_but_gates_only_zero_eligible(tmp_path: Path) ->
     config = load_config()
     specs: list[RunSpec] = []
     for model_id in MODEL_IDS:
-        for seed in range(10):
+        for seed in range(3):
             spec = RunSpec(
                 run_id=f"{model_id}-{seed}",
                 stage="main",

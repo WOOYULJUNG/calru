@@ -56,12 +56,12 @@ FREEZE_DOCUMENT = MODULE_DIR / "STATE_NOISE_SEARCH_V1_FREEZE_ko.md"
 BASELINE_CONFIG = MODULE_DIR / "source_repaired_baselines_v6.json"
 DOWNSTREAM_CONFIG = MODULE_DIR / "source_repaired_lru_calru_v6.json"
 CAMPAIGN_ID = "sagodi_state_noise_search_v1"
-PROTOCOL_REVISION = "four_baseline_fixed_noise_free_lr_state_noise_only_v2"
+PROTOCOL_REVISION = "four_baseline_fixed_noise_free_lr_state_noise_only_pilot3_v3"
 TRACK_CLASSIFICATION = (
     "four_baseline_model_specific_training_state_noise_search_before_calru_tuning"
 )
 ROOT_MARKER = ".sagodi_state_noise_search_v1_root.json"
-CONFIG_CONTRACT_SHA256 = "1acde95f7dbb638343158c528f9d4d0318d5beaf0dcadefe9757effa0813bf84"
+CONFIG_CONTRACT_SHA256 = "5f59be730393cde736ec620a512a67138c7493411dcd245c5b18a3e032588f72"
 SOURCE_BASELINE_MODEL_IDS = tuple(baseline_v6.MODEL_IDS)
 LRU_MODEL_ID = "lru_n52"
 MODEL_IDS = (*SOURCE_BASELINE_MODEL_IDS, LRU_MODEL_ID)
@@ -123,7 +123,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         0.1,
     ]:
         raise ValueError("state-noise grid differs")
-    if search["tuning_seeds"] != [100, 101, 102, 103, 104]:
+    if search["tuning_seeds"] != [100, 101] or search["screening_updates"] != 2000:
         raise ValueError("state-noise tuning seeds differ")
     if search["all_noise_values_all_seeds"] is not True:
         raise ValueError("state-noise search cannot prune using one seed")
@@ -136,7 +136,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         is not True
     ):
         raise ValueError("noise/no-noise comparison contract differs")
-    if payload["main"]["seeds"] != list(range(10)):
+    if payload["main"]["seeds"] != list(range(3)):
         raise ValueError("state-noise main seeds differ")
     return payload
 
@@ -206,7 +206,7 @@ def _selection_binding(baseline_root: Path, downstream_root: Path) -> dict[str, 
     baseline_root = baseline_root.expanduser().resolve()
     downstream_root = downstream_root.expanduser().resolve()
     baseline_v6.require_verified_main(baseline_root)
-    downstream_v6._require_stage(downstream_root, "lru_main", 10)
+    downstream_v6._require_stage(downstream_root, "lru_main", 3)
 
     baseline_selection_path = baseline_root / "fanout" / "hyperparameter_selection.json"
     lru_selection_path = downstream_root / "lru_fanout" / "selection.json"
@@ -404,7 +404,7 @@ def build_tuning_plan(
             "tuning",
             int(seed),
             float(noise),
-            int(training["updates"]),
+            int(search["screening_updates"]),
             int(training["batch_size"]),
             bank,
         )
@@ -565,7 +565,8 @@ def summarize_main(specs: Sequence[RunSpec], config: Mapping[str, Any]) -> dict[
     models: dict[str, Any] = {}
     for model_id in MODEL_IDS:
         rows = [spec for spec in specs if spec.model_id == model_id]
-        if len(rows) != 10 or {spec.model_seed for spec in rows} != set(range(10)):
+        expected_seeds = set(map(int, config["main"]["seeds"]))
+        if len(rows) != len(expected_seeds) or {spec.model_seed for spec in rows} != expected_seeds:
             raise RuntimeError(f"main denominator differs for {model_id}")
         per_seed = []
         for spec in sorted(rows, key=lambda row: row.model_seed):

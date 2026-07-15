@@ -30,15 +30,16 @@ python -m repro.sagodi_protocol.source_repaired_baselines_v6 \
   --stage main --artifact-root /path/to/baseline_v6 --gpus 0,1,2
 ```
 
-sentinel은 seed 100의 24 runs, fanout은 single-seed pruning 없이 모든 LR ×
-seeds 101--104의 96 runs, main은 fresh seeds 0--9의 30 runs다. main 10개를 모두 보고하며
+sentinel은 seed 100의 24 runs, fanout은 모든 LR × seed 101의 24 runs다.
+두 LR-screen 단계는 2,000 updates이며, main은 선택 LR을 fresh seeds 0--2에서
+5,000 updates로 학습한 9 runs다. main 3개를 모두 보고하며
 `MSE < 0.01`은 descriptive yield, `NMSE < -20 dB`는 seed별 analysis
 eligibility다. 모델별 eligible seed가 0개일 때만 scientific gate가 실패하고,
-1--2개면 low-n warning과 함께 eligible subset만 분석한다.
+1개면 low-n warning과 함께 eligible subset만 분석한다.
 `COMPUTATION_COMPLETE`와 `SCIENTIFIC_PASS`는 별개다. 세부 freeze는
 `SAGODI_SOURCE_REPAIRED_BASELINES_V6_FREEZE_ko.md`를 따른다.
 
-다음 단계는 같은 T128/B64/5k/fixed-bank/common-noise 조건에서 **LRU의 LR을 독립적으로**
+다음 단계는 같은 T128/B64/fixed-bank/common-noise 조건에서 **LRU의 LR을 독립적으로**
 선택하는 것이다. LRU에 NMSE < -20 dB eligible seed가
 하나 이상 생긴 뒤에만 No-RP/CA-LRU pair를 시작한다. CA-LRU는 No-RP의
 LR과 공통 noise를 상속하고 RP만 별도로 고른다. 이 의존성은
@@ -47,7 +48,8 @@ LR과 공통 noise를 상속하고 RP만 별도로 고른다. 이 의존성은
 Downstream smoke의 CA run은 2 updates라 RP call이 0회이며, full-stage용
 4,096-step blank metric은 생략한다. RP API는 별도의 reduced-horizon 단위
 테스트가 직접 검증하고 full CA stage의 RP/blank 계산은 그대로 유지한다.
-LRU와 No-RP는 각각 sentinel 8 + fanout 32 + main 10 runs다.
+LRU와 No-RP는 각각 sentinel 8 + fanout 8의 2,000-update screen과 main 3개의
+5,000-update runs다.
 
 ```bash
 python -m repro.sagodi_protocol.source_repaired_lru_calru_v6 \
@@ -69,9 +71,9 @@ repro/sagodi_protocol/run_source_repaired_v6_pipeline.sh \
 ## Follow-up: model-specific state-noise search v1
 
 Noise-free parent에서 선택된 RNN, GRU, LSTM, LRU의 모델별 LR을 고정하고, training
-state-noise std `[0,0.003,0.01,0.0316228,0.1]`만 seeds 100--104 모두에서
+state-noise std `[0,0.003,0.01,0.0316228,0.1]`만 seeds 100,101에서 2,000 updates로
 탐색한다. Target noise와 dropout은 모든 모델에서 0이고 evaluation도 clean이다.
-Tuning 100 runs 뒤 선택된 std로 fresh main 40 runs를 실행한다. No-RP와 CA-LRU는
+Tuning 40 runs 뒤 선택된 std로 fresh seeds 0--2의 5,000-update main 12 runs를 실행한다. No-RP와 CA-LRU는
 이 단계에서 제외하고, LRU LR 고정 CA-LRU 전용 hyperparameter campaign에서 다룬다.
 
 ```bash
@@ -92,7 +94,7 @@ repro/sagodi_protocol/run_lru_then_baseline_noise_v1.sh \
 
 세부 해석과 재현 계약은 `STATE_NOISE_SEARCH_V1_FREEZE_ko.md`를 따른다.
 
-네 baseline의 noise-free/positive-noise main이 완료되면 80 checkpoint를
+네 baseline의 noise-free/positive-noise main이 완료되면 24 checkpoint를
 Ságodi-primary analyzer에 등록한다. NMSE-ineligible seed도 denominator에 남으며,
 eligible seed에서만 full structural analysis를 실행한다.
 
@@ -103,6 +105,8 @@ repro/sagodi_protocol/run_source_v6_primary_analysis.sh \
 ```
 
 세부 항목은 `SOURCE_V6_PRIMARY_ANALYSIS_FREEZE_ko.md`를 따른다.
+Pilot seed/update 축소 근거와 확증 실험으로의 승격 조건은
+`PILOT3_BUDGET_RATIONALE_ko.md`에 기록한다.
 
 ## Follow-up: CA-LRU RP-only search and 2×2 factorial v1
 

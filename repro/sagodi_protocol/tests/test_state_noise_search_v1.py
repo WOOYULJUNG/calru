@@ -80,12 +80,13 @@ def test_config_and_plan_denominators_are_frozen(tmp_path: Path) -> None:
     smoke = build_smoke_plan(tmp_path, config, parent, tmp_path / "tuning.npz")
     tuning = build_tuning_plan(tmp_path, config, parent, tmp_path / "tuning.npz")
     assert len(smoke) == 4
-    assert len(tuning) == 100
+    assert len(tuning) == 40
+    assert {spec.updates for spec in tuning} == {2000}
     assert all(spec.learning_rate == parent["selected_hyperparameters"][spec.model_id]["learning_rate"] for spec in tuning)
     for model_id in MODEL_IDS:
         rows = [spec for spec in tuning if spec.model_id == model_id]
-        assert len(rows) == 25
-        assert {spec.model_seed for spec in rows} == {100, 101, 102, 103, 104}
+        assert len(rows) == 10
+        assert {spec.model_seed for spec in rows} == {100, 101}
         assert {spec.actual_state_noise_std for spec in rows} == {
             0.0,
             0.003,
@@ -95,7 +96,7 @@ def test_config_and_plan_denominators_are_frozen(tmp_path: Path) -> None:
         }
 
 
-def test_selection_uses_all_five_seeds_and_main_is_fresh(tmp_path: Path) -> None:
+def test_selection_uses_two_screening_seeds_and_main_is_fresh(tmp_path: Path) -> None:
     config, parent = load_config(), _parent()
     tuning = build_tuning_plan(tmp_path, config, parent, tmp_path / "tuning.npz")
     for spec in tuning:
@@ -109,8 +110,9 @@ def test_selection_uses_all_five_seeds_and_main_is_fresh(tmp_path: Path) -> None
     main = build_main_plan(
         tmp_path, config, parent, tmp_path / "main_test.npz", selection
     )
-    assert len(main) == 40
-    assert {spec.model_seed for spec in main} == set(range(10))
+    assert len(main) == 12
+    assert {spec.model_seed for spec in main} == set(range(3))
+    assert {spec.updates for spec in main} == {5000}
     assert {spec.actual_state_noise_std for spec in main} == {0.01}
 
     victim = next(
@@ -118,7 +120,7 @@ def test_selection_uses_all_five_seeds_and_main_is_fresh(tmp_path: Path) -> None
         for spec in tuning
         if spec.model_id == MODEL_IDS[0]
         and spec.actual_state_noise_std == 0.01
-        and spec.model_seed == 104
+        and spec.model_seed == 101
     )
     _write_result(victim, 0.0, -100.0, status="failed")
     changed = select_state_noise(tuning, config, parent)

@@ -8,10 +8,10 @@ repairs, not exact*, never as an exact reproduction of either the paper prose
 or its broken and mutually inconsistent public runners.
 
 Stages are ``smoke -> sentinel -> fanout -> main``.  Every model uses the same
-actual post-transition per-coordinate state-noise standard deviation. Sentinel
-evaluates all eight learning rates with seed 100 and fanout evaluates all eight
-rates with seeds 101--104; no candidate is pruned using one seed. Main uses
-fresh seeds 0--9. All models use clean q1 initialization and clean loss targets;
+actual post-transition per-coordinate state-noise standard deviation. The pilot
+screens all eight learning rates for 2,000 updates with seeds 100 and 101, then
+trains the selected setting for 5,000 updates on fresh seeds 0--2. All models use
+clean q1 initialization and clean loss targets;
 the public GRU/LSTM target-noise value is provenance only. Computation
 completeness and scientific success are separate.
 """
@@ -65,14 +65,14 @@ DEFAULT_CONFIG = MODULE_DIR / "source_repaired_baselines_v6.json"
 FREEZE_DOCUMENT = MODULE_DIR / "SAGODI_SOURCE_REPAIRED_BASELINES_V6_FREEZE_ko.md"
 CAMPAIGN_ID = "sagodi_source_repaired_baselines_v6"
 PROTOCOL_REVISION = (
-    "public_code_architecture_noise_free_controlled_training_lr_only_v5"
+    "public_code_architecture_noise_free_controlled_training_lr_only_pilot3_v6"
 )
 TRACK_CLASSIFICATION = (
     "public_code_architecture_noise_free_controlled_training_with_paper_and_code_noise_"
     "provenance_and_documented_repairs_not_exact"
 )
 ROOT_MARKER = ".sagodi_source_repaired_baselines_v6_root.json"
-CONFIG_CONTRACT_SHA256 = "67588e2ab4e00acfc4e064123aa55e512e83acf2f202ada2715ef2ee027cd3a7"
+CONFIG_CONTRACT_SHA256 = "b10dcb5d14a2c9918edfbdf2b3ed5d5e1d90574cadefaf80fcf8087da5e450ad"
 MODEL_IDS = (
     "sagodi_rnn_tanh_n128",
     "sagodi_gru_n128",
@@ -246,17 +246,18 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         raise ValueError("v6 LR grid differs")
     if (
         tuning.get("sentinel_seed") != 100
-        or tuning.get("fanout_seeds") != [101, 102, 103, 104]
+        or tuning.get("fanout_seeds") != [101]
+        or tuning.get("screening_updates") != 2000
         or tuning.get("fanout_all_learning_rates") is not True
     ):
         raise ValueError("v6 tuning seed/fanout contract differs")
     if payload.get("main") != {
-        "seeds": list(range(10)),
+        "seeds": list(range(3)),
         "fresh_from_tuning": True,
         "mse_threshold_role": "descriptive_success_yield_only",
         "analysis_eligibility_rule": "per_seed_nmse_db_below_minus20",
         "scientific_pass_minimum_eligible_per_model": 1,
-        "low_eligible_count_warning_below": 3,
+        "low_eligible_count_warning_below": 2,
     }:
         raise ValueError("v6 main contract differs")
     return payload
@@ -764,7 +765,7 @@ def build_sentinel_plan(root: Path, config: Mapping[str, Any], bank: Path) -> tu
                     model_seed=int(tuning["sentinel_seed"]),
                     learning_rate=float(lr),
                     actual_state_noise_std=noise,
-                    updates=int(config["training"]["updates"]),
+                    updates=int(tuning["screening_updates"]),
                     batch_size=int(config["training"]["batch_size"]),
                     evaluation_bank=str(bank),
                     output_dir=str(root / "sentinel" / "runs" / run_id),
@@ -856,6 +857,7 @@ def build_fanout_plan(
     sentinel_summary: Mapping[str, Any],
 ) -> tuple[RunSpec, ...]:
     specs: list[RunSpec] = []
+    tuning = config["hyperparameter_tuning"]
     noise = _common_state_noise(config)
     for model_id in MODEL_IDS:
         rows = sentinel_summary["models"][model_id]["all_ranked_learning_rates"]
@@ -876,7 +878,7 @@ def build_fanout_plan(
                         model_seed=int(seed),
                         learning_rate=lr,
                         actual_state_noise_std=noise,
-                        updates=int(config["training"]["updates"]),
+                        updates=int(tuning["screening_updates"]),
                         batch_size=int(config["training"]["batch_size"]),
                         evaluation_bank=str(bank),
                         output_dir=str(root / "fanout" / "runs" / run_id),
@@ -890,12 +892,13 @@ def select_hyperparameters(
     fanout_specs: Sequence[RunSpec],
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Select one LR/model after evaluating every LR on all five seeds."""
+    """Select one LR/model after a short two-seed pilot screen."""
 
     tuning = config["hyperparameter_tuning"]
     mse_threshold = float(tuning["success_mse_threshold"])
     nmse_threshold = float(tuning["analysis_nmse_db_threshold"])
     expected_seeds = {int(tuning["sentinel_seed"]), *map(int, tuning["fanout_seeds"])}
+    expected_count = len(expected_seeds)
     models: dict[str, Any] = {}
     for model_id in MODEL_IDS:
         fanout_model = [spec for spec in fanout_specs if spec.model_id == model_id]
@@ -916,10 +919,10 @@ def select_hyperparameters(
             ]
             if (
                 {spec.model_seed for spec in specs} != expected_seeds
-                or len(specs) != 5
+                or len(specs) != expected_count
                 or {spec.actual_state_noise_std for spec in specs} != {noise}
             ):
-                raise ValueError(f"five-seed denominator differs for {model_id}/{lr}")
+                raise ValueError(f"pilot-screen denominator differs for {model_id}/{lr}")
             mses = [_metric(spec, "mse") for spec in specs]
             nmses = [_metric(spec, "nmse_db") for spec in specs]
             finite_mses = [value for value in mses if value is not None]
@@ -929,9 +932,9 @@ def select_hyperparameters(
                 {
                     "learning_rate": lr,
                     "actual_state_noise_std": noise,
-                    "registered_seed_count": 5,
+                    "registered_seed_count": expected_count,
                     "completed_seed_count": len(finite_mses),
-                    "failed_seed_count": 5 - len(finite_mses),
+                    "failed_seed_count": expected_count - len(finite_mses),
                     "mse_success_count": sum(
                         value is not None and value < mse_threshold for value in mses
                     ),
@@ -939,10 +942,10 @@ def select_hyperparameters(
                         value is not None and value < nmse_threshold for value in nmses
                     ),
                     "median_mse": (
-                        float(np.median(finite_mses)) if len(finite_mses) == 5 else None
+                        float(np.median(finite_mses)) if len(finite_mses) == expected_count else None
                     ),
                     "mean_mse": (
-                        float(np.mean(finite_mses)) if len(finite_mses) == 5 else None
+                        float(np.mean(finite_mses)) if len(finite_mses) == expected_count else None
                     ),
                     "per_seed": [
                         {
@@ -966,15 +969,15 @@ def select_hyperparameters(
                 row["grid_order"],
             )
         )
-        eligible = [row for row in rows if row["completed_seed_count"] == 5]
+        eligible = [row for row in rows if row["completed_seed_count"] == expected_count]
         if not eligible:
-            raise RuntimeError(f"no complete five-seed tuning cell for {model_id}")
+            raise RuntimeError(f"no complete pilot-screen tuning cell for {model_id}")
         models[model_id] = {"winner": eligible[0], "ranked_learning_rates": rows}
     return {
         "schema_version": 1,
         "campaign_id": CAMPAIGN_ID,
         "selection_rule": tuning["selection_rule"],
-        "registered_denominator_per_learning_rate": 5,
+        "registered_denominator_per_learning_rate": expected_count,
         "all_learning_rates_fanned_out": True,
         "failures_remain_in_denominator": True,
         "models": models,
@@ -1018,10 +1021,12 @@ def summarize_main(specs: Sequence[RunSpec], config: Mapping[str, Any]) -> dict[
     mse_threshold = float(tuning["success_mse_threshold"])
     nmse_threshold = float(tuning["analysis_nmse_db_threshold"])
     eligible_minimum = int(main["scientific_pass_minimum_eligible_per_model"])
+    expected_seeds = set(map(int, main["seeds"]))
+    expected_count = len(expected_seeds)
     models: dict[str, Any] = {}
     for model_id in MODEL_IDS:
         selected = [spec for spec in specs if spec.model_id == model_id]
-        if len(selected) != 10 or {spec.model_seed for spec in selected} != set(range(10)):
+        if len(selected) != expected_count or {spec.model_seed for spec in selected} != expected_seeds:
             raise ValueError(f"main denominator differs for {model_id}")
         rows = []
         for spec in sorted(selected, key=lambda item: item.model_seed):
@@ -1040,13 +1045,13 @@ def summarize_main(specs: Sequence[RunSpec], config: Mapping[str, Any]) -> dict[
         mse_count = sum(row["mse_pass"] for row in rows)
         nmse_count = sum(row["nmse_pass"] for row in rows)
         models[model_id] = {
-            "registered_seed_count": 10,
+            "registered_seed_count": expected_count,
             "failed_seed_count": sum(row["status"] != "completed" for row in rows),
             "mse_success_count": mse_count,
             "nmse_success_count": nmse_count,
-            "mse_success_rate": mse_count / 10.0,
+            "mse_success_rate": mse_count / float(expected_count),
             "analysis_eligible_count": nmse_count,
-            "analysis_eligible_rate": nmse_count / 10.0,
+            "analysis_eligible_rate": nmse_count / float(expected_count),
             "analysis_gate_pass": nmse_count >= eligible_minimum,
             "low_eligible_count_warning": nmse_count < int(
                 main["low_eligible_count_warning_below"]
@@ -2020,7 +2025,7 @@ def _stage_valid(stage_root: Path, stage: str, expected_runs: int) -> bool:
 def require_scientific_pass(artifact_root: Path | str) -> Path:
     root = Path(artifact_root).expanduser().resolve()
     main_root = root / "main"
-    if not _stage_valid(main_root, "main", len(MODEL_IDS) * 10):
+    if not _stage_valid(main_root, "main", len(MODEL_IDS) * 3):
         raise RuntimeError("v6 main computation/receipt chain is not valid")
     gate_path = main_root / "scientific_gate.json"
     gate = strict_json_load(gate_path)
@@ -2035,7 +2040,7 @@ def require_verified_main(artifact_root: Path | str) -> Path:
 
     root = Path(artifact_root).expanduser().resolve()
     main_root = root / "main"
-    if not _stage_valid(main_root, "main", len(MODEL_IDS) * 10):
+    if not _stage_valid(main_root, "main", len(MODEL_IDS) * 3):
         raise RuntimeError("v6 baseline main computation/receipt chain is not valid")
     return main_root / "COMPUTATION_COMPLETE"
 

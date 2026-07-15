@@ -11,7 +11,8 @@ RNN/GRU/LSTM 중 zero-eligible 모델이 있어도 LRU 실험은 계속한다.
 - T128 variable-sparsity, source q1 post-update initial memory를 그대로 쓴다.
 - online batch key는 새 campaign 이름이 아니라
   `(sagodi_source_repaired_baselines_v6, online_train, seed, update)`다.
-- 학습은 Adam/B64/5,000/WD0/constant LR이며 학습과 평가 state noise는 0이다.
+- 학습은 Adam/B64/WD0/constant LR이며 학습과 평가 state noise는 0이다.
+  Pilot LR screen은 2,000 updates, 선택된 main은 5,000 updates다.
 - state noise, target noise, output dropout은 세 downstream 모델 모두 0이다.
   관련 RNG stream은 disabled, seed null이며 generator draw가 없다. LRU의 causal
   carrier는 104차 Re/Im, No-RP/CA는 52차 real이라는 차이는 provenance로만 기록한다.
@@ -22,13 +23,14 @@ RNN/GRU/LSTM 중 zero-eligible 모델이 있어도 LRU 실험은 계속한다.
 
 ## 강제 순서
 
-1. LRU: 8-LR sentinel(seed100) → 모든 LR × seeds101--104 → fresh main 0--9.
+1. LRU: 8-LR sentinel(seed100) → 모든 LR × seed101을 각각 2,000 updates로
+   screen → 선택 LR의 5,000-update fresh main seeds 0--2.
 2. LRU main에서 NMSE < -20 dB seed가 하나 이상일 때만 No-RP를 시작한다.
 3. No-RP: 같은 8-LR/fanout/main 절차로 LR을 독립 선택한다.
 4. CA-LRU는 No-RP main의 **verified computation** 뒤 시작한다. No-RP가
    zero-eligible여도 RP가 eligibility를 만들 수 있으므로 CA를 막지 않는다.
 5. CA-LRU는 No-RP LR과 전역 common noise를 그대로 상속한다. RP 3 eta × 3 epsilon을
-   sentinel/fanout으로 선택하고 fresh main 0--9를 실행한다.
+   sentinel/fanout으로 선택하고 fresh main 0--2를 실행한다.
 
 LR 및 RP 선택은 NMSE<-20 eligible count를 먼저 최대화하고,
 MSE<.01 descriptive count, MSE/blank-memory metric, frozen grid order 순으로

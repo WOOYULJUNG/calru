@@ -26,7 +26,8 @@ LRU나 CA-LRU 결과를 섞어 보고하지 않는다.
 
 공통 task는 T=128, dt=0.1, trajectory별 sparsity `U(0,2)`, random q0,
 post-update q1 target으로 초기 state를 만드는 공개 코드 규약이다. 학습은
-online batch 64, Adam, constant LR, early stopping 없음, 5,000 updates이다.
+online batch 64, Adam, constant LR, early stopping 없음이다. Pilot LR screen은
+2,000 updates, 선택된 main만 5,000 updates를 사용한다.
 
 | 모델 | 공개 경로 | v6 controlled adaptation |
 |---|---|---|
@@ -97,9 +98,9 @@ GRU/LSTM 공개 실행 경로에는 대응하는 nominal state-noise 설정/API�
 1. `smoke`: 모델당 2 updates CPU/GPU 실행 검증.
 2. `sentinel`: seed 100에서 LR
    `[3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5]`, 총 24 runs.
-3. `fanout`: single-seed pruning 없이 모든 LR을 seeds 101--104로 확장,
-   총 96 runs. 각 LR은 정확히 5 seeds로 선택된다.
-4. `main`: 선택된 cell을 fresh seeds 0--9로 총 30 runs.
+3. `fanout`: 모든 LR을 seed 101로 한 번 더 확인한다. Sentinel과 fanout은
+   모두 2,000 updates이며 fanout은 총 24 runs다. 각 LR은 정확히 2 seeds로 선택된다.
+4. `main`: 선택된 cell을 5,000 updates, fresh seeds 0--2로 총 9 runs.
 
 Tuning bank와 main bank는 서로 다르며, 모든 모델/cell은 같은 seed와
 update에서 동일한 online batch를 공유한다. 실패나 누락을 분모에서
@@ -108,7 +109,7 @@ scientific seed failure로 합성하지 않고 retryable 상태로 둔다.
 
 LR grid는 공개/논문 rate `1e-4`, `1e-5`, 과거 LSTM lower-bound 징후, LRU의
 upper-bound 탐색 `0.03`을 모두 포함한 union이다. 모든 모델에 동일한 8-LR grid와
-5-seed 선택 예산을 적용한다.
+2-seed/2,000-update pilot 선택 예산을 적용한다.
 
 각 run manifest/checkpoint는 optimizer step 전 named tensor의 canonical
 `initial_state_dict_sha256`과 online data, target-noise, state-noise, dropout 및
@@ -117,9 +118,9 @@ clean-q1/clean-loss로 기록한다.
 
 ## 보고 및 gate
 
-모든 main seed 10개를 보고한다. MSE < 0.01은 success count/rate로만
+모든 pilot main seed 3개를 보고한다. MSE < 0.01은 success count/rate로만
 기술한다. 분석 eligibility는 seed별 NMSE < -20 dB이다. 모델마다 eligible
-seed가 하나도 없을 때만 scientific gate가 실패한다. 1--2개뿐이면 pass와
+seed가 하나도 없을 때만 scientific gate가 실패한다. 1개뿐이면 pass와
 동시에 low-n warning을 남기며, 후속 동역학 분석은 eligible subset에만
 적용한다. `COMPUTATION_COMPLETE`는 `SCIENTIFIC_PASS`가 아니다.
 

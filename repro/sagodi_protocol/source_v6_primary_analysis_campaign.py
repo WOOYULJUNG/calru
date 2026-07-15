@@ -24,9 +24,9 @@ DEFAULT_CONFIG = MODULE_DIR / "source_v6_primary_analysis.json"
 FREEZE_DOCUMENT = MODULE_DIR / "SOURCE_V6_PRIMARY_ANALYSIS_FREEZE_ko.md"
 PROTOCOL = MODULE_DIR / "analysis_protocol.yaml"
 CAMPAIGN_ID = "source_v6_primary_analysis"
-PROTOCOL_REVISION = "four_baselines_noise_free_vs_positive_noise_sagodi_primary_v1"
+PROTOCOL_REVISION = "four_baselines_noise_free_vs_positive_noise_sagodi_primary_pilot3_v2"
 ROOT_MARKER = ".source_v6_primary_analysis_root.json"
-CONFIG_CONTRACT_SHA256 = "918b90db98d8d51006e638cce6ea9c69dda7a8a824ca24becd24f5837a4c0766"
+CONFIG_CONTRACT_SHA256 = "c1ff90844f242eed06ed52732cdd221228a31dc28514f7564d94983ed2d245d6"
 MODEL_IDS = (*baseline_v6.MODEL_IDS, "lru_n52")
 CONDITIONS = ("noise_free", "positive_state_noise_training")
 
@@ -41,7 +41,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         raise ValueError("source-v6 analysis config differs")
     if payload.get("campaign_id") != CAMPAIGN_ID or payload.get("protocol_revision") != PROTOCOL_REVISION:
         raise ValueError("source-v6 analysis identity differs")
-    if payload["models"] != list(MODEL_IDS) or payload["conditions"] != list(CONDITIONS) or payload["seeds"] != list(range(10)) or payload["expected_runs"] != 80:
+    if payload["models"] != list(MODEL_IDS) or payload["conditions"] != list(CONDITIONS) or payload["seeds"] != list(range(3)) or payload["expected_runs"] != 24:
         raise ValueError("source-v6 analysis denominator differs")
     return payload
 
@@ -96,8 +96,8 @@ def _checkpoint_binding(row: Mapping[str, Any]) -> tuple[Path, str, str]:
 
 def build_plan(root: Path, baseline_root: Path, lru_root: Path, noise_root: Path) -> tuple[AnalysisSpec, ...]:
     baseline_v6.require_verified_main(baseline_root)
-    lru_v6._require_stage(lru_root, "lru_main", 10)
-    if not noise_v1._stage_valid(noise_root, "main", 40):
+    lru_v6._require_stage(lru_root, "lru_main", 3)
+    if not noise_v1._stage_valid(noise_root, "main", 12):
         raise RuntimeError("verified positive-noise main is required")
     source_rows = _plan_rows(baseline_root / "main" / "plan.json")
     lru_rows = _plan_rows(lru_root / "lru_main" / "plan.json")
@@ -107,14 +107,14 @@ def build_plan(root: Path, baseline_root: Path, lru_root: Path, noise_root: Path
         indexed[(str(row["model_id"]), "noise_free", int(row["model_seed"]))] = row
     for row in noise_rows:
         indexed[(str(row["model_id"]), "positive_state_noise_training", int(row["model_seed"]))] = row
-    expected = {(model, condition, seed) for model in MODEL_IDS for condition in CONDITIONS for seed in range(10)}
+    expected = {(model, condition, seed) for model in MODEL_IDS for condition in CONDITIONS for seed in range(3)}
     if set(indexed) != expected:
         missing, extra = sorted(expected - set(indexed)), sorted(set(indexed) - expected)
         raise RuntimeError(f"analysis checkpoint matrix differs; missing={missing[:3]}, extra={extra[:3]}")
     specs = []
     for model in MODEL_IDS:
         for condition in CONDITIONS:
-            for seed in range(10):
+            for seed in range(3):
                 checkpoint, checkpoint_sha, receipt_sha = _checkpoint_binding(indexed[(model, condition, seed)])
                 run_id = f"{model}__{condition}__seed{seed:02d}"
                 specs.append(AnalysisSpec(run_id, model, condition, seed, str(checkpoint), checkpoint_sha, receipt_sha, str(root / "runs" / run_id)))
@@ -228,8 +228,8 @@ def run_campaign(root: Path, baseline_root: Path, lru_root: Path, noise_root: Pa
         raise RuntimeError("source-v6 analysis did not complete all registered outcomes")
     summary = root / "summary.json"
     atomic_json(summary, _aggregate(specs))
-    atomic_json(root / "COMPLETE", {"schema_version": 1, "registered_run_count": 80, "completed_at_utc": _utc_now()})
-    write_completion_receipt(root / "completion_receipt.json", job_id=f"{CAMPAIGN_ID}__complete", artifacts=[root / "plan.json", summary, root / "COMPLETE", *[Path(spec.output_dir) / "completion_receipt.json" for spec in specs]], metadata={"campaign_id": CAMPAIGN_ID, "run_count": 80})
+    atomic_json(root / "COMPLETE", {"schema_version": 1, "registered_run_count": 24, "completed_at_utc": _utc_now()})
+    write_completion_receipt(root / "completion_receipt.json", job_id=f"{CAMPAIGN_ID}__complete", artifacts=[root / "plan.json", summary, root / "COMPLETE", *[Path(spec.output_dir) / "completion_receipt.json" for spec in specs]], metadata={"campaign_id": CAMPAIGN_ID, "run_count": 24})
     return summary
 
 

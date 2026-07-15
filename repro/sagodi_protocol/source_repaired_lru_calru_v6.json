@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "campaign_id": "sagodi_source_repaired_lru_calru_v6",
-  "protocol_revision": "baseline_bound_noise_free_controlled_training_lr_only_v5",
+  "protocol_revision": "baseline_bound_noise_free_controlled_training_lr_only_pilot3_v6",
   "track_classification": "baseline_bound_noise_free_controlled_training_with_paper_and_code_noise_provenance",
   "baseline_parent_campaign": "sagodi_source_repaired_baselines_v6",
   "task_and_data_contract": {
@@ -37,18 +37,19 @@
     "training_target_semantics": "clean_cos_sin_target_for_initial_q1_and_loss"
   },
   "learning_rate_tuning": {
+    "screening_updates": 2000,
     "learning_rate_grid": [0.03, 0.01, 0.003, 0.001, 0.0003, 0.0001, 0.00003, 0.00001],
     "sentinel_seed": 100,
-    "fanout_seeds": [101, 102, 103, 104],
+    "fanout_seeds": [101],
     "fanout_all_learning_rates": true,
-    "selection_rule": "all_learning_rates_five_seed_max_nmse_eligible_count_then_max_descriptive_mse_success_count_then_min_median_mse_then_min_mean_mse_then_grid_order"
+    "selection_rule": "all_learning_rates_two_seed_2000_update_max_nmse_eligible_count_then_max_descriptive_mse_success_count_then_min_median_mse_then_min_mean_mse_then_grid_order"
   },
   "main": {
-    "seeds": [0,1,2,3,4,5,6,7,8,9],
+    "seeds": [0,1,2],
     "mse_success_threshold": 0.01,
     "analysis_eligibility_nmse_db_threshold": -20.0,
     "scientific_pass_minimum_eligible_per_model": 1,
-    "low_eligible_count_warning_below": 3
+    "low_eligible_count_warning_below": 2
   },
   "dependencies": {
     "lru_sentinel_requires": "verified_baseline_main_computation_with_per_model_eligibility_report",
@@ -76,7 +77,7 @@
     "eta_lambda_grid": [300.0, 1000.0, 3000.0],
     "damage_epsilon_grid": [0.00001, 0.00003, 0.0001],
     "sentinel_seed": 100,
-    "fanout_seeds": [101,102,103,104],
+    "fanout_seeds": [101,102],
     "top_k": 3,
     "selection_blank_horizon": 4096,
     "selection_rule": "max_nmse_eligible_count_then_max_descriptive_mse_success_count_then_min_mean_blank_memory_mse_then_min_mean_mse_then_grid_order"

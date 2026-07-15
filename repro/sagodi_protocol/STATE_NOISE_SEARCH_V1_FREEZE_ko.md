@@ -11,16 +11,16 @@
 
 1. parent baseline의 verified main과 downstream의 verified LRU main completion을 요구한다.
 2. RNN, GRU, LSTM, LRU의 noise-free parent-selected LR을 그대로 상속한다.
-3. state-noise std `[0, 0.003, 0.01, 0.0316228, 0.1]`를 seeds
-   `100..104` 모두에서 평가한다. single-seed pruning은 없다.
+3. state-noise std `[0, 0.003, 0.01, 0.0316228, 0.1]`를 pilot seeds
+   `100,101`에서 각각 2,000 updates로 평가한다.
 4. NMSE `< -20 dB` seed 수, MSE `< 0.01` seed 수, median/mean MSE,
    grid order 순으로 (a) 0 포함 overall winner와 (b) strictly-positive winner를
    함께 기록한다.
-5. noise/no-noise 분석용 fresh main seeds `0..9`는 strictly-positive winner로
-   처음부터 다시 학습한다. overall winner가 0이면 noise가 최적화 관점에서 이롭지
+5. noise/no-noise 분석용 fresh main seeds `0..2`는 strictly-positive winner로
+   처음부터 5,000 updates 학습한다. overall winner가 0이면 noise가 최적화 관점에서 이롭지
    않았다는 사실을 별도로 보고한다.
 
-총 full run 수는 tuning `4 × 5 × 5 = 100`, main `4 × 10 = 40`이다.
+총 run 수는 tuning `4 × 5 × 2 = 40`, main `4 × 3 = 12`이다.
 
 ## noise 계약
 

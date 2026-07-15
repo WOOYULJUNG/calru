@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "campaign_id": "source_v6_primary_analysis",
-  "protocol_revision": "four_baselines_noise_free_vs_positive_noise_sagodi_primary_v1",
+  "protocol_revision": "four_baselines_noise_free_vs_positive_noise_sagodi_primary_pilot3_v2",
   "models": ["sagodi_rnn_tanh_n128", "sagodi_gru_n128", "sagodi_lstm_n64", "lru_n52"],
   "conditions": ["noise_free", "positive_state_noise_training"],
-  "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-  "expected_runs": 80,
+  "seeds": [0, 1, 2],
+  "expected_runs": 24,
   "analysis": {
     "trajectory_count": 1024,
     "spline_count": 1024,

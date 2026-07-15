@@ -60,13 +60,13 @@ DEFAULT_CONFIG = MODULE_DIR / "source_repaired_lru_calru_v6.json"
 FREEZE_DOCUMENT = MODULE_DIR / "SAGODI_SOURCE_REPAIRED_LRU_CALRU_V6_FREEZE_ko.md"
 CAMPAIGN_ID = "sagodi_source_repaired_lru_calru_v6"
 PROTOCOL_REVISION = (
-    "baseline_bound_noise_free_controlled_training_lr_only_v5"
+    "baseline_bound_noise_free_controlled_training_lr_only_pilot3_v6"
 )
 TRACK_CLASSIFICATION = (
     "baseline_bound_noise_free_controlled_training_with_paper_and_code_noise_provenance"
 )
 ROOT_MARKER = ".sagodi_source_repaired_lru_calru_v6_root.json"
-CONFIG_CONTRACT_SHA256 = "121b503b5862869c579479d5c4e48f71543e8c6483e50cd19e0722a5382b2a88"
+CONFIG_CONTRACT_SHA256 = "d352733fc31c7889a725488944ef46e805ffe2584202438be8c0d6003621cd06"
 MODEL_IDS = ("lru_n52", "no_rp_n52", "ca_lru_n52")
 TOTAL_COUNTS = {model_id: 17058 for model_id in MODEL_IDS}
 GRADIENT_COUNTS = {"lru_n52": 17058, "no_rp_n52": 17006, "ca_lru_n52": 17006}
@@ -158,11 +158,12 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         raise ValueError("LR grid differs")
     if (
         tuning["sentinel_seed"] != 100
-        or tuning["fanout_seeds"] != [101, 102, 103, 104]
+        or tuning["fanout_seeds"] != [101]
+        or tuning["screening_updates"] != 2000
         or tuning["fanout_all_learning_rates"] is not True
     ):
         raise ValueError("LR tuning seeds/fanout policy differ")
-    if payload["main"]["seeds"] != list(range(10)):
+    if payload["main"]["seeds"] != list(range(3)):
         raise ValueError("main seeds differ")
     if payload["ca_fairness"] != {
         "inherits_learning_rate_from": "no_rp_n52",
@@ -362,7 +363,7 @@ def build_lr_sentinel_plan(
                 model_seed=int(tuning["sentinel_seed"]),
                 learning_rate=float(lr),
                 actual_state_noise_std=noise,
-                updates=int(training["updates"]),
+                updates=int(tuning["screening_updates"]),
                 batch_size=int(training["batch_size"]),
                 evaluation_bank=str(bank),
                 campaign_root=str(root),
@@ -461,7 +462,7 @@ def build_lr_fanout_plan(
                     model_seed=int(seed),
                     learning_rate=lr,
                     actual_state_noise_std=noise,
-                    updates=int(training["updates"]),
+                    updates=int(tuning["screening_updates"]),
                     batch_size=int(training["batch_size"]),
                     evaluation_bank=str(bank),
                     campaign_root=str(root),
@@ -478,6 +479,7 @@ def select_learning_rate(
 ) -> dict[str, Any]:
     tuning, main = config["learning_rate_tuning"], config["main"]
     expected_seeds = {int(tuning["sentinel_seed"]), *map(int, tuning["fanout_seeds"])}
+    expected_count = len(expected_seeds)
     learning_rates = sorted(
         {spec.learning_rate for spec in fanout_specs},
         key=tuning["learning_rate_grid"].index,
@@ -493,11 +495,11 @@ def select_learning_rate(
             if spec.learning_rate == lr
         ]
         if (
-            len(specs) != 5
+            len(specs) != expected_count
             or {spec.model_seed for spec in specs} != expected_seeds
             or {spec.actual_state_noise_std for spec in specs} != {noise}
         ):
-            raise RuntimeError("LR candidate does not have the registered five seeds")
+            raise RuntimeError("LR candidate does not have the registered pilot-screen seeds")
         mses = [_metric(spec, "mse") for spec in specs]
         nmses = [_metric(spec, "nmse_db") for spec in specs]
         complete = all(value is not None for value in (*mses, *nmses))
@@ -538,9 +540,9 @@ def select_learning_rate(
             row["grid_order"],
         )
     )
-    complete = [row for row in rows if row["completed_seed_count"] == 5]
+    complete = [row for row in rows if row["completed_seed_count"] == expected_count]
     if not complete:
-        raise RuntimeError("no complete five-seed LR candidate")
+        raise RuntimeError("no complete pilot-screen LR candidate")
     return {
         "schema_version": 1,
         "selection_rule": tuning["selection_rule"],
@@ -594,8 +596,9 @@ def build_main_plan(
 
 def summarize_main(specs: Sequence[RunSpec], config: Mapping[str, Any]) -> dict[str, Any]:
     main = config["main"]
-    if len(specs) != 10 or {spec.model_seed for spec in specs} != set(range(10)):
-        raise ValueError("main must contain all fresh seeds 0..9")
+    expected_seeds = set(map(int, config["main"]["seeds"]))
+    if len(specs) != len(expected_seeds) or {spec.model_seed for spec in specs} != expected_seeds:
+        raise ValueError("main must contain all registered fresh pilot seeds")
     rows = []
     for spec in sorted(specs, key=lambda item: item.model_seed):
         mse, nmse = _metric(spec, "mse"), _metric(spec, "nmse_db")
@@ -615,12 +618,12 @@ def summarize_main(specs: Sequence[RunSpec], config: Mapping[str, Any]) -> dict[
     return {
         "schema_version": 1,
         "model_id": specs[0].model_id,
-        "registered_seed_count": 10,
+        "registered_seed_count": len(specs),
         "failed_seed_count": sum(row["status"] != "completed" for row in rows),
         "analysis_eligible_count": eligible,
-        "analysis_eligible_rate": eligible / 10.0,
+        "analysis_eligible_rate": eligible / float(len(specs)),
         "mse_success_count_descriptive": mse_success,
-        "mse_success_rate_descriptive": mse_success / 10.0,
+        "mse_success_rate_descriptive": mse_success / float(len(specs)),
         "scientific_pass": eligible >= int(main["scientific_pass_minimum_eligible_per_model"]),
         "low_eligible_count_warning": eligible < int(main["low_eligible_count_warning_below"]),
         "per_seed": rows,
@@ -752,6 +755,7 @@ def select_rp(
 ) -> dict[str, Any]:
     rp, main = config["retention_plasticity"], config["main"]
     expected_seeds = {int(rp["sentinel_seed"]), *map(int, rp["fanout_seeds"])}
+    expected_count = len(expected_seeds)
     cells = sorted(
         {(spec.rp_eta_lambda, spec.rp_damage_epsilon) for spec in fanout_specs},
         key=lambda pair: (
@@ -765,8 +769,8 @@ def select_rp(
             for spec in (*sentinel_specs, *fanout_specs)
             if spec.rp_eta_lambda == eta and spec.rp_damage_epsilon == epsilon
         ]
-        if len(specs) != 5 or {spec.model_seed for spec in specs} != expected_seeds:
-            raise RuntimeError("RP cell does not have five registered seeds")
+        if len(specs) != expected_count or {spec.model_seed for spec in specs} != expected_seeds:
+            raise RuntimeError("RP cell does not have all registered pilot seeds")
         mses = [_metric(spec, "mse") for spec in specs]
         nmses = [_metric(spec, "nmse_db") for spec in specs]
         blanks = [
@@ -780,7 +784,7 @@ def select_rp(
             {
                 "eta_lambda": eta,
                 "damage_epsilon": epsilon,
-                "completed_seed_count": 5 if complete else 0,
+                "completed_seed_count": expected_count if complete else 0,
                 "nmse_eligible_count": sum(
                     value is not None
                     and value < float(main["analysis_eligibility_nmse_db_threshold"])
@@ -806,9 +810,9 @@ def select_rp(
             *row["grid_order"],
         )
     )
-    complete = [row for row in rows if row["completed_seed_count"] == 5]
+    complete = [row for row in rows if row["completed_seed_count"] == expected_count]
     if not complete:
-        raise RuntimeError("no complete five-seed RP cell")
+        raise RuntimeError("no complete pilot RP cell")
     return {
         "schema_version": 1,
         "selection_rule": rp["selection_rule"],
@@ -1918,7 +1922,7 @@ def _require_stage(root: Path, stage: str, count: int) -> Path:
 
 
 def _require_lru_scientific_pass(root: Path) -> Path:
-    stage_root = _require_stage(root, "lru_main", 10)
+    stage_root = _require_stage(root, "lru_main", 3)
     summary = strict_json_load(stage_root / "summary.json")
     if not summary.get("scientific_pass") or not (stage_root / "SCIENTIFIC_PASS").is_file():
         raise RuntimeError("No-RP/CA stages are blocked: LRU has zero NMSE<-20 eligible seeds")
@@ -2089,7 +2093,7 @@ def _validate_stage_dependencies(root: Path, stage: str) -> None:
     elif stage == "no_rp_main":
         _require_stage(root, "no_rp_fanout", lr_fanout_count)
     elif stage == "ca_rp_sentinel":
-        _require_stage(root, "no_rp_main", 10)
+        _require_stage(root, "no_rp_main", 3)
     elif stage == "ca_rp_fanout":
         _require_stage(root, "ca_rp_sentinel", 9)
     elif stage == "ca_rp_main":
@@ -2218,7 +2222,7 @@ def run_stage(
     lru_selection = strict_json_load(root / "lru_fanout" / "selection.json")
     lru_main = build_main_plan(root, config, main_bank, "lru", "lru_n52", lru_selection)
     if stage == "lru_main":
-        if _stage_valid(root, stage, 10):
+        if _stage_valid(root, stage, len(lru_main)):
             return root / stage
         _run_specs(lru_main, copied_config, slots)
         return _finish_stage(
@@ -2254,7 +2258,7 @@ def run_stage(
         root, config, main_bank, "no_rp", "no_rp_n52", no_rp_selection
     )
     if stage == "no_rp_main":
-        if _stage_valid(root, stage, 10):
+        if _stage_valid(root, stage, len(no_rp_main)):
             return root / stage
         _run_specs(no_rp_main, copied_config, slots)
         return _finish_stage(
@@ -2267,7 +2271,7 @@ def run_stage(
         )
 
     # Verified completion, not No-RP scientific eligibility, unlocks CA-RP.
-    _require_stage(root, "no_rp_main", 10)
+    _require_stage(root, "no_rp_main", 3)
     rp_sentinel = build_rp_sentinel_plan(root, config, tuning_bank, no_rp_selection)
     if stage == "ca_rp_sentinel":
         if _stage_valid(root, stage, 9):
@@ -2282,13 +2286,13 @@ def run_stage(
         root, config, tuning_bank, no_rp_selection, rp_screen
     )
     if stage == "ca_rp_fanout":
-        if _stage_valid(root, stage, 12):
+        if _stage_valid(root, stage, len(rp_fanout)):
             return root / stage
         _run_specs(rp_fanout, copied_config, slots)
         return _finish_stage(
             root, stage, rp_fanout, "selection.json", select_rp(rp_sentinel, rp_fanout, config)
         )
-    _require_stage(root, "ca_rp_fanout", 12)
+    _require_stage(root, "ca_rp_fanout", len(rp_fanout))
     rp_selection = strict_json_load(root / "ca_rp_fanout" / "selection.json")
     ca_main = build_main_plan(
         root,
@@ -2299,7 +2303,7 @@ def run_stage(
         no_rp_selection,
         rp=rp_selection["winner"],
     )
-    if _stage_valid(root, "ca_rp_main", 10):
+    if _stage_valid(root, "ca_rp_main", len(ca_main)):
         return root / "ca_rp_main"
     _run_specs(ca_main, copied_config, slots)
     return _finish_stage(

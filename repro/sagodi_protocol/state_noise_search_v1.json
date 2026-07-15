@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "campaign_id": "sagodi_state_noise_search_v1",
-  "protocol_revision": "four_baseline_fixed_noise_free_lr_state_noise_only_v2",
+  "protocol_revision": "four_baseline_fixed_noise_free_lr_state_noise_only_pilot3_v3",
   "track_classification": "four_baseline_model_specific_training_state_noise_search_before_calru_tuning",
   "parents": {
     "baseline_campaign": "sagodi_source_repaired_baselines_v6",
@@ -31,8 +31,9 @@
     "training_target_semantics": "clean_cos_sin_target_for_initial_q1_and_loss"
   },
   "state_noise_search": {
+    "screening_updates": 2000,
     "actual_post_transition_state_noise_std_grid": [0.0, 0.003, 0.01, 0.0316228, 0.1],
-    "tuning_seeds": [100, 101, 102, 103, 104],
+    "tuning_seeds": [100, 101],
     "all_noise_values_all_seeds": true,
     "analysis_nmse_db_threshold": -20.0,
     "descriptive_mse_threshold": 0.01,
@@ -42,7 +43,7 @@
     "failed_runs_remain_in_denominator": true
   },
   "main": {
-    "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    "seeds": [0, 1, 2],
     "fresh_from_tuning": true,
     "train_best_strictly_positive_noise_for_noise_vs_no_noise_analysis": true
   },

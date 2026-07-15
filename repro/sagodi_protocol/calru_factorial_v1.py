@@ -44,9 +44,9 @@ DEFAULT_CONFIG = MODULE_DIR / "calru_factorial_v1.json"
 FREEZE_DOCUMENT = MODULE_DIR / "CALRU_FACTORIAL_V1_FREEZE_ko.md"
 BASELINE_CONFIG = MODULE_DIR / "source_repaired_baselines_v6.json"
 CAMPAIGN_ID = "calru_factorial_v1"
-PROTOCOL_REVISION = "lru_lr_fixed_rp_only_search_then_rp_by_state_noise_factorial_v1"
+PROTOCOL_REVISION = "lru_lr_fixed_rp_only_search_then_rp_by_state_noise_factorial_pilot3_v2"
 ROOT_MARKER = ".calru_factorial_v1_root.json"
-CONFIG_CONTRACT_SHA256 = "f8b160c6b04123cb22c72721ea4ce071af3d6b3c7f4077bb2af3729a5e01e14f"
+CONFIG_CONTRACT_SHA256 = "f8ac7f6e5dc43c602b85927e3fae2ddef872f6934408df875eb6d9528d84893b"
 STAGES = ("smoke", "rp_sentinel", "rp_fanout", "factorial_main")
 CONDITIONS = (
     "no_rp_no_noise",
@@ -76,12 +76,12 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         or rp["damage_epsilon_grid"] != [1e-5, 3e-5, 1e-4]
         or rp["intervention_interval_updates_grid"] != [25, 50, 100]
         or rp["sentinel_seed"] != 100
-        or rp["fanout_seeds"] != [101, 102, 103, 104]
+        or rp["fanout_seeds"] != [101, 102]
         or rp["top_k"] != 5
     ):
         raise ValueError("CA-LRU RP search grid differs")
     main = payload["factorial_main"]
-    if main["seeds"] != list(range(10)) or [row["id"] for row in main["conditions"]] != list(CONDITIONS):
+    if main["seeds"] != list(range(3)) or [row["id"] for row in main["conditions"]] != list(CONDITIONS):
         raise ValueError("CA-LRU factorial main contract differs")
     training = payload["training"]
     if (
@@ -162,8 +162,8 @@ def _parent_binding(baseline_root: Path, lru_root: Path, noise_root: Path) -> di
     lru_root = lru_root.expanduser().resolve()
     noise_root = noise_root.expanduser().resolve()
     baseline_v6.require_verified_main(baseline_root)
-    lru_v6._require_stage(lru_root, "lru_main", 10)
-    if not noise_v1._stage_valid(noise_root, "main", 40):
+    lru_v6._require_stage(lru_root, "lru_main", 3)
+    if not noise_v1._stage_valid(noise_root, "main", 12):
         raise RuntimeError("verified four-baseline state-noise main is required")
     lru_selection_path = lru_root / "lru_fanout" / "selection.json"
     noise_selection_path = noise_root / "tuning" / "selection.json"
@@ -337,18 +337,19 @@ def build_rp_fanout_plan(root: Path, config: Mapping[str, Any], parent: Mapping[
 def select_rp(sentinel: Sequence[RunSpec], fanout: Sequence[RunSpec], config: Mapping[str, Any]) -> dict[str, Any]:
     rp, main = config["retention_plasticity_search"], config["factorial_main"]
     expected = {int(rp["sentinel_seed"]), *map(int, rp["fanout_seeds"])}
+    expected_count = len(expected)
     cells = sorted({(spec.rp_eta_lambda, spec.rp_damage_epsilon, spec.rp_interval_updates) for spec in fanout}, key=lambda cell: (rp["eta_lambda_grid"].index(cell[0]), rp["damage_epsilon_grid"].index(cell[1]), rp["intervention_interval_updates_grid"].index(cell[2])))
     rows = []
     for eta, epsilon, interval in cells:
         group = [spec for spec in (*sentinel, *fanout) if (spec.rp_eta_lambda, spec.rp_damage_epsilon, spec.rp_interval_updates) == (eta, epsilon, interval)]
-        if len(group) != 5 or {spec.model_seed for spec in group} != expected:
-            raise RuntimeError("RP finalist does not have five registered seeds")
+        if len(group) != expected_count or {spec.model_seed for spec in group} != expected:
+            raise RuntimeError("RP finalist does not have all registered pilot seeds")
         mses, nmses = [_metric(spec, "mse") for spec in group], [_metric(spec, "nmse_db") for spec in group]
         blanks = [_result(spec).get("blank_memory_mse") if _result(spec).get("status") == "completed" else None for spec in group]
         complete = all(value is not None and math.isfinite(float(value)) for value in (*mses, *nmses, *blanks))
         rows.append({
             "eta_lambda": eta, "damage_epsilon": epsilon, "intervention_interval_updates": interval,
-            "completed_seed_count": 5 if complete else 0,
+            "completed_seed_count": expected_count if complete else 0,
             "nmse_eligible_count": sum(value is not None and value < float(main["analysis_nmse_db_threshold"]) for value in nmses),
             "mse_success_count": sum(value is not None and value < float(main["mse_success_threshold"]) for value in mses),
             "mean_blank_memory_mse": float(np.mean(blanks)) if complete else None,
@@ -356,9 +357,9 @@ def select_rp(sentinel: Sequence[RunSpec], fanout: Sequence[RunSpec], config: Ma
             "grid_order": [rp["eta_lambda_grid"].index(eta), rp["damage_epsilon_grid"].index(epsilon), rp["intervention_interval_updates_grid"].index(interval)],
         })
     rows.sort(key=lambda row: (-row["nmse_eligible_count"], -row["mse_success_count"], math.inf if row["mean_blank_memory_mse"] is None else row["mean_blank_memory_mse"], math.inf if row["mean_mse"] is None else row["mean_mse"], *row["grid_order"]))
-    complete = [row for row in rows if row["completed_seed_count"] == 5]
+    complete = [row for row in rows if row["completed_seed_count"] == expected_count]
     if not complete:
-        raise RuntimeError("no complete five-seed RP finalist")
+        raise RuntimeError("no complete pilot RP finalist")
     return {"schema_version": 1, "selection_rule": rp["selection_rule"], "winner": complete[0], "cells": rows}
 
 
@@ -641,7 +642,8 @@ def summarize_factorial(specs: Sequence[RunSpec], config: Mapping[str, Any]) -> 
     models: dict[str, Any] = {}
     for condition in CONDITIONS:
         group = sorted((spec for spec in specs if spec.condition_id == condition), key=lambda spec: spec.model_seed)
-        if len(group) != 10 or {spec.model_seed for spec in group} != set(range(10)):
+        expected_seeds = set(map(int, config["factorial_main"]["seeds"]))
+        if len(group) != len(expected_seeds) or {spec.model_seed for spec in group} != expected_seeds:
             raise RuntimeError(f"factorial denominator differs for {condition}")
         per_seed = []
         for spec in group:
@@ -662,7 +664,7 @@ def summarize_factorial(specs: Sequence[RunSpec], config: Mapping[str, Any]) -> 
             "analysis_eligible_count": sum(row["analysis_eligible"] for row in per_seed), "per_seed": per_seed,
         }
     paired = []
-    for seed in range(10):
+    for seed in config["factorial_main"]["seeds"]:
         value = {condition: models[condition]["per_seed"][seed] for condition in CONDITIONS}
         paired.append({
             "seed": seed,
@@ -732,15 +734,15 @@ def run_stage(stage: str, artifact_root: Path, baseline_root: Path, lru_root: Pa
     screening = strict_json_load(root / "rp_sentinel" / "screening.json")
     fanout = build_rp_fanout_plan(root, config, parent, tuning_bank, screening)
     if stage == "rp_fanout":
-        if _stage_valid(root, stage, 20):
+        if _stage_valid(root, stage, len(fanout)):
             return root / stage
         _run_specs(fanout, copied_config, slots)
         return _finish_stage(root, stage, fanout, "selection.json", select_rp(sentinel, fanout, config))
-    if not _stage_valid(root, "rp_fanout", 20):
+    if not _stage_valid(root, "rp_fanout", len(fanout)):
         raise RuntimeError("factorial main is blocked until verified RP fanout completes")
     selection = strict_json_load(root / "rp_fanout" / "selection.json")
     main = build_factorial_main_plan(root, config, parent, main_bank, selection)
-    if _stage_valid(root, stage, 40):
+    if _stage_valid(root, stage, len(main)):
         return root / stage
     _run_specs(main, copied_config, slots)
     return _finish_stage(root, stage, main, "summary.json", summarize_factorial(main, config))

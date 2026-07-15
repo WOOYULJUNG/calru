@@ -147,8 +147,9 @@ def test_lru_plans_are_independent_and_nmse_first(tmp_path: Path) -> None:
         _write_result(spec, 0.002 + index * 1e-4, -10.0)
     screening = screen_sentinels(sentinel, config)
     fanout = build_lr_fanout_plan(tmp_path, config, bank, "lru", screening)
-    assert len(fanout) == 32
-    assert {spec.model_seed for spec in fanout} == {101, 102, 103, 104}
+    assert len(fanout) == 8
+    assert {spec.model_seed for spec in fanout} == {101}
+    assert {spec.updates for spec in (*sentinel, *fanout)} == {2000}
 
     cells = screening["all_learning_rates"]
     for spec in fanout:
@@ -217,7 +218,7 @@ def test_ca_inherits_no_rp_lr_and_common_noise_and_only_rp_is_tuned(tmp_path: Pa
         _write_result(spec, 0.004, -23.0, blank=0.1 + index * 0.01)
     screening = screen_rp_sentinels(sentinel, config)
     fanout = build_rp_fanout_plan(tmp_path, config, bank, no_rp, screening)
-    assert len(fanout) == 12
+    assert len(fanout) == 6
     for spec in fanout:
         _write_result(spec, 0.004, -23.0, blank=0.2)
     selected = select_rp(sentinel, fanout, config)
@@ -230,7 +231,7 @@ def test_ca_inherits_no_rp_lr_and_common_noise_and_only_rp_is_tuned(tmp_path: Pa
         no_rp,
         rp=selected["winner"],
     )
-    assert len(main) == 10
+    assert len(main) == 3
     assert {spec.learning_rate for spec in main} == {0.003}
     assert {spec.actual_state_noise_std for spec in main} == {0.0}
     assert all(spec.rp_enabled for spec in main)

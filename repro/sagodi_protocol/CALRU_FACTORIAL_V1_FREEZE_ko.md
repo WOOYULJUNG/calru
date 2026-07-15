@@ -7,7 +7,7 @@
    고정한다. CA 계열에서 state noise를 다시 tuning하지 않는다.
 3. Noise-free CA-LRU에서만 CA 전용 변수
    `eta_lambda × damage_epsilon × intervention_interval_updates`를 탐색한다.
-4. 선택한 RP 설정 하나를 고정하고 아래 2×2 main을 fresh seeds 0--9로 학습한다.
+4. 선택한 RP 설정 하나를 고정하고 아래 2×2 main을 pilot fresh seeds 0--2로 학습한다.
 
 | RP | state-noise training | condition |
 |---|---:|---|
@@ -20,7 +20,7 @@
 
 - RP grid는 eta `[300,1000,3000]`, epsilon `[1e-5,3e-5,1e-4]`, intervention
   interval `[25,50,100]` updates다.
-- 27-cell sentinel seed 100 뒤 상위 5개 cell을 seeds 101--104에서 평가한다.
+- 27-cell sentinel seed 100 뒤 상위 5개 cell을 seeds 101,102에서 평가한다.
   sentinel pruning이 있다는 사실과 전체 denominator를 결과에 명시한다.
 - 선택은 NMSE eligibility, task MSE success, 4,096-step blank MSE, task MSE,
   frozen grid order 순이다.

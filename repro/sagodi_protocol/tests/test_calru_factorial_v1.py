@@ -58,12 +58,12 @@ def test_rp_selection_and_factorial_are_frozen(tmp_path: Path) -> None:
     screening = screen_rp_sentinels(sentinel, config)
     assert len(screening["top_cells"]) == 5
     fanout = build_rp_fanout_plan(tmp_path, config, parent, tmp_path / "tuning.npz", screening)
-    assert len(fanout) == 20
+    assert len(fanout) == 10
     for spec in fanout:
         _write_result(spec, 0.002)
     selection = select_rp(sentinel, fanout, config)
     main = build_factorial_main_plan(tmp_path, config, parent, tmp_path / "main_test.npz", selection)
-    assert len(main) == 40
+    assert len(main) == 12
     assert {spec.condition_id for spec in main} == {"no_rp_no_noise", "no_rp_with_noise", "rp_no_noise", "rp_with_noise"}
     assert {spec.actual_state_noise_std for spec in main} == {0.0, 0.01}
     assert len({(spec.rp_eta_lambda, spec.rp_damage_epsilon, spec.rp_interval_updates) for spec in main if spec.rp_enabled}) == 1
