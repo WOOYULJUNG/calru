@@ -124,6 +124,20 @@ def test_selection_uses_all_five_seeds_and_main_is_fresh(tmp_path: Path) -> None
     changed = select_state_noise(tuning, config, parent)
     assert changed["models"][MODEL_IDS[0]]["winner"]["actual_state_noise_std"] != 0.01
 
+    for spec in tuning:
+        _write_result(
+            spec,
+            0.001 + spec.actual_state_noise_std,
+            -30.0 + 100.0 * spec.actual_state_noise_std,
+        )
+    zero_best = select_state_noise(tuning, config, parent)
+    assert all(
+        row["overall_winner"]["actual_state_noise_std"] == 0.0
+        and row["overall_winner_is_zero"] is True
+        and row["positive_noise_winner"]["actual_state_noise_std"] > 0.0
+        for row in zero_best["models"].values()
+    )
+
 
 def test_zero_noise_disables_generator_and_positive_noise_pairs_stream(tmp_path: Path) -> None:
     config, parent = load_config(), _parent()

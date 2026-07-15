@@ -37,11 +37,14 @@
     "analysis_nmse_db_threshold": -20.0,
     "descriptive_mse_threshold": 0.01,
     "selection_rule": "max_nmse_eligible_count_then_max_mse_success_count_then_min_median_mse_then_min_mean_mse_then_grid_order",
+    "record_overall_winner_including_zero": true,
+    "record_best_strictly_positive_noise": true,
     "failed_runs_remain_in_denominator": true
   },
   "main": {
     "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    "fresh_from_tuning": true
+    "fresh_from_tuning": true,
+    "train_best_strictly_positive_noise_for_noise_vs_no_noise_analysis": true
   },
   "data_contract": {
     "reuse_exact_parent_tuning_and_main_banks": true,

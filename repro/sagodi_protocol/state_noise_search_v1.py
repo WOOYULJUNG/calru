@@ -61,7 +61,7 @@ TRACK_CLASSIFICATION = (
     "four_baseline_model_specific_training_state_noise_search_before_calru_tuning"
 )
 ROOT_MARKER = ".sagodi_state_noise_search_v1_root.json"
-CONFIG_CONTRACT_SHA256 = "36adba064b1d8ecd10ac22886f07af49bba61806de0d19744c75b09165545429"
+CONFIG_CONTRACT_SHA256 = "1acde95f7dbb638343158c528f9d4d0318d5beaf0dcadefe9757effa0813bf84"
 SOURCE_BASELINE_MODEL_IDS = tuple(baseline_v6.MODEL_IDS)
 LRU_MODEL_ID = "lru_n52"
 MODEL_IDS = (*SOURCE_BASELINE_MODEL_IDS, LRU_MODEL_ID)
@@ -127,6 +127,15 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         raise ValueError("state-noise tuning seeds differ")
     if search["all_noise_values_all_seeds"] is not True:
         raise ValueError("state-noise search cannot prune using one seed")
+    if (
+        search["record_overall_winner_including_zero"] is not True
+        or search["record_best_strictly_positive_noise"] is not True
+        or payload["main"][
+            "train_best_strictly_positive_noise_for_noise_vs_no_noise_analysis"
+        ]
+        is not True
+    ):
+        raise ValueError("noise/no-noise comparison contract differs")
     if payload["main"]["seeds"] != list(range(10)):
         raise ValueError("state-noise main seeds differ")
     return payload
@@ -496,7 +505,18 @@ def select_state_noise(
         ]
         if not complete_rows:
             raise RuntimeError(f"no complete state-noise cell for {model_id}")
-        models[model_id] = {"winner": complete_rows[0], "ranked_noise_values": rows}
+        positive_rows = [
+            row for row in complete_rows if row["actual_state_noise_std"] > 0.0
+        ]
+        if not positive_rows:
+            raise RuntimeError(f"no complete strictly-positive state-noise cell for {model_id}")
+        models[model_id] = {
+            "overall_winner": complete_rows[0],
+            "positive_noise_winner": positive_rows[0],
+            "winner": positive_rows[0],
+            "overall_winner_is_zero": complete_rows[0]["actual_state_noise_std"] == 0.0,
+            "ranked_noise_values": rows,
+        }
     return {
         "schema_version": 1,
         "campaign_id": CAMPAIGN_ID,
@@ -518,7 +538,9 @@ def build_main_plan(
     training = config["training"]
     rows: list[RunSpec] = []
     for model_id in MODEL_IDS:
-        winner = selection["models"][model_id]["winner"]
+        winner = selection["models"][model_id]["positive_noise_winner"]
+        if float(winner["actual_state_noise_std"]) <= 0.0:
+            raise RuntimeError(f"main requires strictly-positive noise for {model_id}")
         if float(winner["learning_rate"]) != float(_selected(parent, model_id)["learning_rate"]):
             raise RuntimeError(f"main LR differs from parent for {model_id}")
         for seed in config["main"]["seeds"]:

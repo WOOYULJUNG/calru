@@ -14,8 +14,11 @@
 3. state-noise std `[0, 0.003, 0.01, 0.0316228, 0.1]`를 seeds
    `100..104` 모두에서 평가한다. single-seed pruning은 없다.
 4. NMSE `< -20 dB` seed 수, MSE `< 0.01` seed 수, median/mean MSE,
-   grid order 순으로 모델별 std를 선택한다.
-5. 선택된 LR/std로 fresh main seeds `0..9`를 처음부터 다시 학습한다.
+   grid order 순으로 (a) 0 포함 overall winner와 (b) strictly-positive winner를
+   함께 기록한다.
+5. noise/no-noise 분석용 fresh main seeds `0..9`는 strictly-positive winner로
+   처음부터 다시 학습한다. overall winner가 0이면 noise가 최적화 관점에서 이롭지
+   않았다는 사실을 별도로 보고한다.
 
 총 full run 수는 tuning `4 × 5 × 5 = 100`, main `4 × 10 = 40`이다.
 
