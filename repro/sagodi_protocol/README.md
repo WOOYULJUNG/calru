@@ -92,6 +92,18 @@ repro/sagodi_protocol/run_lru_then_baseline_noise_v1.sh \
 
 세부 해석과 재현 계약은 `STATE_NOISE_SEARCH_V1_FREEZE_ko.md`를 따른다.
 
+네 baseline의 noise-free/positive-noise main이 완료되면 80 checkpoint를
+Ságodi-primary analyzer에 등록한다. NMSE-ineligible seed도 denominator에 남으며,
+eligible seed에서만 full structural analysis를 실행한다.
+
+```bash
+repro/sagodi_protocol/run_source_v6_primary_analysis.sh \
+  /path/to/baseline_v6 /path/to/lru_v6 /path/to/baseline_state_noise_v1 \
+  /path/to/source_v6_primary_analysis 0,1,2,3,4,5
+```
+
+세부 항목은 `SOURCE_V6_PRIMARY_ANALYSIS_FREEZE_ko.md`를 따른다.
+
 ## Follow-up: CA-LRU RP-only search and 2×2 factorial v1
 
 네-baseline noise search 뒤 LRU LR과 LRU strictly-positive noise std를 고정한다.

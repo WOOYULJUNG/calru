@@ -14,9 +14,10 @@ Two project resolutions are made explicit in every result:
 * for a possibly nonlinear decoder, projected flow is the common discrete
   finite-step displacement ``D(F0(s)) - D(s)``.
 
-Full runs fail closed on the registered counts (1,024 trajectories and spline
-points, ``T=256``, and ``16T=4096``).  ``--smoke`` permits smaller values for
-focused integration tests, and labels every artifact accordingly.
+Full paper-task runs fail closed on 1,024 trajectories/spline points, ``T=256``,
+and ``16T=4096``.  The explicit ``--source-v6`` adaptation keeps the same counts
+but freezes the public-code task at ``T=128`` and ``16T=2048``. ``--smoke``
+permits smaller values for focused integration tests and labels every artifact.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -65,6 +67,11 @@ from .sagodi_primary_analysis import (
 )
 from .state import StateAdapter
 from .tasks import angular_integration
+from .source_resolved_protocol import source_angular_integration
+from .source_v6_analysis_adapter import (
+    SOURCE_MODEL_IDS as SOURCE_V6_MODEL_IDS,
+    load_source_v6_checkpoint,
+)
 
 
 FULL_TRAJECTORY_COUNT = 1024
@@ -110,6 +117,12 @@ def primary_analysis_identity_payload(
             "state.py": sha256_file(package / "state.py"),
             "models.py": sha256_file(package / "models.py"),
             "tasks.py": sha256_file(package / "tasks.py"),
+            "source_v6_analysis_adapter.py": sha256_file(
+                package / "source_v6_analysis_adapter.py"
+            ),
+            "source_resolved_protocol.py": sha256_file(
+                package / "source_resolved_protocol.py"
+            ),
         },
         "checkpoint_sha256": checkpoint_sha256,
         "protocol_sha256": protocol_sha256,
@@ -139,6 +152,7 @@ class PrimaryAnalysisSpec:
         NORMAL_RECOVERY_RADII_OVER_MANIFOLD_SCALE
     )
     normal_recovery_horizons: tuple[int, ...] = NORMAL_RECOVERY_HORIZONS
+    source_v6: bool = False
     smoke: bool = False
 
     def validate(self) -> None:
@@ -186,8 +200,8 @@ class PrimaryAnalysisSpec:
             expected = {
                 "trajectory_count": FULL_TRAJECTORY_COUNT,
                 "spline_count": FULL_SPLINE_COUNT,
-                "task_horizon": FULL_TASK_HORIZON,
-                "blank_horizon": FULL_BLANK_HORIZON,
+                "task_horizon": 128 if self.source_v6 else FULL_TASK_HORIZON,
+                "blank_horizon": 2048 if self.source_v6 else FULL_BLANK_HORIZON,
                 "slow_relative_speed": SLOW_RELATIVE_SPEED,
                 "inclusion_nmse_db": INCLUSION_NMSE_DB,
                 "normal_recovery_seed": NORMAL_RECOVERY_SEED,
@@ -1035,6 +1049,33 @@ def _task_rollout(
     if adapter.primary_from_reported(reported).shape[-1] != adapter.primary_dim:
         raise RuntimeError("task endpoint did not preserve full primary state")
     return prediction, reported
+
+
+def _source_v6_task_batch(
+    spec: PrimaryAnalysisSpec,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Any:
+    """Generate the registered T128 public-code task with q1 initialization."""
+
+    batch = source_angular_integration(
+        int(spec.trajectory_count),
+        0,
+        stream_key=("sagodi_source_repaired_baselines_v6", "primary_analysis_bank"),
+        device=device,
+    )
+    if batch.inputs.shape[0] != int(spec.task_horizon):
+        raise RuntimeError("source-v6 analysis task horizon differs")
+    return SimpleNamespace(
+        inputs=batch.inputs.to(dtype=dtype),
+        output_targets=batch.output_targets.to(dtype=dtype),
+        latent_targets=batch.latent_targets.to(dtype=dtype),
+        mask=batch.mask.to(dtype=dtype),
+        initial_memory=batch.output_targets[0].to(dtype=dtype),
+        batch_size=batch.batch_size,
+        metadata=batch.metadata,
+    )
 
 
 def _spectrum_chunk_path(directory: Path, start: int, stop: int) -> Path:
@@ -1935,16 +1976,25 @@ def run_primary_analysis(
     destination = Path(output_dir).expanduser().resolve()
     protocol = load_protocol(protocol_source)
     task_spec = AngularTaskSpec.from_protocol(protocol)
-    if not active_spec.smoke and task_spec.sequence_steps != active_spec.task_horizon:
+    if (
+        not active_spec.source_v6
+        and not active_spec.smoke
+        and task_spec.sequence_steps != active_spec.task_horizon
+    ):
         raise ValueError("protocol task horizon differs from the primary analysis freeze")
     target_device = torch.device(device)
-    model, checkpoint_payload = load_checkpoint(checkpoint, target_device)
+    if active_spec.source_v6:
+        model, checkpoint_payload = load_source_v6_checkpoint(checkpoint, target_device)
+    else:
+        model, checkpoint_payload = load_checkpoint(checkpoint, target_device)
     model.eval()
     if model.input_dim != 1 or model.output_dim != 2 or model.config.init_mode != "hidden_init":
         raise ValueError("checkpoint is not a hidden-init one-angle integration model")
-    valid_models = {
-        str(entry["id"]) for entry in protocol["phase1_ring_pilot"]["models"]
-    }
+    valid_models = (
+        set(SOURCE_V6_MODEL_IDS)
+        if active_spec.source_v6
+        else {str(entry["id"]) for entry in protocol["phase1_ring_pilot"]["models"]}
+    )
     if model.config.name not in valid_models:
         raise ValueError("checkpoint model is outside the supplied protocol")
     adapter = StateAdapter(model.core)
@@ -1959,14 +2009,26 @@ def run_primary_analysis(
     bound_validation_metrics: dict[str, Any] | None = None
     bound_validation_binding: dict[str, Any] | None = None
     if not active_spec.smoke:
-        bound_validation_metrics, bound_validation_binding = (
-            _bound_main_validation_metrics(
-                checkpoint=checkpoint,
-                checkpoint_payload=checkpoint_payload,
-                protocol=protocol,
-                protocol_source=protocol_source,
+        if active_spec.source_v6:
+            result = checkpoint_payload.get("result")
+            metrics = result.get("final_metrics") if isinstance(result, Mapping) else None
+            if not isinstance(metrics, Mapping):
+                raise ValueError("source-v6 checkpoint lacks final clean task metrics")
+            bound_validation_metrics = dict(metrics)
+            bound_validation_binding = {
+                "source": "source_v6_checkpoint_bound_result",
+                "checkpoint_sha256": sha256_file(checkpoint),
+                "metric_key": "masked_nmse_db",
+            }
+        else:
+            bound_validation_metrics, bound_validation_binding = (
+                _bound_main_validation_metrics(
+                    checkpoint=checkpoint,
+                    checkpoint_payload=checkpoint_payload,
+                    protocol=protocol,
+                    protocol_source=protocol_source,
+                )
             )
-        )
     identity = _initialize_output(destination, identity_payload)
     completion = destination / "completion_receipt.json"
     if completion.is_file():
@@ -1989,8 +2051,12 @@ def run_primary_analysis(
         },
     )
 
-    batch = _protocol_task_batch(
-        protocol, task_spec, active_spec, device=target_device, dtype=dtype
+    batch = (
+        _source_v6_task_batch(active_spec, device=target_device, dtype=dtype)
+        if active_spec.source_v6
+        else _protocol_task_batch(
+            protocol, task_spec, active_spec, device=target_device, dtype=dtype
+        )
     )
     prediction, endpoint_reported = _task_rollout(model, adapter, batch)
     discovery_task_metrics = task_metrics(
@@ -2046,6 +2112,7 @@ def run_primary_analysis(
                 "by exact 16T deterministic zero-input dynamics; the sampled GP "
                 "velocity is task signal, not additive recurrent-state noise"
             ),
+            "source_v6_public_code_task": bool(active_spec.source_v6),
             "nonlinear_decoder_projected_flow": (
                 "D(F0(s))-D(s), common one-step discrete adaptation of the paper's "
                 "linear output-projected vector field"
@@ -2073,7 +2140,11 @@ def run_primary_analysis(
             "trajectory_count": int(active_spec.trajectory_count),
         },
         "structural_summary_eligibility": {
-            "criterion": "frozen_2048_trial_main_ID_masked_NMSE_dB < -20",
+            "criterion": (
+                "source_v6_checkpoint_clean_fixed_bank_masked_NMSE_dB < -20"
+                if active_spec.source_v6
+                else "frozen_2048_trial_main_ID_masked_NMSE_dB < -20"
+            ),
             "threshold_nmse_db": float(active_spec.inclusion_nmse_db),
             "eligible": bool(eligible),
             "smoke_bypass": bool(active_spec.smoke),
@@ -2511,6 +2582,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--spectrum-chunk-size", type=int, default=DEFAULT_SPECTRUM_CHUNK_SIZE)
+    parser.add_argument("--source-v6", action="store_true")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--trajectory-count", type=int)
     parser.add_argument("--spline-count", type=int)
@@ -2529,7 +2601,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     }
     if not args.smoke and any(value is not None for value in overrides.values()):
         raise ValueError("analysis-size overrides require --smoke")
-    defaults = PrimaryAnalysisSpec()
+    defaults = PrimaryAnalysisSpec(
+        task_horizon=128 if args.source_v6 else FULL_TASK_HORIZON,
+        blank_horizon=2048 if args.source_v6 else FULL_BLANK_HORIZON,
+        source_v6=bool(args.source_v6),
+    )
     spec = PrimaryAnalysisSpec(
         trajectory_count=(
             defaults.trajectory_count
@@ -2546,6 +2622,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             defaults.blank_horizon if args.blank_horizon is None else args.blank_horizon
         ),
         spectrum_chunk_size=args.spectrum_chunk_size,
+        source_v6=bool(args.source_v6),
         smoke=bool(args.smoke),
     )
     summary = run_primary_analysis(
