@@ -12,6 +12,7 @@ from repro.sagodi_protocol.calru_factorial_v1 import (
     FREEZE_DOCUMENT,
     PROTOCOL_REVISION,
     ROOT_MARKER,
+    _copy_bound_bank,
     _git_state,
     _rng_identities,
     _runtime_files,
@@ -26,7 +27,7 @@ from repro.sagodi_protocol.calru_factorial_v1 import (
     select_rp,
 )
 from repro.sagodi_protocol.source_resolved_protocol import source_angular_integration
-from repro.sagodi_protocol.tasks import save_fixed_bank
+from repro.sagodi_protocol.tasks import load_fixed_bank, save_fixed_bank
 
 
 def _parent() -> dict:
@@ -48,6 +49,28 @@ def test_config_and_plan_denominators(tmp_path: Path) -> None:
     assert len(sentinel) == 27
     assert {spec.rp_interval_updates for spec in sentinel} == {25, 50, 100}
     assert {spec.learning_rate for spec in (*smoke, *sentinel)} == {0.001}
+
+
+def test_copy_bound_bank_keeps_mandatory_checksum_sidecar(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "tuning.npz"
+    destination = tmp_path / "destination" / "tuning.npz"
+    save_fixed_bank(
+        source,
+        source_angular_integration(
+            16, 32999, stream_key=(CAMPAIGN_ID, "copy_bound_bank")
+        ),
+    )
+
+    _copy_bound_bank(source, destination)
+
+    assert destination.is_file()
+    assert destination.with_suffix(".npz.sha256").is_file()
+    assert sha256_file(destination) == sha256_file(source)
+    assert sha256_file(destination.with_suffix(".npz.sha256")) == sha256_file(
+        source.with_suffix(".npz.sha256")
+    )
+    loaded = load_fixed_bank(destination)
+    assert loaded.batch_size == 16
 
 
 def test_rp_selection_and_factorial_are_frozen(tmp_path: Path) -> None:

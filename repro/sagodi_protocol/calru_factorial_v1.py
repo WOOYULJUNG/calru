@@ -178,7 +178,16 @@ def _parent_binding(baseline_root: Path, lru_root: Path, noise_root: Path) -> di
     banks: dict[str, Any] = {}
     for purpose in ("tuning", "main_test"):
         archive = baseline_root / "banks" / f"{purpose}.npz"
-        banks[purpose] = {"archive": str(archive), "sha256": sha256_file(archive)}
+        sidecar = archive.with_suffix(archive.suffix + ".sha256")
+        # Validate the complete fixed-bank pair before binding it into the
+        # factorial identity.  The archive alone is not loadable under the
+        # mandatory checksum contract in tasks.load_fixed_bank.
+        load_fixed_bank(archive)
+        banks[purpose] = {
+            "archive": str(archive),
+            "archive_sha256": sha256_file(archive),
+            "sidecar_sha256": sha256_file(sidecar),
+        }
     return {
         "schema_version": 1,
         "baseline_root": str(baseline_root),
@@ -210,6 +219,17 @@ def _copy_exact(source: Path, destination: Path) -> None:
         shutil.copy2(source, destination)
 
 
+def _copy_bound_bank(source: Path, destination: Path) -> None:
+    """Copy and verify a fixed-bank archive together with its checksum."""
+
+    source_sidecar = source.with_suffix(source.suffix + ".sha256")
+    destination_sidecar = destination.with_suffix(destination.suffix + ".sha256")
+    load_fixed_bank(source)
+    _copy_exact(source, destination)
+    _copy_exact(source_sidecar, destination_sidecar)
+    load_fixed_bank(destination)
+
+
 def _prepare_root(root: Path, baseline_root: Path, lru_root: Path, noise_root: Path, config_source: Path, *, require_clean: bool) -> tuple[dict[str, Any], dict[str, Any], Path]:
     root = root.expanduser().resolve()
     config_source = config_source.expanduser().resolve(strict=True)
@@ -238,9 +258,21 @@ def _prepare_root(root: Path, baseline_root: Path, lru_root: Path, noise_root: P
         _copy_exact(FREEZE_DOCUMENT, root / "inputs" / FREEZE_DOCUMENT.name)
         _copy_exact(BASELINE_CONFIG, root / "inputs" / BASELINE_CONFIG.name)
         for purpose, row in parent["banks"].items():
-            _copy_exact(Path(row["archive"]), root / "banks" / f"{purpose}.npz")
+            _copy_bound_bank(
+                Path(row["archive"]), root / "banks" / f"{purpose}.npz"
+            )
         atomic_json(root / "parent_binding.json", parent)
         atomic_json(marker, identity)
+    if strict_json_load(root / "parent_binding.json") != parent:
+        raise RuntimeError("CA-LRU factorial parent binding changed")
+    for purpose, row in parent["banks"].items():
+        copied = root / "banks" / f"{purpose}.npz"
+        copied_sidecar = copied.with_suffix(copied.suffix + ".sha256")
+        if sha256_file(copied) != row["archive_sha256"]:
+            raise RuntimeError("copied factorial fixed-bank archive differs")
+        if sha256_file(copied_sidecar) != row["sidecar_sha256"]:
+            raise RuntimeError("copied factorial fixed-bank sidecar differs")
+        load_fixed_bank(copied)
     return config, parent, root / "inputs" / DEFAULT_CONFIG.name
 
 
