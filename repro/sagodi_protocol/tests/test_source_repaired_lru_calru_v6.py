@@ -27,11 +27,13 @@ from repro.sagodi_protocol.source_repaired_lru_calru_v6 import (
     FREEZE_DOCUMENT,
     GRADIENT_COUNTS,
     ROOT_MARKER,
+    TRACK_CLASSIFICATION,
     TOTAL_COUNTS,
     RunSpec,
     _git_state,
     _expected_rp_updates,
     _runtime_files,
+    _record_numerical_failure,
     _smoke_plan,
     _source_q1,
     _train_worker,
@@ -46,7 +48,7 @@ from repro.sagodi_protocol.source_repaired_lru_calru_v6 import (
     load_config,
     screen_rp_sentinels,
     screen_sentinels,
-    select_lr_noise,
+    select_learning_rate,
     select_rp,
     summarize_main,
 )
@@ -81,8 +83,27 @@ def test_config_freezes_dependency_graph_and_fairness() -> None:
     assert config["task_and_data_contract"]["online_stream_namespace"] == BASELINE_CAMPAIGN_ID
     assert config["dependencies"]["no_rp_sentinel_requires"] == "lru_main_scientific_pass"
     assert config["dependencies"]["ca_rp_sentinel_requires"].startswith("verified_no_rp_main")
-    assert config["ca_fairness"]["inherits_lr_noise_from"] == "no_rp_n52"
-    assert config["ca_fairness"]["ca_lr_noise_independently_tuned"] is False
+    assert config["ca_fairness"]["inherits_learning_rate_from"] == "no_rp_n52"
+    assert config["ca_fairness"]["ca_learning_rate_independently_tuned"] is False
+    assert config["training"]["actual_post_transition_state_noise_std"] == 0.0
+    assert config["training"]["state_noise_scaling"] == "not_applicable_disabled"
+    assert config["training"]["paper_state_noise_covariance_provenance_only"] == "0.01I"
+    assert config["training"]["controlled_output_dropout"] == 0.0
+    assert config["training"]["controlled_target_noise_std"] == 0.0
+    assert config["training"]["training_target_semantics"] == (
+        "clean_cos_sin_target_for_initial_q1_and_loss"
+    )
+    assert "zero_state_noise_ablation" not in config
+    assert config["learning_rate_tuning"]["learning_rate_grid"] == [
+        0.03,
+        0.01,
+        0.003,
+        0.001,
+        0.0003,
+        0.0001,
+        0.00003,
+        0.00001,
+    ]
 
 
 @pytest.mark.parametrize(
@@ -118,17 +139,18 @@ def test_lru_plans_are_independent_and_nmse_first(tmp_path: Path) -> None:
     config = load_config()
     bank = tmp_path / "tuning.npz"
     sentinel = build_lr_sentinel_plan(tmp_path, config, bank, "lru")
-    assert len(sentinel) == 16
+    assert len(sentinel) == 8
     assert {spec.model_id for spec in sentinel} == {"lru_n52"}
     assert {spec.model_seed for spec in sentinel} == {100}
+    assert {spec.actual_state_noise_std for spec in sentinel} == {0.0}
     for index, spec in enumerate(sentinel):
         _write_result(spec, 0.002 + index * 1e-4, -10.0)
     screening = screen_sentinels(sentinel, config)
     fanout = build_lr_fanout_plan(tmp_path, config, bank, "lru", screening)
-    assert len(fanout) == 12
+    assert len(fanout) == 32
     assert {spec.model_seed for spec in fanout} == {101, 102, 103, 104}
 
-    cells = screening["top_cells"]
+    cells = screening["all_learning_rates"]
     for spec in fanout:
         cell_index = next(
             i
@@ -153,7 +175,7 @@ def test_lru_plans_are_independent_and_nmse_first(tmp_path: Path) -> None:
             and row.actual_state_noise_std == cell["actual_state_noise_std"]
         )
         _write_result(spec, 0.001 if i == 0 else 0.02, -10.0 if i != 1 else -25.0)
-    selection = select_lr_noise(sentinel, fanout, config)
+    selection = select_learning_rate(sentinel, fanout, config)
     assert selection["winner"]["learning_rate"] == cells[1]["learning_rate"]
     assert selection["winner"]["actual_state_noise_std"] == cells[1]["actual_state_noise_std"]
 
@@ -168,7 +190,7 @@ def test_missing_seed_cell_is_never_selected(tmp_path: Path) -> None:
     fanout = build_lr_fanout_plan(tmp_path, config, bank, "lru", screen)
     for spec in fanout:
         _write_result(spec, 0.003, -24.0)
-    best = screen["top_cells"][0]
+    best = screen["all_learning_rates"][0]
     broken = next(
         spec
         for spec in fanout
@@ -176,21 +198,21 @@ def test_missing_seed_cell_is_never_selected(tmp_path: Path) -> None:
         and spec.actual_state_noise_std == best["actual_state_noise_std"]
     )
     _write_result(broken, 0.0, -100.0, status="failed")
-    selected = select_lr_noise(sentinel, fanout, config)
+    selected = select_learning_rate(sentinel, fanout, config)
     assert (
         selected["winner"]["learning_rate"],
         selected["winner"]["actual_state_noise_std"],
     ) != (broken.learning_rate, broken.actual_state_noise_std)
 
 
-def test_ca_inherits_no_rp_lr_noise_and_only_rp_is_tuned(tmp_path: Path) -> None:
+def test_ca_inherits_no_rp_lr_and_common_noise_and_only_rp_is_tuned(tmp_path: Path) -> None:
     config = load_config()
     bank = tmp_path / "tuning.npz"
-    no_rp = {"winner": {"learning_rate": 0.003, "actual_state_noise_std": 0.01}}
+    no_rp = {"winner": {"learning_rate": 0.003, "actual_state_noise_std": 0.0}}
     sentinel = build_rp_sentinel_plan(tmp_path, config, bank, no_rp)
     assert len(sentinel) == 9
     assert {spec.learning_rate for spec in sentinel} == {0.003}
-    assert {spec.actual_state_noise_std for spec in sentinel} == {0.01}
+    assert {spec.actual_state_noise_std for spec in sentinel} == {0.0}
     for index, spec in enumerate(sentinel):
         _write_result(spec, 0.004, -23.0, blank=0.1 + index * 0.01)
     screening = screen_rp_sentinels(sentinel, config)
@@ -210,7 +232,7 @@ def test_ca_inherits_no_rp_lr_noise_and_only_rp_is_tuned(tmp_path: Path) -> None
     )
     assert len(main) == 10
     assert {spec.learning_rate for spec in main} == {0.003}
-    assert {spec.actual_state_noise_std for spec in main} == {0.01}
+    assert {spec.actual_state_noise_std for spec in main} == {0.0}
     assert all(spec.rp_enabled for spec in main)
 
 
@@ -261,7 +283,7 @@ def test_no_rp_ca_are_identical_through_one_pre_rp_update() -> None:
         prediction = model.forward_sequence(
             batch.inputs,
             initial_memory=_source_q1(batch),
-            state_noise_std=0.01,
+            state_noise_std=0.0,
             noise_generator=generator,
         )
         loss = masked_mse(prediction, batch.output_targets, batch.mask)
@@ -279,7 +301,7 @@ def test_rp_schedule_and_reduced_call_are_exact_and_finite(tmp_path: Path) -> No
         model_id="ca_lru_n52",
         model_seed=0,
         learning_rate=1e-3,
-        actual_state_noise_std=0.01,
+        actual_state_noise_std=0.0,
         updates=5000,
         batch_size=64,
         evaluation_bank=str(tmp_path / "main_test.npz"),
@@ -375,21 +397,21 @@ def test_parent_stage_rejects_corrupted_receipt_and_child_result(
         "screening.json",
         screen_sentinels(specs, config),
     )
-    assert downstream_v6._stage_valid(root, "lru_sentinel", 16)
+    assert downstream_v6._stage_valid(root, "lru_sentinel", len(specs))
 
     receipt_path = root / "lru_sentinel" / "completion_receipt.json"
     receipt = strict_json_load(receipt_path)
     corrupted_receipt = deepcopy(receipt)
     corrupted_receipt["metadata"]["stage"] = "corrupted"
     atomic_json(receipt_path, corrupted_receipt)
-    assert not downstream_v6._stage_valid(root, "lru_sentinel", 16)
+    assert not downstream_v6._stage_valid(root, "lru_sentinel", len(specs))
     atomic_json(receipt_path, receipt)
 
     child_result = Path(specs[0].output_dir) / "result.json"
     payload = strict_json_load(child_result)
     payload["final_metrics"]["nmse_db"] = -99.0
     atomic_json(child_result, payload)
-    assert not downstream_v6._stage_valid(root, "lru_sentinel", 16)
+    assert not downstream_v6._stage_valid(root, "lru_sentinel", len(specs))
 
 
 def test_downstream_worker_smoke_and_checkpoint_adversary(tmp_path: Path) -> None:
@@ -410,6 +432,7 @@ def test_downstream_worker_smoke_and_checkpoint_adversary(tmp_path: Path) -> Non
         "schema_version": 1,
         "campaign_id": load_config()["campaign_id"],
         "protocol_revision": load_config()["protocol_revision"],
+        "track_classification": TRACK_CLASSIFICATION,
         "config_sha256": sha256_file(DEFAULT_CONFIG),
         "freeze_sha256": sha256_file(FREEZE_DOCUMENT),
         "runtime_code_sha256": {path.name: sha256_file(path) for path in _runtime_files()},
@@ -419,14 +442,33 @@ def test_downstream_worker_smoke_and_checkpoint_adversary(tmp_path: Path) -> Non
     identity["scientific_identity"] = canonical_hash(identity)
     atomic_json(root / ROOT_MARKER, identity)
     atomic_json(root / "baseline_parent_binding.json", identity["parent_binding"])
-    smoke_specs = _smoke_plan(root, bank_path)
+    config = load_config()
+    smoke_specs = _smoke_plan(root, config, bank_path)
     _write_plan(root / "smoke", smoke_specs)
     spec = next(row for row in smoke_specs if row.model_id == "lru_n52")
     _train_worker(spec, DEFAULT_CONFIG, "cpu")
     assert _verified(spec)
     manifest = strict_json_load(Path(spec.output_dir) / "run_manifest.json")
     assert manifest["downstream_initial_state_semantics"] == "source_q1_post_update_target"
-    assert manifest["state_noise_location"] == "post_transition_full_104d_real_imag_carrier"
+    assert manifest["initial_state_argument_passed_to_model"] == (
+        "clean_batch.output_targets[0]"
+    )
+    assert manifest["controlled_target_noise_std"] == 0.0
+    assert manifest["loss"] == "clean_masked_mse_on_cos_sin_targets"
+    assert manifest["rng_stream_identities"]["target_noise"] == {
+        "enabled": False,
+        "generator_seed": None,
+        "semantics": "clean_q1_initializer_and_clean_loss_target_no_rng_draws",
+        "std": 0.0,
+    }
+    assert manifest["state_noise_location"] == "disabled_no_state_noise_injection"
+    assert manifest["state_carrier_provenance"] == (
+        "post_transition_full_104d_real_imag_carrier"
+    )
+    assert manifest["controlled_output_dropout"] == 0.0
+    assert manifest["rng_stream_identities"]["state_noise"]["enabled"] is False
+    assert manifest["rng_stream_identities"]["state_noise"]["generator_seed"] is None
+    assert manifest["rng_stream_identities"]["state_noise"]["std"] == 0.0
     assert "y0" not in manifest["model"]["initial_state"]
 
     ca_spec = next(row for row in smoke_specs if row.model_id == "ca_lru_n52")
@@ -446,3 +488,54 @@ def test_downstream_worker_smoke_and_checkpoint_adversary(tmp_path: Path) -> Non
     receipt["artifacts"]["checkpoint_final.pt"] = sha256_file(checkpoint_path)
     atomic_json(receipt_path, receipt)
     assert not _verified(spec)
+
+
+def test_synthesized_numerical_failure_keeps_verifiable_noise_free_identity(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "downstream-failure"
+    (root / "inputs").mkdir(parents=True)
+    shutil.copy2(DEFAULT_CONFIG, root / "inputs" / DEFAULT_CONFIG.name)
+    shutil.copy2(BASELINE_CONFIG, root / "inputs" / BASELINE_CONFIG.name)
+    bank_path = root / "banks" / "tuning.npz"
+    baseline = load_baseline_config()
+    contract = baseline["evaluation_banks"]["tuning"]
+    save_fixed_bank(
+        bank_path,
+        source_angular_integration(
+            int(contract["trials"]),
+            int(contract["task_seed"]),
+            stream_key=contract["stream_key"],
+        ),
+    )
+    identity = {
+        "schema_version": 1,
+        "campaign_id": load_config()["campaign_id"],
+        "protocol_revision": load_config()["protocol_revision"],
+        "track_classification": TRACK_CLASSIFICATION,
+        "config_sha256": sha256_file(DEFAULT_CONFIG),
+        "freeze_sha256": sha256_file(FREEZE_DOCUMENT),
+        "runtime_code_sha256": {path.name: sha256_file(path) for path in _runtime_files()},
+        "code_commit": _git_state(False),
+        "parent_binding": {"unit_test": True},
+    }
+    identity["scientific_identity"] = canonical_hash(identity)
+    atomic_json(root / ROOT_MARKER, identity)
+    atomic_json(root / "baseline_parent_binding.json", identity["parent_binding"])
+    specs = _smoke_plan(root, load_config(), bank_path)
+    _write_plan(root / "smoke", specs)
+    spec = next(row for row in specs if row.model_id == "lru_n52")
+
+    _record_numerical_failure(
+        spec,
+        DEFAULT_CONFIG,
+        "cpu",
+        FloatingPointError("synthetic numerical failure"),
+    )
+    assert _verified(spec)
+    manifest = strict_json_load(Path(spec.output_dir) / "run_manifest.json")
+    assert manifest["failure_manifest_synthesized"] is True
+    assert manifest["initial_state_dict_sha256"]
+    assert manifest["rng_stream_identities"]["state_noise"]["generator_seed"] is None
+    assert manifest["controlled_target_noise_std"] == 0.0
+    assert manifest["controlled_output_dropout"] == 0.0

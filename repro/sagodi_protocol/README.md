@@ -3,13 +3,20 @@
 ## Current baseline recovery: public-code-centered repaired v6
 
 현재 primary baseline recovery는 공개 코드의 T=128 variable-sparsity angular
-task, post-update q1 initial-state map, 모델별 공개 training recipe를 사용하는
+task와 post-update q1 initial-state map, 모델별 architecture/optimizer recipe를 사용하는
 RNN/GRU/LSTM 전용 v6 campaign이다. online batch 64, Adam, constant LR,
-5,000 updates를 고정하고 LR 4개 × **actual post-transition state noise** 4개를
-동일 예산으로 탐색한다. 초기화되지 않은 state map, LSTM cell-map typo와
+5,000 updates에서 **state noise, target noise, output dropout을 모두 0**으로
+고정하고 LR `[0.03,0.01,0.003,0.001,0.0003,0.0001,0.00003,0.00001]`만 동일
+예산으로 탐색한다. 따라서 clean q1 initializer와 clean loss target을 사용한다.
+논문의 state std 0.1과 공개 GRU/LSTM target noise/dropout은 provenance로만
+남긴 controlled deviation이다. shipped 공개 RNN config의 state noise는 0이며,
+nominal 0.1을 가정한 `0.1*sqrt(0.1)=0.0316228`은 hypothetical formula
+provenance일 뿐이다. 이전 내부 `source-resolved-v1` recipe의
+0.1/0.0316228 쌍은 v6가 0/0으로 명시적으로 override하며, shipped 공개
+config와 구분해 기록한다. 초기화되지 않은 state map, LSTM cell-map typo와
 collapse를 일으킨 WD=0.01, RNN 공개 bias overwrite에는 문서화된 repair를
-적용한다. 따라서 명칭은 항상 **public-code-centered controlled adaptation
-with documented repairs, not exact**이며 exact reproduction 또는 하나의 공개
+적용한다. 따라서 명칭은 항상 **public-code-architecture noise-free controlled
+training with paper/code noise provenance and documented repairs, not exact**이며 exact reproduction 또는 하나의 공개
 executed contract 재현이라고 부르지 않는다.
 
 ```bash
@@ -23,23 +30,24 @@ python -m repro.sagodi_protocol.source_repaired_baselines_v6 \
   --stage main --artifact-root /path/to/baseline_v6 --gpus 0,1,2
 ```
 
-sentinel은 seed 100의 48 runs, fanout은 모델별 top 3 cell × seeds 101--104의
-36 runs, main은 fresh seeds 0--9의 30 runs다. main 10개를 모두 보고하며
+sentinel은 seed 100의 24 runs, fanout은 single-seed pruning 없이 모든 LR ×
+seeds 101--104의 96 runs, main은 fresh seeds 0--9의 30 runs다. main 10개를 모두 보고하며
 `MSE < 0.01`은 descriptive yield, `NMSE < -20 dB`는 seed별 analysis
 eligibility다. 모델별 eligible seed가 0개일 때만 scientific gate가 실패하고,
 1--2개면 low-n warning과 함께 eligible subset만 분석한다.
 `COMPUTATION_COMPLETE`와 `SCIENTIFIC_PASS`는 별개다. 세부 freeze는
 `SAGODI_SOURCE_REPAIRED_BASELINES_V6_FREEZE_ko.md`를 따른다.
 
-다음 단계는 같은 T128/B64/5k/fixed-bank 조건에서 **LRU를 독립적으로**
-LR × actual state-noise tuning하는 것이다. LRU에 NMSE < -20 dB eligible seed가
+다음 단계는 같은 T128/B64/5k/fixed-bank/common-noise 조건에서 **LRU의 LR을 독립적으로**
+선택하는 것이다. LRU에 NMSE < -20 dB eligible seed가
 하나 이상 생긴 뒤에만 No-RP/CA-LRU pair를 시작한다. CA-LRU는 No-RP의
-LR/noise를 상속하고 RP만 별도로 고른다. 이 의존성은
+LR과 공통 noise를 상속하고 RP만 별도로 고른다. 이 의존성은
 `source_repaired_lru_calru_v6.py`와
 `SAGODI_SOURCE_REPAIRED_LRU_CALRU_V6_FREEZE_ko.md`에 고정되어 있다.
 Downstream smoke의 CA run은 2 updates라 RP call이 0회이며, full-stage용
 4,096-step blank metric은 생략한다. RP API는 별도의 reduced-horizon 단위
 테스트가 직접 검증하고 full CA stage의 RP/blank 계산은 그대로 유지한다.
+LRU와 No-RP는 각각 sentinel 8 + fanout 32 + main 10 runs다.
 
 ```bash
 python -m repro.sagodi_protocol.source_repaired_lru_calru_v6 \

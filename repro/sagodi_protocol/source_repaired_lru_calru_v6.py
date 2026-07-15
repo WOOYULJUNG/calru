@@ -7,6 +7,8 @@ parent tuning/main banks and uses the parent's online input namespace.  LRU is
 tuned and tested first; No-RP is blocked until LRU has at least one fresh main
 seed with NMSE < -20 dB. CA-LRU needs verified No-RP completion but may run
 even when No-RP itself has no eligible seed, because RP may create eligibility.
+All downstream models use the baseline-controlled clean q1 and clean loss
+targets, with target-noise standard deviation fixed to zero.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ import torch
 from .artifacts import (
     atomic_json,
     canonical_hash,
-    derived_seed,
+    canonical_tensor_mapping_sha256,
     sha256_file,
     strict_json_load,
     verify_completion_receipt,
@@ -57,9 +59,14 @@ MODULE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = MODULE_DIR / "source_repaired_lru_calru_v6.json"
 FREEZE_DOCUMENT = MODULE_DIR / "SAGODI_SOURCE_REPAIRED_LRU_CALRU_V6_FREEZE_ko.md"
 CAMPAIGN_ID = "sagodi_source_repaired_lru_calru_v6"
-PROTOCOL_REVISION = "baseline_bound_lru_then_no_rp_then_ca_v1"
+PROTOCOL_REVISION = (
+    "baseline_bound_noise_free_controlled_training_lr_only_v5"
+)
+TRACK_CLASSIFICATION = (
+    "baseline_bound_noise_free_controlled_training_with_paper_and_code_noise_provenance"
+)
 ROOT_MARKER = ".sagodi_source_repaired_lru_calru_v6_root.json"
-CONFIG_CONTRACT_SHA256 = "dc521537d7a790cab55c052cf45e94deede7aafbb32792d6d6083f1cb68ff053"
+CONFIG_CONTRACT_SHA256 = "121b503b5862869c579479d5c4e48f71543e8c6483e50cd19e0722a5382b2a88"
 MODEL_IDS = ("lru_n52", "no_rp_n52", "ca_lru_n52")
 TOTAL_COUNTS = {model_id: 17058 for model_id in MODEL_IDS}
 GRADIENT_COUNTS = {"lru_n52": 17058, "no_rp_n52": 17006, "ca_lru_n52": 17006}
@@ -97,6 +104,8 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         raise ValueError("downstream config differs from exact canonical frozen contract")
     if payload.get("campaign_id") != CAMPAIGN_ID or payload.get("protocol_revision") != PROTOCOL_REVISION:
         raise ValueError("downstream v6 identity differs")
+    if payload.get("track_classification") != TRACK_CLASSIFICATION:
+        raise ValueError("downstream v6 track classification differs")
     if payload.get("baseline_parent_campaign") != BASELINE_CAMPAIGN_ID:
         raise ValueError("baseline parent identity differs")
     if payload.get("task_and_data_contract") != {
@@ -114,19 +123,52 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
             raise ValueError(f"total parameter count differs for {model_id}")
         if row.get("parameters_gradient_trainable") != GRADIENT_COUNTS[model_id]:
             raise ValueError(f"gradient parameter count differs for {model_id}")
-    tuning = payload["lr_noise_tuning"]
-    if tuning["learning_rate_grid"] != [0.01, 0.003, 0.001, 0.0003]:
+    training = payload["training"]
+    if training["actual_post_transition_state_noise_std"] != 0.0:
+        raise ValueError("common actual state-noise standard deviation differs")
+    if training["state_noise_distribution"] != "disabled":
+        raise ValueError("common state-noise distribution differs")
+    if training["state_noise_location"] != "disabled_no_state_noise_injection":
+        raise ValueError("common state-noise location differs")
+    if training["state_noise_scaling"] != "not_applicable_disabled":
+        raise ValueError("disabled state-noise scaling differs")
+    if training["paper_state_noise_covariance_provenance_only"] != "0.01I":
+        raise ValueError("paper state-noise provenance differs")
+    if training["evaluation_state_noise_std"] != 0.0:
+        raise ValueError("evaluation state-noise contract differs")
+    if training["controlled_target_noise_std"] != 0.0:
+        raise ValueError("controlled target-noise contract differs")
+    if training["controlled_output_dropout"] != 0.0:
+        raise ValueError("controlled output-dropout contract differs")
+    if training["training_target_semantics"] != (
+        "clean_cos_sin_target_for_initial_q1_and_loss"
+    ):
+        raise ValueError("controlled training-target semantics differ")
+    tuning = payload["learning_rate_tuning"]
+    if tuning["learning_rate_grid"] != [
+        0.03,
+        0.01,
+        0.003,
+        0.001,
+        0.0003,
+        0.0001,
+        0.00003,
+        0.00001,
+    ]:
         raise ValueError("LR grid differs")
-    if tuning["actual_post_transition_state_noise_std_grid"] != [0.0, 0.01, 0.0316228, 0.1]:
-        raise ValueError("actual state-noise grid differs")
-    if tuning["sentinel_seed"] != 100 or tuning["fanout_seeds"] != [101, 102, 103, 104] or tuning["top_k"] != 3:
-        raise ValueError("LR/noise tuning seeds differ")
+    if (
+        tuning["sentinel_seed"] != 100
+        or tuning["fanout_seeds"] != [101, 102, 103, 104]
+        or tuning["fanout_all_learning_rates"] is not True
+    ):
+        raise ValueError("LR tuning seeds/fanout policy differ")
     if payload["main"]["seeds"] != list(range(10)):
         raise ValueError("main seeds differ")
     if payload["ca_fairness"] != {
-        "inherits_lr_noise_from": "no_rp_n52",
+        "inherits_learning_rate_from": "no_rp_n52",
+        "inherits_common_state_noise_from": "global_training_contract",
         "same_seed_initialization_and_online_batches": True,
-        "ca_lr_noise_independently_tuned": False,
+        "ca_learning_rate_independently_tuned": False,
     }:
         raise ValueError("CA pairing/fairness contract differs")
     return payload
@@ -152,6 +194,10 @@ class RunSpec:
 
     def payload(self) -> dict[str, Any]:
         return _native(asdict(self))
+
+
+def _common_state_noise(config: Mapping[str, Any]) -> float:
+    return float(config["training"]["actual_post_transition_state_noise_std"])
 
 
 def _float_key(value: float) -> str:
@@ -181,6 +227,55 @@ def _rp_probe(spec: RunSpec, config: Mapping[str, Any], update: int, device: tor
         stream_key=(BASELINE_CAMPAIGN_ID, "rp_probe", spec.model_seed, int(update)),
         device=device,
     )
+
+
+def _rng_stream_identities(spec: RunSpec) -> dict[str, Any]:
+    return {
+        "online_task": {
+            "base_seed": 0,
+            "stream_key_template": [
+                BASELINE_CAMPAIGN_ID,
+                "online_train",
+                spec.model_seed,
+                "<update_1_to_5000>",
+            ],
+        },
+        "target_noise": {
+            "enabled": False,
+            "generator_seed": None,
+            "std": 0.0,
+            "semantics": "clean_q1_initializer_and_clean_loss_target_no_rng_draws",
+        },
+        "state_noise": {
+            "enabled": False,
+            "generator_seed": None,
+            "std": float(spec.actual_state_noise_std),
+            "scaling": "not_applicable_disabled",
+            "paper_literal_std_provenance_only": 0.1,
+            "paper_covariance_provenance_only": "0.01I",
+            "semantics": "controlled_execution_has_no_state_noise_rng_draws",
+        },
+        "dropout": {
+            "enabled": False,
+            "global_torch_seed": None,
+            "probability": 0.0,
+            "semantics": "controlled_execution_has_no_dropout_rng_draws",
+        },
+        "retention_plasticity_probe": {
+            "enabled": bool(spec.rp_enabled),
+            "base_seed": 0 if spec.rp_enabled else None,
+            "stream_key_template": (
+                [
+                    BASELINE_CAMPAIGN_ID,
+                    "rp_probe",
+                    spec.model_seed,
+                    "<scheduled_update>",
+                ]
+                if spec.rp_enabled
+                else None
+            ),
+        },
+    }
 
 
 @torch.no_grad()
@@ -251,29 +346,29 @@ def build_lr_sentinel_plan(
     prefix: str,
 ) -> tuple[RunSpec, ...]:
     model_id = LR_STAGES[prefix]
-    tuning, training = config["lr_noise_tuning"], config["training"]
+    tuning, training = config["learning_rate_tuning"], config["training"]
+    noise = _common_state_noise(config)
     specs: list[RunSpec] = []
     for lr in tuning["learning_rate_grid"]:
-        for noise in tuning["actual_post_transition_state_noise_std_grid"]:
-            run_id = (
-                f"{prefix}_sentinel__lr{_float_key(lr)}__noise{_float_key(noise)}"
-                f"__seed{tuning['sentinel_seed']}"
+        run_id = (
+            f"{prefix}_sentinel__lr{_float_key(lr)}__noise{_float_key(noise)}"
+            f"__seed{tuning['sentinel_seed']}"
+        )
+        specs.append(
+            RunSpec(
+                run_id=run_id,
+                stage=f"{prefix}_sentinel",
+                model_id=model_id,
+                model_seed=int(tuning["sentinel_seed"]),
+                learning_rate=float(lr),
+                actual_state_noise_std=noise,
+                updates=int(training["updates"]),
+                batch_size=int(training["batch_size"]),
+                evaluation_bank=str(bank),
+                campaign_root=str(root),
+                output_dir=str(root / f"{prefix}_sentinel" / "runs" / run_id),
             )
-            specs.append(
-                RunSpec(
-                    run_id=run_id,
-                    stage=f"{prefix}_sentinel",
-                    model_id=model_id,
-                    model_seed=int(tuning["sentinel_seed"]),
-                    learning_rate=float(lr),
-                    actual_state_noise_std=float(noise),
-                    updates=int(training["updates"]),
-                    batch_size=int(training["batch_size"]),
-                    evaluation_bank=str(bank),
-                    campaign_root=str(root),
-                    output_dir=str(root / f"{prefix}_sentinel" / "runs" / run_id),
-                )
-            )
+        )
     return tuple(specs)
 
 
@@ -296,9 +391,9 @@ def _metric(spec: RunSpec, key: str) -> float | None:
 
 
 def screen_sentinels(specs: Sequence[RunSpec], config: Mapping[str, Any]) -> dict[str, Any]:
-    """Choose three completed cells, prioritizing NMSE eligibility."""
+    """Record one-seed LR results without pruning any LR candidate."""
 
-    tuning, main = config["lr_noise_tuning"], config["main"]
+    tuning, main = config["learning_rate_tuning"], config["main"]
     mse_threshold = float(main["mse_success_threshold"])
     nmse_threshold = float(main["analysis_eligibility_nmse_db_threshold"])
     rows: list[dict[str, Any]] = []
@@ -314,12 +409,7 @@ def screen_sentinels(specs: Sequence[RunSpec], config: Mapping[str, Any]) -> dic
                 "nmse_db": nmse,
                 "nmse_eligible": nmse is not None and nmse < nmse_threshold,
                 "mse_success": mse is not None and mse < mse_threshold,
-                "grid_order": [
-                    tuning["learning_rate_grid"].index(spec.learning_rate),
-                    tuning["actual_post_transition_state_noise_std_grid"].index(
-                        spec.actual_state_noise_std
-                    ),
-                ],
+                "grid_order": tuning["learning_rate_grid"].index(spec.learning_rate),
             }
         )
     rows.sort(
@@ -328,17 +418,16 @@ def screen_sentinels(specs: Sequence[RunSpec], config: Mapping[str, Any]) -> dic
             not row["mse_success"],
             math.inf if row["mse"] is None else row["mse"],
             math.inf if row["nmse_db"] is None else row["nmse_db"],
-            *row["grid_order"],
+            row["grid_order"],
         )
     )
-    completed = [row for row in rows if row["completed"]]
-    if len(completed) < int(tuning["top_k"]):
-        raise RuntimeError("sentinel has fewer than three completed cells")
+    if len(rows) != len(tuning["learning_rate_grid"]):
+        raise RuntimeError("sentinel LR denominator differs")
     return {
         "schema_version": 1,
         "selection_priority": "nmse_eligibility_before_descriptive_mse",
-        "top_cells": completed[: int(tuning["top_k"])],
-        "all_cells": rows,
+        "fanout_all_learning_rates": True,
+        "all_learning_rates": rows,
     }
 
 
@@ -350,12 +439,15 @@ def build_lr_fanout_plan(
     screening: Mapping[str, Any],
 ) -> tuple[RunSpec, ...]:
     model_id = LR_STAGES[prefix]
-    tuning, training = config["lr_noise_tuning"], config["training"]
+    tuning, training = config["learning_rate_tuning"], config["training"]
+    noise = _common_state_noise(config)
     specs: list[RunSpec] = []
-    if len(screening["top_cells"]) != int(tuning["top_k"]):
-        raise ValueError("fanout requires exactly top-k sentinel cells")
-    for cell in screening["top_cells"]:
-        lr, noise = float(cell["learning_rate"]), float(cell["actual_state_noise_std"])
+    observed = {float(row["learning_rate"]) for row in screening["all_learning_rates"]}
+    expected = set(map(float, tuning["learning_rate_grid"]))
+    if observed != expected or len(screening["all_learning_rates"]) != len(expected):
+        raise ValueError("fanout requires every registered learning rate")
+    for lr in tuning["learning_rate_grid"]:
+        lr = float(lr)
         for seed in tuning["fanout_seeds"]:
             run_id = (
                 f"{prefix}_fanout__lr{_float_key(lr)}__noise{_float_key(noise)}"
@@ -379,29 +471,33 @@ def build_lr_fanout_plan(
     return tuple(specs)
 
 
-def select_lr_noise(
+def select_learning_rate(
     sentinel_specs: Sequence[RunSpec],
     fanout_specs: Sequence[RunSpec],
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
-    tuning, main = config["lr_noise_tuning"], config["main"]
+    tuning, main = config["learning_rate_tuning"], config["main"]
     expected_seeds = {int(tuning["sentinel_seed"]), *map(int, tuning["fanout_seeds"])}
-    cells = sorted(
-        {(spec.learning_rate, spec.actual_state_noise_std) for spec in fanout_specs},
-        key=lambda pair: (
-            tuning["learning_rate_grid"].index(pair[0]),
-            tuning["actual_post_transition_state_noise_std_grid"].index(pair[1]),
-        ),
+    learning_rates = sorted(
+        {spec.learning_rate for spec in fanout_specs},
+        key=tuning["learning_rate_grid"].index,
     )
+    if learning_rates != list(map(float, tuning["learning_rate_grid"])):
+        raise RuntimeError("fanout LR denominator differs")
     rows: list[dict[str, Any]] = []
-    for lr, noise in cells:
+    for lr in learning_rates:
+        noise = _common_state_noise(config)
         specs = [
             spec
             for spec in (*sentinel_specs, *fanout_specs)
-            if spec.learning_rate == lr and spec.actual_state_noise_std == noise
+            if spec.learning_rate == lr
         ]
-        if len(specs) != 5 or {spec.model_seed for spec in specs} != expected_seeds:
-            raise RuntimeError("LR/noise cell does not have the registered five seeds")
+        if (
+            len(specs) != 5
+            or {spec.model_seed for spec in specs} != expected_seeds
+            or {spec.actual_state_noise_std for spec in specs} != {noise}
+        ):
+            raise RuntimeError("LR candidate does not have the registered five seeds")
         mses = [_metric(spec, "mse") for spec in specs]
         nmses = [_metric(spec, "nmse_db") for spec in specs]
         complete = all(value is not None for value in (*mses, *nmses))
@@ -421,10 +517,7 @@ def select_lr_noise(
                 ),
                 "median_mse": float(np.median(mses)) if complete else None,
                 "mean_mse": float(np.mean(mses)) if complete else None,
-                "grid_order": [
-                    tuning["learning_rate_grid"].index(lr),
-                    tuning["actual_post_transition_state_noise_std_grid"].index(noise),
-                ],
+                "grid_order": tuning["learning_rate_grid"].index(lr),
                 "per_seed": [
                     {
                         "seed": spec.model_seed,
@@ -442,15 +535,16 @@ def select_lr_noise(
             -row["mse_success_count"],
             math.inf if row["median_mse"] is None else row["median_mse"],
             math.inf if row["mean_mse"] is None else row["mean_mse"],
-            *row["grid_order"],
+            row["grid_order"],
         )
     )
     complete = [row for row in rows if row["completed_seed_count"] == 5]
     if not complete:
-        raise RuntimeError("no complete five-seed LR/noise cell")
+        raise RuntimeError("no complete five-seed LR candidate")
     return {
         "schema_version": 1,
         "selection_rule": tuning["selection_rule"],
+        "all_learning_rates_fanned_out": True,
         "winner": complete[0],
         "cells": rows,
     }
@@ -462,11 +556,18 @@ def build_main_plan(
     bank: Path,
     prefix: str,
     model_id: str,
-    lr_noise: Mapping[str, Any],
+    learning_rate_selection: Mapping[str, Any],
     *,
     rp: Mapping[str, Any] | None = None,
 ) -> tuple[RunSpec, ...]:
-    winner = lr_noise["winner"] if "winner" in lr_noise else lr_noise
+    winner = (
+        learning_rate_selection["winner"]
+        if "winner" in learning_rate_selection
+        else learning_rate_selection
+    )
+    noise = _common_state_noise(config)
+    if float(winner["actual_state_noise_std"]) != noise:
+        raise ValueError("selected state noise differs from the common fixed contract")
     specs: list[RunSpec] = []
     for seed in config["main"]["seeds"]:
         run_id = f"{prefix}_main__seed{seed}"
@@ -477,7 +578,7 @@ def build_main_plan(
                 model_id=model_id,
                 model_seed=int(seed),
                 learning_rate=float(winner["learning_rate"]),
-                actual_state_noise_std=float(winner["actual_state_noise_std"]),
+                actual_state_noise_std=noise,
                 updates=int(config["training"]["updates"]),
                 batch_size=int(config["training"]["batch_size"]),
                 evaluation_bank=str(bank),
@@ -534,6 +635,9 @@ def build_rp_sentinel_plan(
 ) -> tuple[RunSpec, ...]:
     winner = no_rp_selection["winner"]
     rp, training = config["retention_plasticity"], config["training"]
+    noise = _common_state_noise(config)
+    if float(winner["actual_state_noise_std"]) != noise:
+        raise ValueError("No-RP selection state noise differs from the common contract")
     specs: list[RunSpec] = []
     for eta in rp["eta_lambda_grid"]:
         for epsilon in rp["damage_epsilon_grid"]:
@@ -548,7 +652,7 @@ def build_rp_sentinel_plan(
                     model_id="ca_lru_n52",
                     model_seed=int(rp["sentinel_seed"]),
                     learning_rate=float(winner["learning_rate"]),
-                    actual_state_noise_std=float(winner["actual_state_noise_std"]),
+                    actual_state_noise_std=noise,
                     updates=int(training["updates"]),
                     batch_size=int(training["batch_size"]),
                     evaluation_bank=str(bank),
@@ -612,6 +716,9 @@ def build_rp_fanout_plan(
 ) -> tuple[RunSpec, ...]:
     winner = no_rp_selection["winner"]
     rp, training = config["retention_plasticity"], config["training"]
+    noise = _common_state_noise(config)
+    if float(winner["actual_state_noise_std"]) != noise:
+        raise ValueError("No-RP selection state noise differs from the common contract")
     specs: list[RunSpec] = []
     for cell in screening["top_cells"]:
         for seed in rp["fanout_seeds"]:
@@ -626,7 +733,7 @@ def build_rp_fanout_plan(
                     model_id="ca_lru_n52",
                     model_seed=int(seed),
                     learning_rate=float(winner["learning_rate"]),
-                    actual_state_noise_std=float(winner["actual_state_noise_std"]),
+                    actual_state_noise_std=noise,
                     updates=int(training["updates"]),
                     batch_size=int(training["batch_size"]),
                     evaluation_bank=str(bank),
@@ -749,6 +856,8 @@ def _assert_worker_identity(
         raise RuntimeError("downstream root campaign identity differs")
     if identity.get("protocol_revision") != PROTOCOL_REVISION:
         raise RuntimeError("downstream root protocol revision differs")
+    if identity.get("track_classification") != TRACK_CLASSIFICATION:
+        raise RuntimeError("downstream root track classification differs")
     identity_core = dict(identity)
     observed_scientific_identity = identity_core.pop("scientific_identity", None)
     if canonical_hash(identity_core) != observed_scientific_identity:
@@ -794,6 +903,23 @@ def _prepare_root(
     baseline_marker = baseline_root / BASELINE_ROOT_MARKER
     baseline_main = baseline_root / "main"
     baseline_config = load_baseline_config(baseline_root / "inputs" / BASELINE_CONFIG.name)
+    if (
+        float(baseline_config["training"]["actual_post_transition_state_noise_std"])
+        != _common_state_noise(config)
+    ):
+        raise RuntimeError("downstream common state noise differs from baseline parent")
+    if (
+        float(baseline_config["training"]["controlled_target_noise_std"])
+        != float(config["training"]["controlled_target_noise_std"])
+        or float(config["training"]["controlled_target_noise_std"]) != 0.0
+    ):
+        raise RuntimeError("downstream zero target-noise contract differs from baseline parent")
+    if (
+        float(baseline_config["training"]["controlled_output_dropout"])
+        != float(config["training"]["controlled_output_dropout"])
+        or float(config["training"]["controlled_output_dropout"]) != 0.0
+    ):
+        raise RuntimeError("downstream zero-dropout contract differs from baseline parent")
     parent_binding = {
         "schema_version": 1,
         "baseline_campaign_id": BASELINE_CAMPAIGN_ID,
@@ -827,6 +953,7 @@ def _prepare_root(
         "schema_version": 1,
         "campaign_id": CAMPAIGN_ID,
         "protocol_revision": PROTOCOL_REVISION,
+        "track_classification": TRACK_CLASSIFICATION,
         "config_sha256": sha256_file(config_source),
         "freeze_sha256": sha256_file(FREEZE_DOCUMENT),
         "runtime_code_sha256": {path.name: sha256_file(path) for path in _runtime_files()},
@@ -902,6 +1029,8 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
     except RuntimeError:
         pass
     model = build_v4_model(spec.model_id).to(device)
+    initial_state_dict_sha256 = canonical_tensor_mapping_sha256(model.state_dict())
+    rng_stream_identities = _rng_stream_identities(spec)
     _finite_model(model)
     total = sum(parameter.numel() for parameter in model.parameters())
     gradient = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
@@ -922,9 +1051,6 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
         eps=float(config["training"]["epsilon"]),
         weight_decay=float(config["training"]["weight_decay"]),
     )
-    noise_generator = torch.Generator(device=device.type).manual_seed(
-        derived_seed(spec.model_seed, BASELINE_CAMPAIGN_ID, "state_noise")
-    )
     downstream_model_metadata = dict(model.metadata())
     downstream_model_metadata["initial_state"] = (
         "linear_Wotr_source_q1_post_update_target"
@@ -932,6 +1058,8 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
     manifest = {
         "schema_version": 1,
         "campaign_id": CAMPAIGN_ID,
+        "protocol_revision": PROTOCOL_REVISION,
+        "track_classification": TRACK_CLASSIFICATION,
         "run": spec.payload(),
         "scientific_identity": identity["scientific_identity"],
         "runtime_code_sha256": identity["runtime_code_sha256"],
@@ -941,19 +1069,32 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
         "baseline_parent_binding": identity["parent_binding"],
         "model": downstream_model_metadata,
         "downstream_initial_state_semantics": "source_q1_post_update_target",
-        "initial_state_argument_passed_to_model": "batch.output_targets[0]",
+        "initial_state_argument_passed_to_model": "clean_batch.output_targets[0]",
+        "controlled_target_noise_std": config["training"][
+            "controlled_target_noise_std"
+        ],
+        "controlled_output_dropout": config["training"]["controlled_output_dropout"],
+        "training_target_semantics": config["training"]["training_target_semantics"],
+        "loss": "clean_masked_mse_on_cos_sin_targets",
         "parameters_total": total,
         "parameters_gradient_trainable": gradient,
+        "initial_state_dict_sha256": initial_state_dict_sha256,
+        "rng_stream_identities": rng_stream_identities,
         "actual_post_transition_state_noise_std": spec.actual_state_noise_std,
-        "state_noise_location": (
+        "state_noise_location": "disabled_no_state_noise_injection",
+        "state_carrier_provenance": (
             "post_transition_full_104d_real_imag_carrier"
             if spec.model_id == "lru_n52"
             else "post_transition_full_52d_real_carrier"
         ),
-        "state_noise_scale_semantics": "iid_per_coordinate_standard_deviation_not_equal_total_energy",
+        "state_noise_scale_semantics": "not_applicable_disabled",
+        "paper_literal_state_noise_std_provenance_only": 0.1,
+        "paper_state_noise_covariance_provenance_only": "0.01I",
         "evaluation_bank_sha256": sha256_file(spec.evaluation_bank),
         "online_stream_namespace": BASELINE_CAMPAIGN_ID,
-        "ca_lr_noise_independently_tuned": False if spec.model_id == "ca_lru_n52" else None,
+        "ca_learning_rate_independently_tuned": (
+            False if spec.model_id == "ca_lru_n52" else None
+        ),
         "started_at_utc": _utc_now(),
         "device": device_text,
         "device_provenance": _device_provenance(device),
@@ -972,7 +1113,7 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
             batch.inputs,
             initial_memory=_source_q1(batch),
             state_noise_std=float(spec.actual_state_noise_std),
-            noise_generator=noise_generator,
+            noise_generator=None,
         )
         loss = masked_mse(prediction, batch.output_targets, batch.mask)
         if not torch.isfinite(loss).item():
@@ -1064,6 +1205,8 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
             "checkpoint_type": CAMPAIGN_ID,
             "run": spec.payload(),
             "result": result,
+            "initial_state_dict_sha256": initial_state_dict_sha256,
+            "rng_stream_identities": rng_stream_identities,
             "state_dict": model.state_dict(),
         },
     )
@@ -1102,10 +1245,15 @@ def _record_numerical_failure(
     _assert_worker_identity(
         identity, config_path, root, require_clean=not spec.smoke
     )
+    _configure_determinism(spec.model_seed)
+    reconstructed_initial_model = build_v4_model(spec.model_id)
+    initial_state_dict_sha256 = canonical_tensor_mapping_sha256(
+        reconstructed_initial_model.state_dict()
+    )
+    rng_stream_identities = _rng_stream_identities(spec)
     manifest = output / "run_manifest.json"
     if not manifest.exists():
-        model = build_v4_model(spec.model_id)
-        model_metadata = dict(model.metadata())
+        model_metadata = dict(reconstructed_initial_model.metadata())
         model_metadata["initial_state"] = (
             "linear_Wotr_source_q1_post_update_target"
         )
@@ -1114,6 +1262,8 @@ def _record_numerical_failure(
             {
                 "schema_version": 1,
                 "campaign_id": CAMPAIGN_ID,
+                "protocol_revision": PROTOCOL_REVISION,
+                "track_classification": TRACK_CLASSIFICATION,
                 "run": spec.payload(),
                 "scientific_identity": identity["scientific_identity"],
                 "runtime_code_sha256": identity["runtime_code_sha256"],
@@ -1123,19 +1273,28 @@ def _record_numerical_failure(
                 "baseline_parent_binding": identity["parent_binding"],
                 "model": model_metadata,
                 "downstream_initial_state_semantics": "source_q1_post_update_target",
-                "initial_state_argument_passed_to_model": "batch.output_targets[0]",
+                "initial_state_argument_passed_to_model": "clean_batch.output_targets[0]",
+                "controlled_target_noise_std": 0.0,
+                "controlled_output_dropout": 0.0,
+                "training_target_semantics": "clean_cos_sin_target_for_initial_q1_and_loss",
+                "loss": "clean_masked_mse_on_cos_sin_targets",
                 "parameters_total": TOTAL_COUNTS[spec.model_id],
                 "parameters_gradient_trainable": GRADIENT_COUNTS[spec.model_id],
+                "initial_state_dict_sha256": initial_state_dict_sha256,
+                "rng_stream_identities": rng_stream_identities,
                 "actual_post_transition_state_noise_std": spec.actual_state_noise_std,
-                "state_noise_location": (
+                "state_noise_location": "disabled_no_state_noise_injection",
+                "state_carrier_provenance": (
                     "post_transition_full_104d_real_imag_carrier"
                     if spec.model_id == "lru_n52"
                     else "post_transition_full_52d_real_carrier"
                 ),
-                "state_noise_scale_semantics": "iid_per_coordinate_standard_deviation_not_equal_total_energy",
+                "state_noise_scale_semantics": "not_applicable_disabled",
+                "paper_literal_state_noise_std_provenance_only": 0.1,
+                "paper_state_noise_covariance_provenance_only": "0.01I",
                 "evaluation_bank_sha256": sha256_file(spec.evaluation_bank),
                 "online_stream_namespace": BASELINE_CAMPAIGN_ID,
-                "ca_lr_noise_independently_tuned": (
+                "ca_learning_rate_independently_tuned": (
                     False if spec.model_id == "ca_lru_n52" else None
                 ),
                 "device": device_text,
@@ -1178,6 +1337,8 @@ def _record_numerical_failure(
             "checkpoint_type": f"{CAMPAIGN_ID}_failure",
             "run": spec.payload(),
             "failure": failure,
+            "initial_state_dict_sha256": initial_state_dict_sha256,
+            "rng_stream_identities": rng_stream_identities,
         },
     )
     atomic_json(output / "FAILED", {"run_id": spec.run_id, "status": "failed"})
@@ -1294,7 +1455,12 @@ def _verified(spec: RunSpec) -> bool:
         if canonical_hash(identity_core) != observed_identity_digest:
             return False
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        _configure_determinism(spec.model_seed)
         reconstructed = build_v4_model(spec.model_id)
+        expected_initial_hash = canonical_tensor_mapping_sha256(
+            reconstructed.state_dict()
+        )
+        expected_rng_streams = _rng_stream_identities(spec)
         expected_model_metadata = dict(reconstructed.metadata())
         expected_model_metadata["initial_state"] = (
             "linear_Wotr_source_q1_post_update_target"
@@ -1302,13 +1468,15 @@ def _verified(spec: RunSpec) -> bool:
         evaluation_bank_sha256 = sha256_file(spec.evaluation_bank)
     except (OSError, ValueError, RuntimeError, TypeError, KeyError):
         return False
-    expected_noise_location = (
+    expected_carrier = (
         "post_transition_full_104d_real_imag_carrier"
         if spec.model_id == "lru_n52"
         else "post_transition_full_52d_real_carrier"
     )
     manifest_identity = (
         manifest.get("campaign_id") == CAMPAIGN_ID
+        and manifest.get("protocol_revision") == PROTOCOL_REVISION
+        and manifest.get("track_classification") == TRACK_CLASSIFICATION
         and manifest.get("run") == spec.payload()
         and manifest.get("scientific_identity") == identity.get("scientific_identity")
         and manifest.get("runtime_code_sha256") == identity.get("runtime_code_sha256")
@@ -1324,14 +1492,21 @@ def _verified(spec: RunSpec) -> bool:
         and manifest.get("downstream_initial_state_semantics")
         == "source_q1_post_update_target"
         and manifest.get("initial_state_argument_passed_to_model")
-        == "batch.output_targets[0]"
+        == "clean_batch.output_targets[0]"
+        and manifest.get("controlled_target_noise_std") == 0.0
+        and manifest.get("controlled_output_dropout") == 0.0
+        and manifest.get("training_target_semantics")
+        == "clean_cos_sin_target_for_initial_q1_and_loss"
+        and manifest.get("loss") == "clean_masked_mse_on_cos_sin_targets"
         and manifest.get("actual_post_transition_state_noise_std")
         == spec.actual_state_noise_std
-        and manifest.get("state_noise_location") == expected_noise_location
-        and manifest.get("state_noise_scale_semantics")
-        == "iid_per_coordinate_standard_deviation_not_equal_total_energy"
+        and manifest.get("state_noise_location") == "disabled_no_state_noise_injection"
+        and manifest.get("state_carrier_provenance") == expected_carrier
+        and manifest.get("state_noise_scale_semantics") == "not_applicable_disabled"
+        and manifest.get("paper_literal_state_noise_std_provenance_only") == 0.1
+        and manifest.get("paper_state_noise_covariance_provenance_only") == "0.01I"
         and manifest.get("online_stream_namespace") == BASELINE_CAMPAIGN_ID
-        and manifest.get("ca_lr_noise_independently_tuned")
+        and manifest.get("ca_learning_rate_independently_tuned")
         == (False if spec.model_id == "ca_lru_n52" else None)
         and manifest.get("evaluation_bank_sha256") == evaluation_bank_sha256
     )
@@ -1388,7 +1563,13 @@ def _verified(spec: RunSpec) -> bool:
                 return False
         elif blank is not None:
             return False
-        checkpoint_identity = checkpoint.get("result") == result
+        checkpoint_identity = (
+            checkpoint.get("result") == result
+            and manifest.get("initial_state_dict_sha256") == expected_initial_hash
+            and checkpoint.get("initial_state_dict_sha256") == expected_initial_hash
+            and manifest.get("rng_stream_identities") == expected_rng_streams
+            and checkpoint.get("rng_stream_identities") == expected_rng_streams
+        )
         outcome_identity = marker.get("run_id") == spec.run_id
     else:
         try:
@@ -1396,7 +1577,13 @@ def _verified(spec: RunSpec) -> bool:
             marker = strict_json_load(output / "FAILED")
         except (OSError, ValueError):
             return False
-        checkpoint_identity = checkpoint.get("failure") == failure
+        checkpoint_identity = (
+            checkpoint.get("failure") == failure
+            and manifest.get("initial_state_dict_sha256") == expected_initial_hash
+            and checkpoint.get("initial_state_dict_sha256") == expected_initial_hash
+            and manifest.get("rng_stream_identities") == expected_rng_streams
+            and checkpoint.get("rng_stream_identities") == expected_rng_streams
+        )
         outcome_identity = (
             marker.get("run_id") == spec.run_id
             and failure.get("run_id") == spec.run_id
@@ -1694,7 +1881,7 @@ def _stage_valid(root: Path, stage: str, expected_runs: int) -> bool:
             expected = (
                 select_rp(sentinel_specs, specs, config)
                 if stage == "ca_rp_fanout"
-                else select_lr_noise(sentinel_specs, specs, config)
+                else select_learning_rate(sentinel_specs, specs, config)
             )
             if strict_json_load(stage_root / "selection.json") != expected:
                 return False
@@ -1775,7 +1962,9 @@ def _finish_stage(
     return stage_root
 
 
-def _smoke_plan(root: Path, bank: Path) -> tuple[RunSpec, ...]:
+def _smoke_plan(
+    root: Path, config: Mapping[str, Any], bank: Path
+) -> tuple[RunSpec, ...]:
     specs = []
     for model_id in MODEL_IDS:
         specs.append(
@@ -1785,7 +1974,7 @@ def _smoke_plan(root: Path, bank: Path) -> tuple[RunSpec, ...]:
                 model_id=model_id,
                 model_seed=999,
                 learning_rate=1e-3,
-                actual_state_noise_std=0.0,
+                actual_state_noise_std=_common_state_noise(config),
                 updates=2,
                 batch_size=2,
                 evaluation_bank=str(bank),
@@ -1808,9 +1997,9 @@ def _recomputed_lr_selection(
     screening = screen_sentinels(sentinel_specs, config)
     if strict_json_load(root / f"{prefix}_sentinel" / "screening.json") != screening:
         raise RuntimeError(f"{prefix} sentinel screening differs from current children")
-    selection = select_lr_noise(sentinel_specs, fanout_specs, config)
+    selection = select_learning_rate(sentinel_specs, fanout_specs, config)
     if strict_json_load(root / f"{prefix}_fanout" / "selection.json") != selection:
-        raise RuntimeError(f"{prefix} LR/noise selection differs from current children")
+        raise RuntimeError(f"{prefix} LR selection differs from current children")
     return selection
 
 
@@ -1823,7 +2012,7 @@ def _expected_plan_for_stage(
     tuning_bank = root / "banks" / "tuning.npz"
     main_bank = root / "banks" / "main_test.npz"
     if stage == "smoke":
-        return _smoke_plan(root, tuning_bank)
+        return _smoke_plan(root, config, tuning_bank)
     if stage == "lru_sentinel":
         return build_lr_sentinel_plan(root, config, tuning_bank, "lru")
     if stage == "lru_fanout":
@@ -1882,18 +2071,23 @@ def _expected_plan_for_stage(
 def _validate_stage_dependencies(root: Path, stage: str) -> None:
     """Recursively require the exact immediate parent before consuming it."""
 
+    config = load_config(root / "inputs" / DEFAULT_CONFIG.name)
+    lr_sentinel_count = len(config["learning_rate_tuning"]["learning_rate_grid"])
+    lr_fanout_count = lr_sentinel_count * len(
+        config["learning_rate_tuning"]["fanout_seeds"]
+    )
     if stage in {"smoke", "lru_sentinel"}:
         return
     if stage == "lru_fanout":
-        _require_stage(root, "lru_sentinel", 16)
+        _require_stage(root, "lru_sentinel", lr_sentinel_count)
     elif stage == "lru_main":
-        _require_stage(root, "lru_fanout", 12)
+        _require_stage(root, "lru_fanout", lr_fanout_count)
     elif stage == "no_rp_sentinel":
         _require_lru_scientific_pass(root)
     elif stage == "no_rp_fanout":
-        _require_stage(root, "no_rp_sentinel", 16)
+        _require_stage(root, "no_rp_sentinel", lr_sentinel_count)
     elif stage == "no_rp_main":
-        _require_stage(root, "no_rp_fanout", 12)
+        _require_stage(root, "no_rp_fanout", lr_fanout_count)
     elif stage == "ca_rp_sentinel":
         _require_stage(root, "no_rp_main", 10)
     elif stage == "ca_rp_fanout":
@@ -1933,12 +2127,14 @@ def _validate_spec(
         if (
             spec.model_seed != 999
             or spec.learning_rate != 1e-3
-            or spec.actual_state_noise_std != 0.0
+            or spec.actual_state_noise_std != _common_state_noise(config)
             or spec.updates != 2
             or spec.batch_size != 2
         ):
             raise ValueError("smoke spec settings differ from the registered smoke")
     else:
+        if spec.actual_state_noise_std != _common_state_noise(config):
+            raise ValueError("full worker state noise differs from the common contract")
         if spec.updates != int(config["training"]["updates"]):
             raise ValueError("full worker update count differs")
         if spec.batch_size != int(config["training"]["batch_size"]):
@@ -1984,7 +2180,7 @@ def run_stage(
     tuning_bank = root / "banks" / "tuning.npz"
     main_bank = root / "banks" / "main_test.npz"
     if stage == "smoke":
-        specs = _smoke_plan(root, tuning_bank)
+        specs = _smoke_plan(root, config, tuning_bank)
         if _stage_valid(root, stage, len(specs)):
             return root / stage
         _run_specs(specs, copied_config, slots)
@@ -1998,23 +2194,27 @@ def run_stage(
     # Reconstruct LRU stages deterministically on every invocation.
     lru_sentinel = build_lr_sentinel_plan(root, config, tuning_bank, "lru")
     if stage == "lru_sentinel":
-        if _stage_valid(root, stage, 16):
+        if _stage_valid(root, stage, len(lru_sentinel)):
             return root / stage
         _run_specs(lru_sentinel, copied_config, slots)
         return _finish_stage(
             root, stage, lru_sentinel, "screening.json", screen_sentinels(lru_sentinel, config)
         )
-    _require_stage(root, "lru_sentinel", 16)
+    _require_stage(root, "lru_sentinel", len(lru_sentinel))
     lru_screen = strict_json_load(root / "lru_sentinel" / "screening.json")
     lru_fanout = build_lr_fanout_plan(root, config, tuning_bank, "lru", lru_screen)
     if stage == "lru_fanout":
-        if _stage_valid(root, stage, 12):
+        if _stage_valid(root, stage, len(lru_fanout)):
             return root / stage
         _run_specs(lru_fanout, copied_config, slots)
         return _finish_stage(
-            root, stage, lru_fanout, "selection.json", select_lr_noise(lru_sentinel, lru_fanout, config)
+            root,
+            stage,
+            lru_fanout,
+            "selection.json",
+            select_learning_rate(lru_sentinel, lru_fanout, config),
         )
-    _require_stage(root, "lru_fanout", 12)
+    _require_stage(root, "lru_fanout", len(lru_fanout))
     lru_selection = strict_json_load(root / "lru_fanout" / "selection.json")
     lru_main = build_main_plan(root, config, main_bank, "lru", "lru_n52", lru_selection)
     if stage == "lru_main":
@@ -2028,17 +2228,17 @@ def run_stage(
     _require_lru_scientific_pass(root)
     no_rp_sentinel = build_lr_sentinel_plan(root, config, tuning_bank, "no_rp")
     if stage == "no_rp_sentinel":
-        if _stage_valid(root, stage, 16):
+        if _stage_valid(root, stage, len(no_rp_sentinel)):
             return root / stage
         _run_specs(no_rp_sentinel, copied_config, slots)
         return _finish_stage(
             root, stage, no_rp_sentinel, "screening.json", screen_sentinels(no_rp_sentinel, config)
         )
-    _require_stage(root, "no_rp_sentinel", 16)
+    _require_stage(root, "no_rp_sentinel", len(no_rp_sentinel))
     no_rp_screen = strict_json_load(root / "no_rp_sentinel" / "screening.json")
     no_rp_fanout = build_lr_fanout_plan(root, config, tuning_bank, "no_rp", no_rp_screen)
     if stage == "no_rp_fanout":
-        if _stage_valid(root, stage, 12):
+        if _stage_valid(root, stage, len(no_rp_fanout)):
             return root / stage
         _run_specs(no_rp_fanout, copied_config, slots)
         return _finish_stage(
@@ -2046,9 +2246,9 @@ def run_stage(
             stage,
             no_rp_fanout,
             "selection.json",
-            select_lr_noise(no_rp_sentinel, no_rp_fanout, config),
+            select_learning_rate(no_rp_sentinel, no_rp_fanout, config),
         )
-    _require_stage(root, "no_rp_fanout", 12)
+    _require_stage(root, "no_rp_fanout", len(no_rp_fanout))
     no_rp_selection = strict_json_load(root / "no_rp_fanout" / "selection.json")
     no_rp_main = build_main_plan(
         root, config, main_bank, "no_rp", "no_rp_n52", no_rp_selection

@@ -81,10 +81,19 @@ legacy model tag를 보존한 코드가 있다. 환경 버전과 대표 명령�
 RNN/GRU/LSTM 경로를 T128/B64/5k 공통 비교 계약으로 옮긴 **controlled
 adaptation with documented repairs, not exact**다. main seed 10개를 모두
 보고하고 MSE `<0.01`은 descriptive yield, NMSE `<-20 dB`는 seed별 분석
-eligibility로 사용한다. baseline 모델 하나의 zero eligibility는 downstream을
+eligibility로 사용한다. 모든 모델의 actual post-transition coordinate state-noise
+std, target-noise std, output dropout은 여섯 모델 모두 0으로 고정하고
+`[0.03,0.01,0.003,0.001,0.0003,0.0001,0.00003,0.00001]`에서 LR만 5-seed
+선택한다. 모든 모델은 clean q1과 clean loss target을 쓴다. 논문의 state std
+`0.1`, 공개 GRU/LSTM target noise/dropout은 provenance로만 기록한다. shipped
+공개 RNN config의 state noise는 0이며, nominal 0.1을 가정할 때의
+`0.1*sqrt(0.1)=0.0316228`은 hypothetical formula provenance일 뿐이다.
+이전 내부 `source-resolved-v1` recipe의 0.1/0.0316228 쌍은 v6가 0/0으로
+명시적으로 override하며, shipped 공개 config와 구분해 provenance로 남긴다.
+baseline 모델 하나의 zero eligibility는 downstream을
 막지 않는다. 이후 LRU를 같은 fixed bank에서 독립 tuning/main하고, LRU가
 eligible seed를 하나 이상 만들 때만 No-RP/CA-LRU pair를 시작한다. CA는
-No-RP의 LR/noise를 상속한다. 실행 명령과 차이/repair 내역은
+No-RP의 LR과 공통 noise를 상속한다. 실행 명령과 차이/repair 내역은
 [`repro/sagodi_protocol/README.md`](repro/sagodi_protocol/README.md)와
 [`SAGODI_SOURCE_REPAIRED_BASELINES_V6_FREEZE_ko.md`](repro/sagodi_protocol/SAGODI_SOURCE_REPAIRED_BASELINES_V6_FREEZE_ko.md)에 있다.
 

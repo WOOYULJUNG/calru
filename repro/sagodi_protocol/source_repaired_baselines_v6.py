@@ -7,10 +7,13 @@ be described as a *public-code-centered controlled adaptation with documented
 repairs, not exact*, never as an exact reproduction of either the paper prose
 or its broken and mutually inconsistent public runners.
 
-Stages are ``smoke -> sentinel -> fanout -> main``.  Sentinel evaluates the
-full LR x actual-state-noise grid with seed 100.  The three best cells per
-model are deterministically fanned out to seeds 101--104.  Main uses fresh
-seeds 0--9.  Computation completeness and scientific success are separate.
+Stages are ``smoke -> sentinel -> fanout -> main``.  Every model uses the same
+actual post-transition per-coordinate state-noise standard deviation. Sentinel
+evaluates all eight learning rates with seed 100 and fanout evaluates all eight
+rates with seeds 101--104; no candidate is pruned using one seed. Main uses
+fresh seeds 0--9. All models use clean q1 initialization and clean loss targets;
+the public GRU/LSTM target-noise value is provenance only. Computation
+completeness and scientific success are separate.
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ from torch import nn
 from .artifacts import (
     atomic_json,
     canonical_hash,
-    derived_seed,
+    canonical_tensor_mapping_sha256,
     sha256_file,
     strict_json_load,
     verify_completion_receipt,
@@ -50,7 +53,6 @@ from .source_resolved_protocol import (
     UPSTREAM_COMMIT,
     build_source_optimizer,
     clip_source_gradients,
-    noisy_training_targets,
     source_angular_integration,
     source_masked_mse,
     source_recipe,
@@ -62,12 +64,15 @@ MODULE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = MODULE_DIR / "source_repaired_baselines_v6.json"
 FREEZE_DOCUMENT = MODULE_DIR / "SAGODI_SOURCE_REPAIRED_BASELINES_V6_FREEZE_ko.md"
 CAMPAIGN_ID = "sagodi_source_repaired_baselines_v6"
-PROTOCOL_REVISION = "public_code_centered_documented_repairs_v1"
+PROTOCOL_REVISION = (
+    "public_code_architecture_noise_free_controlled_training_lr_only_v5"
+)
 TRACK_CLASSIFICATION = (
-    "public_code_centered_controlled_adaptation_with_documented_repairs_not_exact"
+    "public_code_architecture_noise_free_controlled_training_with_paper_and_code_noise_"
+    "provenance_and_documented_repairs_not_exact"
 )
 ROOT_MARKER = ".sagodi_source_repaired_baselines_v6_root.json"
-CONFIG_CONTRACT_SHA256 = "5e7031221173b9b623b09f77d26a7ce3266982940292e313ae615fd7affd52ee"
+CONFIG_CONTRACT_SHA256 = "67588e2ab4e00acfc4e064123aa55e512e83acf2f202ada2715ef2ee027cd3a7"
 MODEL_IDS = (
     "sagodi_rnn_tanh_n128",
     "sagodi_gru_n128",
@@ -82,6 +87,41 @@ PARAMETER_COUNTS = {
     "sagodi_rnn_tanh_n128": 17154,
     "sagodi_gru_n128": 50818,
     "sagodi_lstm_n64": 17538,
+}
+UPSTREAM_PUBLIC_TARGET_NOISE = {
+    "sagodi_rnn_tanh_n128": 0.0,
+    "sagodi_gru_n128": 0.01,
+    "sagodi_lstm_n64": 0.01,
+}
+UPSTREAM_PUBLIC_CONFIG_EFFECTIVE_STATE_NOISE = {
+    "sagodi_rnn_tanh_n128": 0.0,
+    "sagodi_gru_n128": 0.0,
+    "sagodi_lstm_n64": 0.0,
+}
+UPSTREAM_PUBLIC_CONFIG_NOMINAL_STATE_NOISE = {
+    "sagodi_rnn_tanh_n128": 0.0,
+    "sagodi_gru_n128": None,
+    "sagodi_lstm_n64": None,
+}
+PRIOR_INTERNAL_RECIPE_NOMINAL_STATE_NOISE = {
+    "sagodi_rnn_tanh_n128": 0.1,
+    "sagodi_gru_n128": 0.0,
+    "sagodi_lstm_n64": 0.0,
+}
+PRIOR_INTERNAL_RECIPE_EFFECTIVE_STATE_NOISE = {
+    "sagodi_rnn_tanh_n128": 0.0316228,
+    "sagodi_gru_n128": 0.0,
+    "sagodi_lstm_n64": 0.0,
+}
+HYPOTHETICAL_RNN_SQRT_DT_EFFECTIVE = {
+    "sagodi_rnn_tanh_n128": 0.0316228,
+    "sagodi_gru_n128": None,
+    "sagodi_lstm_n64": None,
+}
+UPSTREAM_PUBLIC_OUTPUT_DROPOUT = {
+    "sagodi_rnn_tanh_n128": 0.0,
+    "sagodi_gru_n128": 0.5,
+    "sagodi_lstm_n64": 0.0,
 }
 
 
@@ -136,6 +176,38 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
             raise ValueError(f"v6 width differs for {model_id}")
         if int(row.get("parameter_count", -1)) != PARAMETER_COUNTS[model_id]:
             raise ValueError(f"v6 parameter count differs for {model_id}")
+        if float(row.get("upstream_public_code_target_noise_std", -1.0)) != (
+            UPSTREAM_PUBLIC_TARGET_NOISE[model_id]
+        ):
+            raise ValueError(f"v6 upstream target-noise provenance differs for {model_id}")
+        if float(row.get("controlled_target_noise_std", -1.0)) != 0.0:
+            raise ValueError(f"v6 controlled target noise differs for {model_id}")
+        if float(row.get("upstream_public_config_effective_state_noise_std", -1.0)) != (
+            UPSTREAM_PUBLIC_CONFIG_EFFECTIVE_STATE_NOISE[model_id]
+        ):
+            raise ValueError(f"v6 upstream state-noise provenance differs for {model_id}")
+        if row.get("upstream_public_config_nominal_state_noise_std") != (
+            UPSTREAM_PUBLIC_CONFIG_NOMINAL_STATE_NOISE[model_id]
+        ):
+            raise ValueError(f"v6 upstream nominal-noise provenance differs for {model_id}")
+        if row.get("prior_internal_source_resolved_recipe_nominal_state_noise_std") != (
+            PRIOR_INTERNAL_RECIPE_NOMINAL_STATE_NOISE[model_id]
+        ):
+            raise ValueError(f"v6 prior internal nominal-noise provenance differs for {model_id}")
+        if row.get("prior_internal_source_resolved_recipe_effective_state_noise_std") != (
+            PRIOR_INTERNAL_RECIPE_EFFECTIVE_STATE_NOISE[model_id]
+        ):
+            raise ValueError(f"v6 prior internal effective-noise provenance differs for {model_id}")
+        if row.get("hypothetical_nominal_0p1_effective_under_sqrt_dt") != (
+            HYPOTHETICAL_RNN_SQRT_DT_EFFECTIVE[model_id]
+        ):
+            raise ValueError(f"v6 hypothetical sqrt-dt provenance differs for {model_id}")
+        if float(row.get("upstream_public_code_output_dropout", -1.0)) != (
+            UPSTREAM_PUBLIC_OUTPUT_DROPOUT[model_id]
+        ):
+            raise ValueError(f"v6 upstream dropout provenance differs for {model_id}")
+        if float(row.get("controlled_output_dropout", -1.0)) != 0.0:
+            raise ValueError(f"v6 controlled output dropout differs for {model_id}")
     training = payload.get("training", {})
     if training != {
         "optimizer": "Adam",
@@ -149,22 +221,33 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         "trace_interval": 50,
         "validation_interval": 500,
         "worker_threads": 1,
+        "actual_post_transition_state_noise_std": 0.0,
+        "state_noise_distribution": "disabled",
+        "state_noise_location": "disabled_no_state_noise_injection",
+        "state_noise_scaling": "not_applicable_disabled",
+        "paper_state_noise_covariance_provenance_only": "0.01I",
+        "evaluation_state_noise_std": 0.0,
+        "controlled_target_noise_std": 0.0,
+        "controlled_output_dropout": 0.0,
+        "training_target_semantics": "clean_cos_sin_target_for_initial_q1_and_loss",
     }:
         raise ValueError("v6 training contract differs")
     tuning = payload.get("hyperparameter_tuning", {})
-    if tuning.get("learning_rate_grid") != [0.01, 0.003, 0.001, 0.0003]:
-        raise ValueError("v6 LR grid differs")
-    if tuning.get("actual_post_transition_state_noise_std_grid") != [
-        0.0,
+    if tuning.get("learning_rate_grid") != [
+        0.03,
         0.01,
-        0.0316228,
-        0.1,
+        0.003,
+        0.001,
+        0.0003,
+        0.0001,
+        0.00003,
+        0.00001,
     ]:
-        raise ValueError("v6 actual state-noise grid differs")
+        raise ValueError("v6 LR grid differs")
     if (
         tuning.get("sentinel_seed") != 100
         or tuning.get("fanout_seeds") != [101, 102, 103, 104]
-        or tuning.get("top_k_per_model") != 3
+        or tuning.get("fanout_all_learning_rates") is not True
     ):
         raise ValueError("v6 tuning seed/fanout contract differs")
     if payload.get("main") != {
@@ -186,11 +269,27 @@ def _model_contract(config: Mapping[str, Any], model_id: str) -> Mapping[str, An
     raise ValueError(f"unregistered model: {model_id}")
 
 
+def _common_state_noise(config: Mapping[str, Any]) -> float:
+    return float(config["training"]["actual_post_transition_state_noise_std"])
+
+
 def _recipe(config: Mapping[str, Any], model_id: str, lr: float, noise: float):
     """Apply only registered v6 overrides to the released model recipe."""
 
     source = source_recipe(model_id)
     contract = _model_contract(config, model_id)
+    if not math.isclose(
+        float(source.nominal_state_noise_std),
+        float(contract["prior_internal_source_resolved_recipe_nominal_state_noise_std"]),
+        rel_tol=1e-6,
+        abs_tol=1e-8,
+    ) or not math.isclose(
+        float(source.effective_state_noise_std),
+        float(contract["prior_internal_source_resolved_recipe_effective_state_noise_std"]),
+        rel_tol=1e-6,
+        abs_tol=1e-8,
+    ):
+        raise RuntimeError("historical source-resolved recipe provenance differs")
     return replace(
         source,
         learning_rate=float(lr),
@@ -200,8 +299,8 @@ def _recipe(config: Mapping[str, Any], model_id: str, lr: float, noise: float):
             else float(source.nominal_state_noise_std)
         ),
         effective_state_noise_std=float(noise),
-        target_noise_std=float(contract["source_target_noise_std"]),
-        output_dropout=float(contract["source_output_dropout"]),
+        target_noise_std=float(contract["controlled_target_noise_std"]),
+        output_dropout=float(contract["controlled_output_dropout"]),
         recurrent_weight_decay=float(contract["recurrent_weight_decay"]),
         gradient_clip_norm=(
             None
@@ -212,20 +311,41 @@ def _recipe(config: Mapping[str, Any], model_id: str, lr: float, noise: float):
 
 
 def noise_metadata(model_id: str, actual_std: float) -> dict[str, Any]:
-    """Separate source API names from the actual injected perturbation."""
+    """Record disabled execution separately from paper/code provenance."""
 
     actual = float(actual_std)
-    if model_id == "sagodi_rnn_tanh_n128":
-        nominal: float | None = actual / math.sqrt(0.1)
-        semantics = "upstream_rnn_nominal_times_sqrt_dt_equals_actual"
-    else:
-        nominal = None
-        semantics = "not_applicable_campaign_adds_direct_post_transition_noise"
+    if actual != 0.0:
+        raise ValueError("noise-free controlled execution requires actual state noise zero")
     return {
         "actual_post_transition_state_noise_std": actual,
-        "source_api_nominal_state_noise_std": nominal,
-        "source_api_nominal_semantics": semantics,
-        "noise_location": "post_transition_full_state",
+        "state_noise_enabled": False,
+        "state_noise_scaling": "not_applicable_disabled",
+        "paper_literal_state_noise_std_provenance_only": 0.1,
+        "paper_state_noise_covariance_provenance_only": "0.01I",
+        "controlled_source_api_nominal_state_noise_std": (
+            0.0 if model_id == "sagodi_rnn_tanh_n128" else None
+        ),
+        "controlled_source_api_nominal_semantics": (
+            "disabled_zero_not_executed"
+            if model_id == "sagodi_rnn_tanh_n128"
+            else "not_applicable_no_upstream_state_noise_api"
+        ),
+        "upstream_public_config_nominal_state_noise_std_provenance_only": (
+            UPSTREAM_PUBLIC_CONFIG_NOMINAL_STATE_NOISE[model_id]
+        ),
+        "upstream_public_config_effective_state_noise_std_provenance_only": (
+            UPSTREAM_PUBLIC_CONFIG_EFFECTIVE_STATE_NOISE[model_id]
+        ),
+        "prior_internal_source_resolved_recipe_nominal_state_noise_std_provenance_only": (
+            PRIOR_INTERNAL_RECIPE_NOMINAL_STATE_NOISE[model_id]
+        ),
+        "prior_internal_source_resolved_recipe_effective_state_noise_std_provenance_only": (
+            PRIOR_INTERNAL_RECIPE_EFFECTIVE_STATE_NOISE[model_id]
+        ),
+        "hypothetical_nominal_0p1_effective_under_sqrt_dt_provenance_only": (
+            HYPOTHETICAL_RNN_SQRT_DT_EFFECTIVE[model_id]
+        ),
+        "noise_location": "disabled_no_state_noise_injection",
     }
 
 
@@ -303,6 +423,50 @@ def _training_batch(spec: RunSpec, update: int, device: torch.device) -> Batch:
         stream_key=(CAMPAIGN_ID, "online_train", spec.model_seed, int(update)),
         device=device,
     )
+
+
+def _rng_stream_identities(spec: RunSpec, recipe: Any) -> dict[str, Any]:
+    return {
+        "online_task": {
+            "base_seed": 0,
+            "stream_key_template": [
+                CAMPAIGN_ID,
+                "online_train",
+                spec.model_seed,
+                "<update_1_to_5000>",
+            ],
+        },
+        "target_noise": {
+            "enabled": False,
+            "generator_seed": None,
+            "std": float(recipe.target_noise_std),
+            "upstream_public_code_std_provenance_only": float(
+                UPSTREAM_PUBLIC_TARGET_NOISE[spec.model_id]
+            ),
+            "semantics": "clean_q1_initializer_and_clean_loss_target_no_rng_draws",
+        },
+        "state_noise": {
+            "enabled": False,
+            "generator_seed": None,
+            "std": float(spec.actual_state_noise_std),
+            "scaling": "not_applicable_disabled",
+            "paper_literal_std_provenance_only": 0.1,
+            "upstream_public_config_effective_std_provenance_only": float(
+                UPSTREAM_PUBLIC_CONFIG_EFFECTIVE_STATE_NOISE[spec.model_id]
+            ),
+            "semantics": "controlled_execution_has_no_state_noise_rng_draws",
+        },
+        "dropout": {
+            "enabled": False,
+            "global_torch_seed": None,
+            "probability": float(recipe.output_dropout),
+            "upstream_public_code_probability_provenance_only": float(
+                UPSTREAM_PUBLIC_OUTPUT_DROPOUT[spec.model_id]
+            ),
+            "semantics": "controlled_execution_has_no_dropout_rng_draws",
+        },
+        "retention_plasticity_probe": {"enabled": False, "stream_key_template": None},
+    }
 
 
 @torch.no_grad()
@@ -388,6 +552,7 @@ def _scientific_identity(config_path: Path, *, require_clean: bool) -> dict[str,
         "schema_version": 1,
         "campaign_id": CAMPAIGN_ID,
         "protocol_revision": PROTOCOL_REVISION,
+        "track_classification": TRACK_CLASSIFICATION,
         "upstream_commit": UPSTREAM_COMMIT,
         "source_config_sha256": sha256_file(config_path),
         "source_freeze_sha256": sha256_file(FREEZE_DOCUMENT),
@@ -404,6 +569,16 @@ def _assert_worker_identity(
 ) -> None:
     git = _git_state(require_clean)
     current_hashes = {path.name: sha256_file(path) for path in _runtime_files()}
+    identity_core = dict(identity)
+    observed_identity_digest = identity_core.pop("scientific_identity", None)
+    if canonical_hash(identity_core) != observed_identity_digest:
+        raise RuntimeError("worker scientific identity digest differs")
+    if identity.get("campaign_id") != CAMPAIGN_ID:
+        raise RuntimeError("worker campaign identity differs")
+    if identity.get("protocol_revision") != PROTOCOL_REVISION:
+        raise RuntimeError("worker protocol revision differs")
+    if identity.get("track_classification") != TRACK_CLASSIFICATION:
+        raise RuntimeError("worker track classification differs")
     if git["code_commit"] != identity.get("code_commit"):
         raise RuntimeError("worker git commit differs from campaign root")
     if current_hashes != identity.get("runtime_code_sha256"):
@@ -508,12 +683,19 @@ def _validate_bank(
         stream_key=expected_stream,
         device="cpu",
     )
+    # The archive and SHA sidecar are exact. Independent NumPy BLAS builds can
+    # differ by a few float32 ulps in ``white @ chol.T``; cumulative angles can
+    # amplify the absolute delta when |theta| is large. A one-ulp relative
+    # allowance plus 1e-6 absolute allowance is used only for regeneration.
     for name in ("inputs", "output_targets", "latent_targets"):
         observed = getattr(batch, name).detach().cpu()
         expected_tensor = getattr(expected_batch, name)
-        # The archive+sidecar hash remains exact. Regeneration is intentionally
-        # tolerant only to cross-BLAS Cholesky roundoff (observed < 1e-7).
-        if not torch.allclose(observed, expected_tensor, rtol=0.0, atol=1e-6):
+        if not torch.allclose(
+            observed,
+            expected_tensor,
+            rtol=torch.finfo(observed.dtype).eps,
+            atol=1e-6,
+        ):
             raise RuntimeError(f"fixed bank deterministic content differs for {name}")
     if not torch.equal(batch.mask.detach().cpu(), expected_batch.mask):
         raise RuntimeError("fixed bank deterministic content differs for mask")
@@ -555,7 +737,7 @@ def build_smoke_plan(root: Path, config: Mapping[str, Any], bank: Path) -> tuple
             model_id=model_id,
             model_seed=999,
             learning_rate=1e-3,
-            actual_state_noise_std=0.01,
+            actual_state_noise_std=_common_state_noise(config),
             updates=2,
             batch_size=4,
             evaluation_bank=str(bank),
@@ -568,26 +750,26 @@ def build_smoke_plan(root: Path, config: Mapping[str, Any], bank: Path) -> tuple
 
 def build_sentinel_plan(root: Path, config: Mapping[str, Any], bank: Path) -> tuple[RunSpec, ...]:
     tuning = config["hyperparameter_tuning"]
+    noise = _common_state_noise(config)
     specs: list[RunSpec] = []
     for model_id in MODEL_IDS:
         for lr in tuning["learning_rate_grid"]:
-            for noise in tuning["actual_post_transition_state_noise_std_grid"]:
-                cell = _cell_key(float(lr), float(noise))
-                run_id = f"sentinel__{model_id}__{cell}__seed100"
-                specs.append(
-                    RunSpec(
-                        run_id=run_id,
-                        stage="sentinel",
-                        model_id=model_id,
-                        model_seed=int(tuning["sentinel_seed"]),
-                        learning_rate=float(lr),
-                        actual_state_noise_std=float(noise),
-                        updates=int(config["training"]["updates"]),
-                        batch_size=int(config["training"]["batch_size"]),
-                        evaluation_bank=str(bank),
-                        output_dir=str(root / "sentinel" / "runs" / run_id),
-                    )
+            cell = _cell_key(float(lr), noise)
+            run_id = f"sentinel__{model_id}__{cell}__seed100"
+            specs.append(
+                RunSpec(
+                    run_id=run_id,
+                    stage="sentinel",
+                    model_id=model_id,
+                    model_seed=int(tuning["sentinel_seed"]),
+                    learning_rate=float(lr),
+                    actual_state_noise_std=noise,
+                    updates=int(config["training"]["updates"]),
+                    batch_size=int(config["training"]["batch_size"]),
+                    evaluation_bank=str(bank),
+                    output_dir=str(root / "sentinel" / "runs" / run_id),
                 )
+            )
     return tuple(specs)
 
 
@@ -608,20 +790,15 @@ def _metric(spec: RunSpec, key: str) -> float | None:
     return float(value)
 
 
-def _grid_index(config: Mapping[str, Any], spec: RunSpec) -> tuple[int, int]:
+def _grid_index(config: Mapping[str, Any], spec: RunSpec) -> int:
     tuning = config["hyperparameter_tuning"]
-    return (
-        list(tuning["learning_rate_grid"]).index(spec.learning_rate),
-        list(tuning["actual_post_transition_state_noise_std_grid"]).index(
-            spec.actual_state_noise_std
-        ),
-    )
+    return list(tuning["learning_rate_grid"]).index(spec.learning_rate)
 
 
-def select_sentinel_top3(
+def summarize_sentinel(
     specs: Sequence[RunSpec], config: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Rank every sentinel cell deterministically; failures remain worst rows."""
+    """Record all one-seed LR results without pruning any LR candidate."""
 
     tuning = config["hyperparameter_tuning"]
     threshold = float(tuning["success_mse_threshold"])
@@ -643,7 +820,7 @@ def select_sentinel_top3(
                     "nmse_db": nmse,
                     "mse_pass": mse is not None and mse < threshold,
                     "nmse_pass": nmse is not None and nmse < nmse_threshold,
-                    "grid_order": list(grid),
+                    "grid_order": grid,
                 }
             )
         rows.sort(
@@ -652,26 +829,22 @@ def select_sentinel_top3(
                 not row["mse_pass"],
                 math.inf if row["mse"] is None else row["mse"],
                 math.inf if row["nmse_db"] is None else row["nmse_db"],
-                *row["grid_order"],
+                row["grid_order"],
             )
         )
-        eligible = [row for row in rows if row["completed"]]
-        if len(eligible) < int(tuning["top_k_per_model"]):
-            raise RuntimeError(
-                f"sentinel selection incomplete for {model_id}: "
-                f"{len(eligible)} completed cells"
-            )
+        if len(rows) != len(tuning["learning_rate_grid"]):
+            raise RuntimeError(f"sentinel LR denominator differs for {model_id}")
         models[model_id] = {
-            "registered_cells": len(rows),
-            "failed_or_nonfinite_cells": sum(not row["completed"] for row in rows),
-            "top_cells": eligible[: int(tuning["top_k_per_model"])],
-            "all_ranked_cells": rows,
+            "registered_learning_rates": len(rows),
+            "failed_or_nonfinite_learning_rates": sum(not row["completed"] for row in rows),
+            "all_ranked_learning_rates": rows,
         }
     return {
         "schema_version": 1,
         "campaign_id": CAMPAIGN_ID,
-        "selection_stage": "sentinel_seed100",
+        "summary_stage": "sentinel_seed100_no_candidate_pruning",
         "failures_remain_in_denominator": True,
+        "fanout_all_learning_rates": True,
         "models": models,
     }
 
@@ -680,15 +853,18 @@ def build_fanout_plan(
     root: Path,
     config: Mapping[str, Any],
     bank: Path,
-    sentinel_selection: Mapping[str, Any],
+    sentinel_summary: Mapping[str, Any],
 ) -> tuple[RunSpec, ...]:
     specs: list[RunSpec] = []
+    noise = _common_state_noise(config)
     for model_id in MODEL_IDS:
-        rows = sentinel_selection["models"][model_id]["top_cells"]
-        if len(rows) != int(config["hyperparameter_tuning"]["top_k_per_model"]):
-            raise ValueError(f"sentinel selection has wrong top-k for {model_id}")
-        for row in rows:
-            lr, noise = float(row["learning_rate"]), float(row["actual_state_noise_std"])
+        rows = sentinel_summary["models"][model_id]["all_ranked_learning_rates"]
+        observed = {float(row["learning_rate"]) for row in rows}
+        expected = set(map(float, config["hyperparameter_tuning"]["learning_rate_grid"]))
+        if observed != expected or len(rows) != len(expected):
+            raise ValueError(f"sentinel summary has wrong LR denominator for {model_id}")
+        for lr in config["hyperparameter_tuning"]["learning_rate_grid"]:
+            lr = float(lr)
             for seed in config["hyperparameter_tuning"]["fanout_seeds"]:
                 cell = _cell_key(lr, noise)
                 run_id = f"fanout__{model_id}__{cell}__seed{seed}"
@@ -714,7 +890,7 @@ def select_hyperparameters(
     fanout_specs: Sequence[RunSpec],
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Select one cell/model from all five registered tuning seeds."""
+    """Select one LR/model after evaluating every LR on all five seeds."""
 
     tuning = config["hyperparameter_tuning"]
     mse_threshold = float(tuning["success_mse_threshold"])
@@ -723,32 +899,32 @@ def select_hyperparameters(
     models: dict[str, Any] = {}
     for model_id in MODEL_IDS:
         fanout_model = [spec for spec in fanout_specs if spec.model_id == model_id]
-        cells = sorted(
-            {(spec.learning_rate, spec.actual_state_noise_std) for spec in fanout_model},
-            key=lambda pair: (
-                list(tuning["learning_rate_grid"]).index(pair[0]),
-                list(tuning["actual_post_transition_state_noise_std_grid"]).index(pair[1]),
-            ),
+        learning_rates = sorted(
+            {spec.learning_rate for spec in fanout_model},
+            key=list(tuning["learning_rate_grid"]).index,
         )
+        if learning_rates != list(map(float, tuning["learning_rate_grid"])):
+            raise ValueError(f"fanout LR denominator differs for {model_id}")
         rows: list[dict[str, Any]] = []
-        for lr, noise in cells:
+        for lr in learning_rates:
+            noise = _common_state_noise(config)
             specs = [
                 spec
                 for spec in (*sentinel_specs, *fanout_specs)
                 if spec.model_id == model_id
                 and spec.learning_rate == lr
-                and spec.actual_state_noise_std == noise
             ]
-            if {spec.model_seed for spec in specs} != expected_seeds or len(specs) != 5:
-                raise ValueError(f"five-seed denominator differs for {model_id}/{lr}/{noise}")
+            if (
+                {spec.model_seed for spec in specs} != expected_seeds
+                or len(specs) != 5
+                or {spec.actual_state_noise_std for spec in specs} != {noise}
+            ):
+                raise ValueError(f"five-seed denominator differs for {model_id}/{lr}")
             mses = [_metric(spec, "mse") for spec in specs]
             nmses = [_metric(spec, "nmse_db") for spec in specs]
             finite_mses = [value for value in mses if value is not None]
             finite_nmses = [value for value in nmses if value is not None]
-            grid_order = [
-                list(tuning["learning_rate_grid"]).index(lr),
-                list(tuning["actual_post_transition_state_noise_std_grid"]).index(noise),
-            ]
+            grid_order = list(tuning["learning_rate_grid"]).index(lr)
             rows.append(
                 {
                     "learning_rate": lr,
@@ -787,18 +963,19 @@ def select_hyperparameters(
                 -row["mse_success_count"],
                 math.inf if row["median_mse"] is None else row["median_mse"],
                 math.inf if row["mean_mse"] is None else row["mean_mse"],
-                *row["grid_order"],
+                row["grid_order"],
             )
         )
         eligible = [row for row in rows if row["completed_seed_count"] == 5]
         if not eligible:
             raise RuntimeError(f"no complete five-seed tuning cell for {model_id}")
-        models[model_id] = {"winner": eligible[0], "ranked_top3_cells": rows}
+        models[model_id] = {"winner": eligible[0], "ranked_learning_rates": rows}
     return {
         "schema_version": 1,
         "campaign_id": CAMPAIGN_ID,
         "selection_rule": tuning["selection_rule"],
-        "registered_denominator_per_cell": 5,
+        "registered_denominator_per_learning_rate": 5,
+        "all_learning_rates_fanned_out": True,
         "failures_remain_in_denominator": True,
         "models": models,
     }
@@ -813,7 +990,9 @@ def build_main_plan(
     specs: list[RunSpec] = []
     for model_id in MODEL_IDS:
         winner = selection["models"][model_id]["winner"]
-        lr, noise = float(winner["learning_rate"]), float(winner["actual_state_noise_std"])
+        lr, noise = float(winner["learning_rate"]), _common_state_noise(config)
+        if float(winner["actual_state_noise_std"]) != noise:
+            raise ValueError(f"selected state noise differs from common contract for {model_id}")
         for seed in config["main"]["seeds"]:
             cell = _cell_key(lr, noise)
             run_id = f"main__{model_id}__{cell}__seed{seed}"
@@ -917,6 +1096,8 @@ def _validate_spec(config: Mapping[str, Any], spec: RunSpec) -> None:
         raise ValueError("run spec updates/batch size must be positive")
     if spec.learning_rate <= 0 or spec.actual_state_noise_std < 0:
         raise ValueError("run spec LR/noise is invalid")
+    if spec.actual_state_noise_std != _common_state_noise(config):
+        raise ValueError("run spec state noise differs from the common fixed contract")
     if spec.smoke:
         if spec.stage != "smoke":
             raise ValueError("smoke flag/stage mismatch")
@@ -926,8 +1107,6 @@ def _validate_spec(config: Mapping[str, Any], spec: RunSpec) -> None:
         raise ValueError("unknown full run stage")
     if spec.learning_rate not in tuning["learning_rate_grid"]:
         raise ValueError("run spec LR is outside frozen grid")
-    if spec.actual_state_noise_std not in tuning["actual_post_transition_state_noise_std_grid"]:
-        raise ValueError("run spec state noise is outside frozen grid")
     if spec.updates != int(config["training"]["updates"]):
         raise ValueError("full run update count differs")
     if spec.batch_size != int(config["training"]["batch_size"]):
@@ -974,8 +1153,13 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
     model = build_model(
         config, spec.model_id, spec.learning_rate, spec.actual_state_noise_std
     ).to(device)
+    initial_state_dict_sha256 = canonical_tensor_mapping_sha256(model.state_dict())
     _finite_model(model)
     recipe = model.recipe
+    if float(recipe.target_noise_std) != 0.0:
+        raise RuntimeError("controlled primary requires zero target noise")
+    if float(recipe.output_dropout) != 0.0:
+        raise RuntimeError("controlled primary requires zero output dropout")
     optimizer = build_source_optimizer(model, recipe)
     evaluation = _to_device(load_fixed_bank(bank_path), device)
     _validate_bank(
@@ -984,12 +1168,7 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
         config=config,
         purpose=Path(spec.evaluation_bank).stem,
     )
-    target_generator = torch.Generator(device=device.type).manual_seed(
-        derived_seed(spec.model_seed, CAMPAIGN_ID, "target_noise")
-    )
-    state_generator = torch.Generator(device=device.type).manual_seed(
-        derived_seed(spec.model_seed, CAMPAIGN_ID, "state_noise")
-    )
+    rng_stream_identities = _rng_stream_identities(spec, recipe)
     contract = _model_contract(config, spec.model_id)
     manifest = {
         "schema_version": 1,
@@ -1006,7 +1185,29 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
         "upstream_commit": UPSTREAM_COMMIT,
         "model": _native(model.metadata()),
         "parameter_count_trainable": PARAMETER_COUNTS[spec.model_id],
+        "initial_state_dict_sha256": initial_state_dict_sha256,
+        "rng_stream_identities": rng_stream_identities,
         "recipe": _native(asdict(recipe)),
+        "recipe_noise_field_semantics": {
+            "nominal_state_noise_std": "controlled_zero_disabled_not_executed",
+            "effective_state_noise_std": "controlled_zero_disabled_no_state_noise_draws",
+            "paper_literal_state_noise_std_provenance_only": 0.1,
+            "upstream_public_config_nominal_state_noise_std_provenance_only": contract[
+                "upstream_public_config_nominal_state_noise_std"
+            ],
+            "upstream_public_config_effective_state_noise_std_provenance_only": contract[
+                "upstream_public_config_effective_state_noise_std"
+            ],
+            "prior_internal_source_resolved_recipe_nominal_state_noise_std_provenance_only": contract[
+                "prior_internal_source_resolved_recipe_nominal_state_noise_std"
+            ],
+            "prior_internal_source_resolved_recipe_effective_state_noise_std_provenance_only": contract[
+                "prior_internal_source_resolved_recipe_effective_state_noise_std"
+            ],
+            "hypothetical_nominal_0p1_effective_under_sqrt_dt_provenance_only": contract[
+                "hypothetical_nominal_0p1_effective_under_sqrt_dt"
+            ],
+        },
         "repair_contract": contract["repair_contract"],
         "recurrent_bias_policy": contract["recurrent_bias_policy"],
         "known_upstream_oddity": contract["known_upstream_oddity"],
@@ -1018,13 +1219,24 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
             "recurrent_weight_decay": recipe.recurrent_weight_decay,
         },
         "source_model_specific_training": {
-            "target_noise_std": recipe.target_noise_std,
-            "output_dropout": recipe.output_dropout,
+            "upstream_public_code_target_noise_std_provenance_only": contract[
+                "upstream_public_code_target_noise_std"
+            ],
+            "controlled_target_noise_std": recipe.target_noise_std,
+            "upstream_public_code_output_dropout_provenance_only": contract[
+                "upstream_public_code_output_dropout"
+            ],
+            "controlled_output_dropout": recipe.output_dropout,
+            "upstream_public_config_effective_state_noise_std_provenance_only": contract[
+                "upstream_public_config_effective_state_noise_std"
+            ],
+            "training_target_semantics": config["training"]["training_target_semantics"],
             "gradient_clip_norm": recipe.gradient_clip_norm,
         },
         "task": config["task"],
-        "loss": "released_all_step_masked_mse_on_model_specific_training_targets",
-        "evaluation": "clean_fixed_bank_no_dropout_no_state_or_target_noise",
+        "initial_state_argument": "clean_post_update_q1_target",
+        "loss": "clean_all_step_masked_mse_on_cos_sin_targets",
+        "evaluation": "clean_fixed_bank_no_dropout_no_state_noise",
         "environment_versions": _environment_versions(device),
         "pairing_policy": "same_seed_update_data_stream_shared_across_models_and_cells",
         "started_at_utc": _utc_now(),
@@ -1038,14 +1250,15 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
     for update in range(1, spec.updates + 1):
         model.train()
         batch = _training_batch(spec, update, device)
-        training_targets = noisy_training_targets(
-            batch.output_targets, recipe, generator=target_generator
-        )
+        # The paper distinguishes recurrent-state perturbation from the clean
+        # target. This controlled run disables that perturbation as well, so
+        # clean q1 initializes the state and the loss uses the same clean target.
+        training_targets = batch.output_targets
         optimizer.zero_grad(set_to_none=True)
         prediction = model.forward_sequence(
             batch.inputs,
             source_targets=training_targets,
-            state_noise_generator=state_generator,
+            state_noise_generator=None,
             state_noise_std_override=spec.actual_state_noise_std,
         )
         loss = source_masked_mse(prediction, training_targets, batch.mask)
@@ -1110,6 +1323,8 @@ def _train_worker(spec: RunSpec, config_path: Path, device_text: str) -> Path:
             "run": spec.payload(),
             "result": result,
             "model_metadata": _native(model.metadata()),
+            "initial_state_dict_sha256": initial_state_dict_sha256,
+            "rng_stream_identities": rng_stream_identities,
             "state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
         },
@@ -1150,6 +1365,20 @@ def _record_worker_failure(
     output.mkdir(parents=True, exist_ok=True)
     root = Path(spec.evaluation_bank).resolve().parents[1]
     identity = strict_json_load(root / ROOT_MARKER)
+    config = load_config(config_path)
+    _configure_determinism(spec.model_seed)
+    reconstructed_initial_model = build_model(
+        config,
+        spec.model_id,
+        spec.learning_rate,
+        spec.actual_state_noise_std,
+    )
+    initial_state_dict_sha256 = canonical_tensor_mapping_sha256(
+        reconstructed_initial_model.state_dict()
+    )
+    recipe = reconstructed_initial_model.recipe
+    rng_stream_identities = _rng_stream_identities(spec, recipe)
+    contract = _model_contract(config, spec.model_id)
     manifest_path = output / "run_manifest.json"
     if not manifest_path.exists():
         atomic_json(
@@ -1157,6 +1386,7 @@ def _record_worker_failure(
             {
                 "schema_version": 1,
                 "campaign_id": CAMPAIGN_ID,
+                "protocol_revision": PROTOCOL_REVISION,
                 "run": spec.payload(),
                 "scientific_identity": identity["scientific_identity"],
                 "runtime_code_sha256": identity["runtime_code_sha256"],
@@ -1165,6 +1395,31 @@ def _record_worker_failure(
                 "config_sha256": sha256_file(config_path),
                 "evaluation_bank_sha256": sha256_file(spec.evaluation_bank),
                 "track_classification": TRACK_CLASSIFICATION,
+                "upstream_commit": UPSTREAM_COMMIT,
+                "model": _native(reconstructed_initial_model.metadata()),
+                "parameter_count_trainable": PARAMETER_COUNTS[spec.model_id],
+                "initial_state_dict_sha256": initial_state_dict_sha256,
+                "rng_stream_identities": rng_stream_identities,
+                "recipe": _native(asdict(recipe)),
+                "state_noise": noise_metadata(
+                    spec.model_id, spec.actual_state_noise_std
+                ),
+                "source_model_specific_training": {
+                    "upstream_public_code_target_noise_std_provenance_only": contract[
+                        "upstream_public_code_target_noise_std"
+                    ],
+                    "controlled_target_noise_std": recipe.target_noise_std,
+                    "upstream_public_code_output_dropout_provenance_only": contract[
+                        "upstream_public_code_output_dropout"
+                    ],
+                    "controlled_output_dropout": recipe.output_dropout,
+                    "training_target_semantics": config["training"][
+                        "training_target_semantics"
+                    ],
+                },
+                "initial_state_argument": "clean_post_update_q1_target",
+                "loss": "clean_all_step_masked_mse_on_cos_sin_targets",
+                "evaluation": "clean_fixed_bank_no_dropout_no_state_noise",
                 "device": device_text,
                 "failure_manifest_synthesized": True,
                 "environment_versions": _environment_versions(),
@@ -1205,6 +1460,8 @@ def _record_worker_failure(
             "run": spec.payload(),
             "failure": failure,
             "state_dict": None,
+            "initial_state_dict_sha256": initial_state_dict_sha256,
+            "rng_stream_identities": rng_stream_identities,
         },
     )
     atomic_json(output / "FAILED", {"schema_version": 1, "run_id": spec.run_id})
@@ -1298,18 +1555,26 @@ def _verified_child(spec: RunSpec) -> bool:
         return False
     if checkpoint.get("run") != spec.payload():
         return False
+    try:
+        config = load_config(root / "inputs" / DEFAULT_CONFIG.name)
+        _configure_determinism(spec.model_seed)
+        reconstructed = build_model(
+            config,
+            spec.model_id,
+            spec.learning_rate,
+            spec.actual_state_noise_std,
+        )
+        expected_initial_hash = canonical_tensor_mapping_sha256(
+            reconstructed.state_dict()
+        )
+        expected_rng_streams = _rng_stream_identities(spec, reconstructed.recipe)
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError):
+        return False
     if status == "completed":
         checkpoint_result = checkpoint.get("result")
         if checkpoint.get("checkpoint_type") != CAMPAIGN_ID or checkpoint_result != result:
             return False
         try:
-            config = load_config(root / "inputs" / DEFAULT_CONFIG.name)
-            reconstructed = build_model(
-                config,
-                spec.model_id,
-                spec.learning_rate,
-                spec.actual_state_noise_std,
-            )
             state_dict = checkpoint.get("state_dict")
             if not isinstance(state_dict, Mapping):
                 return False
@@ -1340,6 +1605,10 @@ def _verified_child(spec: RunSpec) -> bool:
             and result.get("counts_in_denominator") is True
             and checkpoint.get("model_metadata") == _native(reconstructed.metadata())
             and manifest.get("model") == _native(reconstructed.metadata())
+            and manifest.get("initial_state_dict_sha256") == expected_initial_hash
+            and checkpoint.get("initial_state_dict_sha256") == expected_initial_hash
+            and manifest.get("rng_stream_identities") == expected_rng_streams
+            and checkpoint.get("rng_stream_identities") == expected_rng_streams
         )
     else:
         if checkpoint.get("checkpoint_type") != f"{CAMPAIGN_ID}_failure":
@@ -1361,12 +1630,37 @@ def _verified_child(spec: RunSpec) -> bool:
             and result.get("model_seed") == spec.model_seed
             and result.get("learning_rate") == spec.learning_rate
             and result.get("actual_state_noise_std") == spec.actual_state_noise_std
+            and manifest.get("model") == _native(reconstructed.metadata())
+            and manifest.get("parameter_count_trainable")
+            == PARAMETER_COUNTS[spec.model_id]
+            and manifest.get("initial_state_dict_sha256") == expected_initial_hash
+            and checkpoint.get("initial_state_dict_sha256") == expected_initial_hash
+            and manifest.get("rng_stream_identities") == expected_rng_streams
+            and checkpoint.get("rng_stream_identities") == expected_rng_streams
+            and manifest.get("recipe") == _native(asdict(reconstructed.recipe))
+            and manifest.get("state_noise")
+            == noise_metadata(spec.model_id, spec.actual_state_noise_std)
+            and isinstance(manifest.get("source_model_specific_training"), Mapping)
+            and manifest["source_model_specific_training"].get(
+                "controlled_target_noise_std"
+            )
+            == 0.0
+            and manifest["source_model_specific_training"].get(
+                "controlled_output_dropout"
+            )
+            == 0.0
+            and manifest.get("initial_state_argument")
+            == "clean_post_update_q1_target"
+            and manifest.get("loss")
+            == "clean_all_step_masked_mse_on_cos_sin_targets"
         )
     return bool(
         outcome_files
         and result_identity
         and manifest.get("run") == spec.payload()
         and result.get("run_id") == spec.run_id
+        and manifest.get("protocol_revision") == PROTOCOL_REVISION
+        and manifest.get("track_classification") == TRACK_CLASSIFICATION
         and manifest.get("scientific_identity") == identity.get("scientific_identity")
         and manifest.get("runtime_code_sha256") == identity.get("runtime_code_sha256")
         and manifest.get("code_commit") == identity.get("code_commit")
@@ -1582,7 +1876,7 @@ def _expected_stage_artifacts(stage: str, *, scientific_pass: bool = False) -> s
     if stage == "smoke":
         return common | {"summary.json"}
     if stage == "sentinel":
-        return common | {"sentinel_selection.json"}
+        return common | {"sentinel_summary.json"}
     if stage == "fanout":
         return common | {
             "parent_sentinel_binding.json",
@@ -1649,22 +1943,24 @@ def _stage_valid(stage_root: Path, stage: str, expected_runs: int) -> bool:
             if strict_json_load(stage_root / "summary.json") != expected_summary:
                 return False
         elif stage == "sentinel":
-            recomputed = select_sentinel_top3(specs, config)
-            if strict_json_load(stage_root / "sentinel_selection.json") != recomputed:
+            recomputed = summarize_sentinel(specs, config)
+            if strict_json_load(stage_root / "sentinel_summary.json") != recomputed:
                 return False
         elif stage == "fanout":
             sentinel_root = root / "sentinel"
-            sentinel_expected = len(MODEL_IDS) * 4 * 4
+            sentinel_expected = len(MODEL_IDS) * len(
+                config["hyperparameter_tuning"]["learning_rate_grid"]
+            )
             if not _stage_valid(sentinel_root, "sentinel", sentinel_expected):
                 return False
             sentinel_specs = _plan_specs(sentinel_root)
-            sentinel_selection_path = sentinel_root / "sentinel_selection.json"
+            sentinel_summary_path = sentinel_root / "sentinel_summary.json"
             parent_expected = {
                 "schema_version": 1,
                 "sentinel_completion_receipt_sha256": sha256_file(
                     sentinel_root / "completion_receipt.json"
                 ),
-                "sentinel_selection_sha256": sha256_file(sentinel_selection_path),
+                "sentinel_summary_sha256": sha256_file(sentinel_summary_path),
             }
             if strict_json_load(stage_root / "parent_sentinel_binding.json") != parent_expected:
                 return False
@@ -1673,7 +1969,13 @@ def _stage_valid(stage_root: Path, stage: str, expected_runs: int) -> bool:
                 return False
         elif stage == "main":
             fanout_root = root / "fanout"
-            if not _stage_valid(fanout_root, "fanout", len(MODEL_IDS) * 3 * 4):
+            if not _stage_valid(
+                fanout_root,
+                "fanout",
+                len(MODEL_IDS)
+                * len(config["hyperparameter_tuning"]["learning_rate_grid"])
+                * len(config["hyperparameter_tuning"]["fanout_seeds"]),
+            ):
                 return False
             selection_path = fanout_root / "hyperparameter_selection.json"
             parent_expected = {
@@ -1783,16 +2085,20 @@ def run_stage(
         if _stage_valid(sentinel_root, stage, len(sentinel_specs)):
             return sentinel_root
         _run_specs(sentinel_specs, copied, slots)
-        selection_path = sentinel_root / "sentinel_selection.json"
-        _write_or_verify(selection_path, select_sentinel_top3(sentinel_specs, config))
-        _finalize(sentinel_root, stage, sentinel_specs, [selection_path])
+        summary_path = sentinel_root / "sentinel_summary.json"
+        _write_or_verify(summary_path, summarize_sentinel(sentinel_specs, config))
+        _finalize(sentinel_root, stage, sentinel_specs, [summary_path])
         return sentinel_root
 
-    if not _stage_valid(sentinel_root, "sentinel", len(MODEL_IDS) * 4 * 4):
+    if not _stage_valid(
+        sentinel_root,
+        "sentinel",
+        len(MODEL_IDS) * len(config["hyperparameter_tuning"]["learning_rate_grid"]),
+    ):
         raise RuntimeError(f"{stage} is blocked until verified sentinel completes")
-    sentinel_selection_path = sentinel_root / "sentinel_selection.json"
-    sentinel_selection = strict_json_load(sentinel_selection_path)
-    fanout_specs = build_fanout_plan(root, config, tuning_bank, sentinel_selection)
+    sentinel_summary_path = sentinel_root / "sentinel_summary.json"
+    sentinel_summary = strict_json_load(sentinel_summary_path)
+    fanout_specs = build_fanout_plan(root, config, tuning_bank, sentinel_summary)
     fanout_root = root / "fanout"
     if stage == "fanout":
         if _stage_valid(fanout_root, stage, len(fanout_specs)):
@@ -1806,7 +2112,7 @@ def run_stage(
                 "sentinel_completion_receipt_sha256": sha256_file(
                     sentinel_root / "completion_receipt.json"
                 ),
-                "sentinel_selection_sha256": sha256_file(sentinel_selection_path),
+                "sentinel_summary_sha256": sha256_file(sentinel_summary_path),
             },
         )
         selection_path = fanout_root / "hyperparameter_selection.json"
@@ -1817,7 +2123,13 @@ def run_stage(
         _finalize(fanout_root, stage, fanout_specs, [parent_path, selection_path])
         return fanout_root
 
-    if not _stage_valid(fanout_root, "fanout", len(MODEL_IDS) * 3 * 4):
+    if not _stage_valid(
+        fanout_root,
+        "fanout",
+        len(MODEL_IDS)
+        * len(config["hyperparameter_tuning"]["learning_rate_grid"])
+        * len(config["hyperparameter_tuning"]["fanout_seeds"]),
+    ):
         raise RuntimeError("main is blocked until verified fanout completes")
     selection_path = fanout_root / "hyperparameter_selection.json"
     selection = strict_json_load(selection_path)

@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
   "campaign_id": "sagodi_source_repaired_lru_calru_v6",
-  "protocol_revision": "baseline_bound_lru_then_no_rp_then_ca_v1",
+  "protocol_revision": "baseline_bound_noise_free_controlled_training_lr_only_v5",
+  "track_classification": "baseline_bound_noise_free_controlled_training_with_paper_and_code_noise_provenance",
   "baseline_parent_campaign": "sagodi_source_repaired_baselines_v6",
   "task_and_data_contract": {
     "reuse_exact_parent_tuning_and_main_banks": true,
@@ -24,15 +25,23 @@
     "online_batches": true,
     "trace_interval": 50,
     "validation_interval": 500,
-    "worker_threads": 1
+    "worker_threads": 1,
+    "actual_post_transition_state_noise_std": 0.0,
+    "state_noise_distribution": "disabled",
+    "state_noise_location": "disabled_no_state_noise_injection",
+    "state_noise_scaling": "not_applicable_disabled",
+    "paper_state_noise_covariance_provenance_only": "0.01I",
+    "evaluation_state_noise_std": 0.0,
+    "controlled_target_noise_std": 0.0,
+    "controlled_output_dropout": 0.0,
+    "training_target_semantics": "clean_cos_sin_target_for_initial_q1_and_loss"
   },
-  "lr_noise_tuning": {
-    "learning_rate_grid": [0.01, 0.003, 0.001, 0.0003],
-    "actual_post_transition_state_noise_std_grid": [0.0, 0.01, 0.0316228, 0.1],
+  "learning_rate_tuning": {
+    "learning_rate_grid": [0.03, 0.01, 0.003, 0.001, 0.0003, 0.0001, 0.00003, 0.00001],
     "sentinel_seed": 100,
     "fanout_seeds": [101, 102, 103, 104],
-    "top_k": 3,
-    "selection_rule": "max_nmse_eligible_count_then_max_descriptive_mse_success_count_then_min_median_mse_then_min_mean_mse_then_grid_order"
+    "fanout_all_learning_rates": true,
+    "selection_rule": "all_learning_rates_five_seed_max_nmse_eligible_count_then_max_descriptive_mse_success_count_then_min_median_mse_then_min_mean_mse_then_grid_order"
   },
   "main": {
     "seeds": [0,1,2,3,4,5,6,7,8,9],
@@ -53,9 +62,10 @@
     "ca_rp_main_requires": "ca_rp_fanout"
   },
   "ca_fairness": {
-    "inherits_lr_noise_from": "no_rp_n52",
+    "inherits_learning_rate_from": "no_rp_n52",
+    "inherits_common_state_noise_from": "global_training_contract",
     "same_seed_initialization_and_online_batches": true,
-    "ca_lr_noise_independently_tuned": false
+    "ca_learning_rate_independently_tuned": false
   },
   "retention_plasticity": {
     "warmup_updates": 1500,

@@ -14,7 +14,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 RECEIPT_IDENTITY_ENV = {
@@ -66,6 +66,31 @@ def canonical_bytes(value: Any) -> bytes:
 
 def canonical_hash(value: Any) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def canonical_tensor_mapping_sha256(tensors: Mapping[str, Any]) -> str:
+    """Hash named dense tensors independent of mapping and serialization order."""
+
+    digest = hashlib.sha256()
+    for name in sorted(tensors):
+        tensor = tensors[name]
+        try:
+            value = tensor.detach().cpu().contiguous()
+            raw = value.numpy().tobytes(order="C")
+            header = canonical_bytes(
+                {
+                    "name": str(name),
+                    "dtype": str(value.dtype),
+                    "shape": list(value.shape),
+                    "byte_length": len(raw),
+                }
+            )
+        except (AttributeError, TypeError, RuntimeError) as error:
+            raise TypeError(f"tensor mapping value {name!r} is not a supported dense tensor") from error
+        digest.update(len(header).to_bytes(8, "big"))
+        digest.update(header)
+        digest.update(raw)
+    return digest.hexdigest()
 
 
 def derived_seed(base: int, *parts: Any) -> int:
