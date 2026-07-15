@@ -107,7 +107,15 @@ std의 fresh main은 40 runs다. No-RP/CA-LRU와 RP 전용 hyperparameter는 후
 campaign으로 분리한다. 세부 계약은
 [`STATE_NOISE_SEARCH_V1_FREEZE_ko.md`](repro/sagodi_protocol/STATE_NOISE_SEARCH_V1_FREEZE_ko.md)에 있다.
 
-### 5. Historical Ságodi-based primary v3.1: provenance only
+### 5. CA-LRU RP search와 2×2 factorial v1
+
+LRU의 noise-free LR과 strictly-positive state-noise winner를 고정한 뒤 CA-LRU에만
+존재하는 `eta_lambda`, `damage_epsilon`, RP intervention interval만 탐색한다.
+선택한 RP 설정으로 No-RP/RP × state-noise 없음/있음의 4조건을 fresh seeds 0--9에서
+학습한다. 세부 계약은
+[`CALRU_FACTORIAL_V1_FREEZE_ko.md`](repro/sagodi_protocol/CALRU_FACTORIAL_V1_FREEZE_ko.md)에 있다.
+
+### 6. Historical Ságodi-based primary v3.1: provenance only
 
 [`repro/sagodi_protocol/analysis_protocol.yaml`](repro/sagodi_protocol/analysis_protocol.yaml)은
 Phase 0 state/blank-map audit와 Phase 1 ring pilot만 활성화한다. 공통 fixed bank,

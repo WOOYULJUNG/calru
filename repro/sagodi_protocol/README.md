@@ -92,6 +92,21 @@ repro/sagodi_protocol/run_lru_then_baseline_noise_v1.sh \
 
 세부 해석과 재현 계약은 `STATE_NOISE_SEARCH_V1_FREEZE_ko.md`를 따른다.
 
+## Follow-up: CA-LRU RP-only search and 2×2 factorial v1
+
+네-baseline noise search 뒤 LRU LR과 LRU strictly-positive noise std를 고정한다.
+Noise-free CA-LRU에서 eta, epsilon, intervention interval만 선택한 다음 No-RP/RP ×
+noise 없음/있음의 40-run paired main을 실행한다.
+
+```bash
+repro/sagodi_protocol/run_calru_factorial_v1.sh \
+  /path/to/baseline_v6 /path/to/lru_v6 /path/to/baseline_state_noise_v1 \
+  /path/to/calru_factorial_v1 0,1,2,3,4,5
+```
+
+세부 grid, single-seed screening 제한, pairing 계약은
+`CALRU_FACTORIAL_V1_FREEZE_ko.md`를 따른다.
+
 ## Auxiliary controlled-recovery v1 (historical)
 
 `sagodi_paper_baselines.py`의 T256 dense/q0 controlled benchmark는 historical

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "campaign_id": "calru_factorial_v1",
+  "protocol_revision": "lru_lr_fixed_rp_only_search_then_rp_by_state_noise_factorial_v1",
+  "models": {
+    "no_rp": "no_rp_n52",
+    "rp": "ca_lru_n52",
+    "parameters_gradient_trainable": 17006
+  },
+  "training": {
+    "optimizer": "Adam",
+    "betas": [0.9, 0.999],
+    "epsilon": 1e-08,
+    "weight_decay": 0.0,
+    "batch_size": 64,
+    "updates": 5000,
+    "trace_interval": 50,
+    "validation_interval": 500,
+    "target_noise_std": 0.0,
+    "output_dropout": 0.0,
+    "evaluation_state_noise_std": 0.0
+  },
+  "fixed_hyperparameters": {
+    "learning_rate_source": "noise_free_lru_fanout_winner",
+    "positive_state_noise_source": "lru_state_noise_search_winner",
+    "positive_state_noise_is_not_retuned_for_calru": true
+  },
+  "retention_plasticity_search": {
+    "warmup_updates": 1500,
+    "eta_lambda_grid": [300.0, 1000.0, 3000.0],
+    "damage_epsilon_grid": [0.00001, 0.00003, 0.0001],
+    "intervention_interval_updates_grid": [25, 50, 100],
+    "probe_batch_size": 96,
+    "probe_horizon": 128,
+    "blank_ablation_horizon": 500,
+    "selection_blank_horizon": 4096,
+    "sentinel_seed": 100,
+    "fanout_seeds": [101, 102, 103, 104],
+    "top_k": 5,
+    "selection_rule": "max_nmse_eligible_then_max_mse_success_then_min_blank_mse_then_min_task_mse_then_grid_order"
+  },
+  "factorial_main": {
+    "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    "conditions": [
+      {"id": "no_rp_no_noise", "rp": false, "state_noise": false},
+      {"id": "no_rp_with_noise", "rp": false, "state_noise": true},
+      {"id": "rp_no_noise", "rp": true, "state_noise": false},
+      {"id": "rp_with_noise", "rp": true, "state_noise": true}
+    ],
+    "mse_success_threshold": 0.01,
+    "analysis_nmse_db_threshold": -20.0,
+    "blank_horizon": 4096,
+    "same_rp_winner_for_both_rp_conditions": true,
+    "paired_initialization_data_and_noise_streams": true
+  }
+}
