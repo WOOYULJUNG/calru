@@ -479,13 +479,20 @@ def plot_normal_recovery(root: Path, destination: Path) -> None:
     _save(fig, destination, "fig_baseline_normal_recovery")
 
 
-def plot_basin_capacity(root: Path, destination: Path) -> None:
-    fig, axes, ideal = _base_grid("Baseline asymptotic basin topology")
+def _set_circular_angle_axes(ax: plt.Axes) -> None:
+    ticks = (0.0, np.pi, 2.0 * np.pi)
+    labels = ("0", r"$\pi$", r"$2\pi$")
+    ax.set_xlim(0.0, 2.0 * np.pi)
+    ax.set_ylim(0.0, 2.0 * np.pi)
+    ax.set_xticks(ticks, labels)
+    ax.set_yticks(ticks, labels)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(alpha=0.15)
+
+
+def plot_asymptotic_memory_map(root: Path, destination: Path) -> None:
+    fig, axes, ideal = _base_grid("Baseline asymptotic memory map")
     runs = {(m, c): _load_run(root, m, c) for m, _ in MODELS for c, _, _ in CONDITIONS}
-    max_basins = 1
-    for run in runs.values():
-        if _is_estimable(run):
-            max_basins = max(max_basins, int(run["summary"]["asymptotic_structure"]["stable_count"]))
     for row, (condition, _, color) in enumerate(CONDITIONS):
         for column, (model, _) in enumerate(MODELS):
             ax = axes[row, column]
@@ -493,52 +500,94 @@ def plot_basin_capacity(root: Path, destination: Path) -> None:
             if not _is_estimable(run):
                 _annotate_not_estimable(ax, run)
                 continue
-            asymptotic = run["summary"]["asymptotic_structure"]
-            proportions = np.asarray(asymptotic["basin_proportions"], dtype=float)
-            indices = np.arange(1, proportions.size + 1)
-            ax.bar(indices, proportions, color=color, alpha=0.82, width=0.72)
-            ax.set_ylim(0.0, 0.7)
-            ax.set_xlim(0.4, max_basins + 0.6)
-            ax.set_xticks(indices)
-            ax.set_xlabel("stable basin")
+            data = run["asymptotic_structure"]
+            summary = run["summary"]["asymptotic_structure"]
+            initial = np.mod(np.asarray(data["initial_angle"], dtype=float), 2.0 * np.pi)
+            observed = np.mod(
+                np.asarray(data["observed_terminal_angle"], dtype=float), 2.0 * np.pi
+            )
+            assigned = np.mod(
+                np.asarray(data["assigned_stable_angle"], dtype=float), 2.0 * np.pi
+            )
+            stable = np.mod(
+                np.asarray(data["stable_fixed_point_angle"], dtype=float), 2.0 * np.pi
+            )
+            saddle = np.mod(
+                np.asarray(data["saddle_fixed_point_angle"], dtype=float), 2.0 * np.pi
+            )
+
+            ax.plot(
+                (0.0, 2.0 * np.pi),
+                (0.0, 2.0 * np.pi),
+                color="#a0aec0",
+                linestyle="--",
+                linewidth=0.9,
+                zorder=0,
+            )
+            for angle in saddle:
+                ax.axvline(angle, color="#c53030", linestyle=":", linewidth=0.75, alpha=0.65)
+            for angle in stable:
+                ax.axhline(angle, color="#2f855a", linestyle=":", linewidth=0.75, alpha=0.65)
+            ax.scatter(
+                initial,
+                observed,
+                color="#718096",
+                s=9,
+                alpha=0.3,
+                linewidths=0,
+                label="2,048-step state" if row == 0 and column == 0 else None,
+                zorder=1,
+            )
+            ax.scatter(
+                initial,
+                assigned,
+                color=color,
+                s=11,
+                alpha=0.9,
+                marker="s",
+                linewidths=0,
+                label="inferred attractor" if row == 0 and column == 0 else None,
+                zorder=2,
+            )
+            _set_circular_angle_axes(ax)
+            if row == 1:
+                ax.set_xlabel(r"initial memory $\theta_0$")
             if column == 0:
-                ax.set_ylabel("basin proportion")
-            ax.grid(axis="y", alpha=0.18)
+                ax.set_ylabel(r"terminal memory $\theta_\infty$")
             ax.text(
                 0.03,
                 0.97,
-                f"H={asymptotic['shannon_entropy_nats']:.3f}\nKeff={asymptotic['effective_basin_count']:.2f}",
+                f"S/U={summary['stable_count']}/{summary['saddle_count']}\n"
+                f"mean error={summary['asymptotic_mean_error_radians']:.3f} rad\n"
+                f"Keff={summary['effective_basin_count']:.2f}",
                 transform=ax.transAxes,
                 va="top",
                 fontsize=7,
                 bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
             )
-    theta = np.linspace(0.0, 2.0 * np.pi, 256, endpoint=False)
-    ideal.scatter(
-        np.cos(theta),
-        np.sin(theta),
-        c=theta,
-        cmap="twilight",
-        s=9,
-        linewidths=0,
+    axes[0, 0].legend(frameon=False, fontsize=7, loc="lower right")
+    ideal.plot(
+        (0.0, 2.0 * np.pi),
+        (0.0, 2.0 * np.pi),
+        color="#2f855a",
+        linewidth=2.2,
     )
-    ideal.plot(np.cos(theta), np.sin(theta), color="#68d391", linewidth=1.2)
     ideal.text(
         0.5,
         0.92,
-        "continuum of memory states\nno discrete basin partition\nfinite $K_{eff}$ not applicable",
+        r"identity map $\theta_\infty=\theta_0$" "\n"
+        "every initial memory persists\n"
+        "no discrete basin partition",
         transform=ideal.transAxes,
         ha="center",
         va="top",
         fontsize=8,
         color="#22543d",
     )
-    ideal.set_xlim(-1.35, 1.35)
-    ideal.set_ylim(-1.35, 1.35)
-    ideal.set_aspect("equal", adjustable="box")
-    ideal.set_xticks([])
-    ideal.set_yticks([])
-    _save(fig, destination, "fig_baseline_basin_capacity")
+    _set_circular_angle_axes(ideal)
+    ideal.set_xlabel(r"initial memory $\theta_0$")
+    ideal.set_ylabel(r"terminal memory $\theta_\infty$")
+    _save(fig, destination, "fig_baseline_asymptotic_memory_map")
 
 
 def main() -> int:
@@ -553,7 +602,7 @@ def main() -> int:
     plot_jacobian(root, destination)
     plot_memory(root, destination)
     plot_normal_recovery(root, destination)
-    plot_basin_capacity(root, destination)
+    plot_asymptotic_memory_map(root, destination)
     manifest = {
         "schema_version": 1,
         "artifact_root": str(root),
@@ -567,7 +616,7 @@ def main() -> int:
             "jacobian": "one neutral tangent mode and contracting normal modes",
             "memory": "zero circular drift",
             "normal_recovery": "monotone contraction toward the manifold",
-            "basins": "continuous memory without discrete basin partition",
+            "asymptotic_memory": "identity map from initial to terminal memory without discrete basin partition",
         },
         "figures": sorted(path.name for path in destination.glob("fig_baseline_*.pdf")),
         "normal_recovery": {
