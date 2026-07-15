@@ -1,11 +1,13 @@
 """Plot metric-first comparison figures for the source-v6 extended pilot.
 
-The input is the receipt-bound ``source_v6_extended_analysis`` artifact.  Each
-figure uses model columns and training-noise rows so that comparisons do not
-depend on matching axes across separate model-specific dashboards.  The
-figures are descriptive seed-0 pilot outputs; they are not confirmatory
-multi-seed summaries.  A separate right-hand ``Ideal CA`` panel is explicitly
-schematic and never presented as measured data.
+The primary input is the receipt-bound ``source_v6_extended_analysis``
+artifact.  When a completed CA-LRU factorial-analysis artifact is also given,
+the figures append matched CA-LRU no-RP and CA-LRU columns.  Each figure uses
+model columns and training-noise rows so that comparisons do not depend on
+matching axes across separate model-specific dashboards.  The figures are
+descriptive seed-0 pilot outputs; they are not confirmatory multi-seed
+summaries.  A separate right-hand ``Ideal CA`` panel is explicitly schematic
+and never presented as measured data.
 """
 
 from __future__ import annotations
@@ -22,16 +24,26 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-MODELS = (
-    ("sagodi_rnn_tanh_n128", "RNN"),
-    ("sagodi_gru_n128", "GRU"),
-    ("sagodi_lstm_n64", "LSTM"),
-    ("lru_n52", "LRU"),
+BASELINE_PANELS = (
+    ("baseline", "sagodi_rnn_tanh_n128", "RNN"),
+    ("baseline", "sagodi_gru_n128", "GRU"),
+    ("baseline", "sagodi_lstm_n64", "LSTM"),
+    ("baseline", "lru_n52", "LRU"),
+)
+CALRU_PANELS = (
+    ("calru", "no_rp", "CA-LRU\nno RP"),
+    ("calru", "rp", "CA-LRU"),
 )
 CONDITIONS = (
     ("noise_free", "noise-free", "#2b6cb0"),
     ("positive_state_noise_training", "state-noise", "#c05621"),
 )
+CALRU_CONDITIONS = {
+    ("no_rp", "noise_free"): "no_rp_no_noise",
+    ("no_rp", "positive_state_noise_training"): "no_rp_with_noise",
+    ("rp", "noise_free"): "rp_no_noise",
+    ("rp", "positive_state_noise_training"): "rp_with_noise",
+}
 HORIZONS = np.asarray((0, 1, 4, 16, 64, 256, 1024, 4096), dtype=float)
 RADIUS_COLORS = {0.01: "#90cdf4", 0.05: "#2b6cb0", 0.1: "#1a365d"}
 
@@ -44,12 +56,32 @@ def _load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def _run_dir(root: Path, model: str, condition: str) -> Path:
-    return root / "runs" / f"{model}__{condition}__seed00"
+def _panels(calru_root: Path | None) -> tuple[tuple[str, str, str], ...]:
+    return BASELINE_PANELS + (CALRU_PANELS if calru_root is not None else ())
 
 
-def _load_run(root: Path, model: str, condition: str) -> dict[str, Any]:
-    directory = _run_dir(root, model, condition)
+def _run_dir(
+    baseline_root: Path,
+    calru_root: Path | None,
+    panel: tuple[str, str, str],
+    condition: str,
+) -> Path:
+    source, model, _ = panel
+    if source == "baseline":
+        return baseline_root / "runs" / f"{model}__{condition}__seed00"
+    if source == "calru" and calru_root is not None:
+        factorial_condition = CALRU_CONDITIONS[(model, condition)]
+        return calru_root / "runs" / f"{factorial_condition}__seed00"
+    raise ValueError(f"unsupported panel source: {source}")
+
+
+def _load_run(
+    baseline_root: Path,
+    calru_root: Path | None,
+    panel: tuple[str, str, str],
+    condition: str,
+) -> dict[str, Any]:
+    directory = _run_dir(baseline_root, calru_root, panel, condition)
     summary_path = directory / "summary.json"
     if not summary_path.exists():
         return {"status": "missing", "directory": str(directory)}
@@ -104,15 +136,25 @@ def _annotate_not_estimable(ax: plt.Axes, run: Mapping[str, Any]) -> None:
         )
 
 
-def _base_grid(title: str) -> tuple[plt.Figure, np.ndarray, plt.Axes]:
-    fig = plt.figure(figsize=(16.8, 6.4), constrained_layout=True)
-    grid = fig.add_gridspec(2, 5, width_ratios=(1.0, 1.0, 1.0, 1.0, 1.08))
-    axes = np.asarray(
-        [[fig.add_subplot(grid[row, column]) for column in range(4)] for row in range(2)]
+def _base_grid(
+    title: str, panels: tuple[tuple[str, str, str], ...]
+) -> tuple[plt.Figure, np.ndarray, plt.Axes]:
+    column_count = len(panels)
+    fig = plt.figure(figsize=(3.36 * (column_count + 1), 6.4), constrained_layout=True)
+    grid = fig.add_gridspec(
+        2,
+        column_count + 1,
+        width_ratios=tuple(1.0 for _ in panels) + (1.08,),
     )
-    ideal = fig.add_subplot(grid[:, 4])
+    axes = np.asarray(
+        [
+            [fig.add_subplot(grid[row, column]) for column in range(column_count)]
+            for row in range(2)
+        ]
+    )
+    ideal = fig.add_subplot(grid[:, column_count])
     fig.suptitle(title, fontsize=15, fontweight="bold")
-    for column, (_, label) in enumerate(MODELS):
+    for column, (_, _, label) in enumerate(panels):
         axes[0, column].set_title(label, fontsize=11, fontweight="bold")
     for row, (_, label, _) in enumerate(CONDITIONS):
         axes[row, 0].set_ylabel(label, fontsize=10, fontweight="bold")
@@ -144,9 +186,20 @@ def _nearest_indices(angle: np.ndarray, targets: np.ndarray) -> np.ndarray:
     return np.argmin(distance, axis=0)
 
 
-def plot_geometry_topology(root: Path, destination: Path) -> None:
-    fig, axes, ideal = _base_grid("Baseline geometry and projected topology")
-    runs = {(m, c): _load_run(root, m, c) for m, _ in MODELS for c, _, _ in CONDITIONS}
+def plot_geometry_topology(
+    root: Path,
+    calru_root: Path | None,
+    panels: tuple[tuple[str, str, str], ...],
+    destination: Path,
+    prefix: str,
+) -> None:
+    scope = "Model comparison" if calru_root is not None else "Baseline"
+    fig, axes, ideal = _base_grid(f"{scope} geometry and projected topology", panels)
+    runs = {
+        (panel, condition): _load_run(root, calru_root, panel, condition)
+        for panel in panels
+        for condition, _, _ in CONDITIONS
+    }
     points: list[np.ndarray] = []
     for run in runs.values():
         if _is_estimable(run):
@@ -157,9 +210,9 @@ def plot_geometry_topology(root: Path, destination: Path) -> None:
     else:
         limit = 1.0
     for row, (condition, _, color) in enumerate(CONDITIONS):
-        for column, (model, _) in enumerate(MODELS):
+        for column, panel in enumerate(panels):
             ax = axes[row, column]
-            run = runs[(model, condition)]
+            run = runs[(panel, condition)]
             if not _is_estimable(run):
                 _annotate_not_estimable(ax, run)
                 continue
@@ -253,12 +306,23 @@ def plot_geometry_topology(root: Path, destination: Path) -> None:
         frameon=False,
         fontsize=8,
     )
-    _save(fig, destination, "fig_baseline_geometry_topology")
+    _save(fig, destination, f"{prefix}_geometry_topology")
 
 
-def plot_jacobian(root: Path, destination: Path) -> None:
-    fig, axes, ideal = _base_grid("Baseline local Jacobian spectrum")
-    runs = {(m, c): _load_run(root, m, c) for m, _ in MODELS for c, _, _ in CONDITIONS}
+def plot_jacobian(
+    root: Path,
+    calru_root: Path | None,
+    panels: tuple[tuple[str, str, str], ...],
+    destination: Path,
+    prefix: str,
+) -> None:
+    scope = "Model comparison" if calru_root is not None else "Baseline"
+    fig, axes, ideal = _base_grid(f"{scope} local Jacobian spectrum", panels)
+    runs = {
+        (panel, condition): _load_run(root, calru_root, panel, condition)
+        for panel in panels
+        for condition, _, _ in CONDITIONS
+    }
     values: list[np.ndarray] = []
     for run in runs.values():
         if _is_estimable(run):
@@ -269,9 +333,9 @@ def plot_jacobian(root: Path, destination: Path) -> None:
     else:
         bound = 0.01
     for row, (condition, _, color) in enumerate(CONDITIONS):
-        for column, (model, _) in enumerate(MODELS):
+        for column, panel in enumerate(panels):
             ax = axes[row, column]
-            run = runs[(model, condition)]
+            run = runs[(panel, condition)]
             if not _is_estimable(run):
                 _annotate_not_estimable(ax, run)
                 continue
@@ -322,16 +386,27 @@ def plot_jacobian(root: Path, destination: Path) -> None:
     ideal.set_ylabel(r"real part of $J_F-I$")
     ideal.grid(alpha=0.18)
     ideal.legend(frameon=False, fontsize=7, loc="center right")
-    _save(fig, destination, "fig_baseline_jacobian_spectrum")
+    _save(fig, destination, f"{prefix}_jacobian_spectrum")
 
 
-def plot_memory(root: Path, destination: Path) -> None:
-    fig, axes, ideal = _base_grid("Baseline finite-time angular memory")
-    runs = {(m, c): _load_run(root, m, c) for m, _ in MODELS for c, _, _ in CONDITIONS}
+def plot_memory(
+    root: Path,
+    calru_root: Path | None,
+    panels: tuple[tuple[str, str, str], ...],
+    destination: Path,
+    prefix: str,
+) -> None:
+    scope = "Model comparison" if calru_root is not None else "Baseline"
+    fig, axes, ideal = _base_grid(f"{scope} finite-time angular memory", panels)
+    runs = {
+        (panel, condition): _load_run(root, calru_root, panel, condition)
+        for panel in panels
+        for condition, _, _ in CONDITIONS
+    }
     for row, (condition, _, color) in enumerate(CONDITIONS):
-        for column, (model, _) in enumerate(MODELS):
+        for column, panel in enumerate(panels):
             ax = axes[row, column]
-            run = runs[(model, condition)]
+            run = runs[(panel, condition)]
             if not _is_estimable(run):
                 _annotate_not_estimable(ax, run)
                 continue
@@ -377,7 +452,7 @@ def plot_memory(root: Path, destination: Path) -> None:
     ideal.set_xlabel(r"blank horizon $t/T$")
     ideal.set_ylabel("circular error (rad)")
     ideal.grid(alpha=0.18)
-    _save(fig, destination, "fig_baseline_memory_retention")
+    _save(fig, destination, f"{prefix}_memory_retention")
 
 
 def _normal_series(data: Mapping[str, np.ndarray], radius: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -410,9 +485,20 @@ def _normal_series(data: Mapping[str, np.ndarray], radius: float) -> tuple[np.nd
     )
 
 
-def plot_normal_recovery(root: Path, destination: Path) -> None:
-    fig, axes, ideal = _base_grid("Baseline finite normal-kick recovery")
-    runs = {(m, c): _load_run(root, m, c) for m, _ in MODELS for c, _, _ in CONDITIONS}
+def plot_normal_recovery(
+    root: Path,
+    calru_root: Path | None,
+    panels: tuple[tuple[str, str, str], ...],
+    destination: Path,
+    prefix: str,
+) -> None:
+    scope = "Model comparison" if calru_root is not None else "Baseline"
+    fig, axes, ideal = _base_grid(f"{scope} finite normal-kick recovery", panels)
+    runs = {
+        (panel, condition): _load_run(root, calru_root, panel, condition)
+        for panel in panels
+        for condition, _, _ in CONDITIONS
+    }
     all_values: list[float] = []
     for run in runs.values():
         if _is_estimable(run):
@@ -423,9 +509,9 @@ def plot_normal_recovery(root: Path, destination: Path) -> None:
     ymin = max(1.0e-2, min(all_values) * 0.75) if all_values else 1.0e-2
     ymax = max(10.0, max(all_values) * 1.25) if all_values else 10.0
     for row, (condition, _, condition_color) in enumerate(CONDITIONS):
-        for column, (model, _) in enumerate(MODELS):
+        for column, panel in enumerate(panels):
             ax = axes[row, column]
-            run = runs[(model, condition)]
+            run = runs[(panel, condition)]
             if not _is_estimable(run):
                 _annotate_not_estimable(ax, run)
                 continue
@@ -476,7 +562,7 @@ def plot_normal_recovery(root: Path, destination: Path) -> None:
     ideal.set_xlabel("blank horizon")
     ideal.set_ylabel(r"normal distance ratio $d_t/d_0$")
     ideal.grid(alpha=0.18, which="both")
-    _save(fig, destination, "fig_baseline_normal_recovery")
+    _save(fig, destination, f"{prefix}_normal_recovery")
 
 
 def _set_circular_angle_axes(ax: plt.Axes) -> None:
@@ -490,13 +576,24 @@ def _set_circular_angle_axes(ax: plt.Axes) -> None:
     ax.grid(alpha=0.15)
 
 
-def plot_asymptotic_memory_map(root: Path, destination: Path) -> None:
-    fig, axes, ideal = _base_grid("Baseline asymptotic memory map")
-    runs = {(m, c): _load_run(root, m, c) for m, _ in MODELS for c, _, _ in CONDITIONS}
+def plot_asymptotic_memory_map(
+    root: Path,
+    calru_root: Path | None,
+    panels: tuple[tuple[str, str, str], ...],
+    destination: Path,
+    prefix: str,
+) -> None:
+    scope = "Model comparison" if calru_root is not None else "Baseline"
+    fig, axes, ideal = _base_grid(f"{scope} asymptotic memory map", panels)
+    runs = {
+        (panel, condition): _load_run(root, calru_root, panel, condition)
+        for panel in panels
+        for condition, _, _ in CONDITIONS
+    }
     for row, (condition, _, color) in enumerate(CONDITIONS):
-        for column, (model, _) in enumerate(MODELS):
+        for column, panel in enumerate(panels):
             ax = axes[row, column]
-            run = runs[(model, condition)]
+            run = runs[(panel, condition)]
             if not _is_estimable(run):
                 _annotate_not_estimable(ax, run)
                 continue
@@ -587,29 +684,39 @@ def plot_asymptotic_memory_map(root: Path, destination: Path) -> None:
     _set_circular_angle_axes(ideal)
     ideal.set_xlabel(r"initial memory $\theta_0$")
     ideal.set_ylabel(r"terminal memory $\theta_\infty$")
-    _save(fig, destination, "fig_baseline_asymptotic_memory_map")
+    _save(fig, destination, f"{prefix}_asymptotic_memory_map")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, required=True)
+    parser.add_argument("--calru-artifact-root", type=Path)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     root = args.artifact_root.expanduser().resolve(strict=True)
-    destination = (args.output_dir or root / "figures").expanduser().resolve()
+    calru_root = (
+        args.calru_artifact_root.expanduser().resolve(strict=True)
+        if args.calru_artifact_root is not None
+        else None
+    )
+    panels = _panels(calru_root)
+    default_output = (calru_root if calru_root is not None else root) / "figures"
+    destination = (args.output_dir or default_output).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    plot_geometry_topology(root, destination)
-    plot_jacobian(root, destination)
-    plot_memory(root, destination)
-    plot_normal_recovery(root, destination)
-    plot_asymptotic_memory_map(root, destination)
+    prefix = "fig_model_comparison" if calru_root is not None else "fig_baseline"
+    plot_geometry_topology(root, calru_root, panels, destination, prefix)
+    plot_jacobian(root, calru_root, panels, destination, prefix)
+    plot_memory(root, calru_root, panels, destination, prefix)
+    plot_normal_recovery(root, calru_root, panels, destination, prefix)
+    plot_asymptotic_memory_map(root, calru_root, panels, destination, prefix)
     manifest = {
         "schema_version": 1,
-        "artifact_root": str(root),
+        "baseline_artifact_root": str(root),
+        "calru_artifact_root": str(calru_root) if calru_root is not None else None,
         "output_dir": str(destination),
-        "models": [label for _, label in MODELS],
+        "models": [label.replace("\n", " ") for _, _, label in panels],
         "conditions": [label for _, label, _ in CONDITIONS],
-        "seed_scope": "seed00 exploratory pilot",
+        "seed_scope": "seed00 descriptive panels from each artifact",
         "ideal_reference": {
             "role": "conceptual_schematic_not_measured_data",
             "geometry": "continuous fixed-point ring with zero projected flow",
@@ -618,7 +725,7 @@ def main() -> int:
             "normal_recovery": "monotone contraction toward the manifold",
             "asymptotic_memory": "identity map from initial to terminal memory without discrete basin partition",
         },
-        "figures": sorted(path.name for path in destination.glob("fig_baseline_*.pdf")),
+        "figures": sorted(path.name for path in destination.glob(f"{prefix}_*.pdf")),
         "normal_recovery": {
             "family": "ambient_normal",
             "radii_over_manifold_scale": [0.01, 0.05, 0.1],
