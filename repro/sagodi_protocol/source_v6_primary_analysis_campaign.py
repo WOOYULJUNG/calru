@@ -1,4 +1,4 @@
-"""Run Ságodi-primary analysis for four baselines with/without noise training."""
+"""Run the core Ságodi analysis for four baselines with/without noise training."""
 
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ DEFAULT_CONFIG = MODULE_DIR / "source_v6_primary_analysis.json"
 FREEZE_DOCUMENT = MODULE_DIR / "SOURCE_V6_PRIMARY_ANALYSIS_FREEZE_ko.md"
 PROTOCOL = MODULE_DIR / "analysis_protocol.yaml"
 CAMPAIGN_ID = "source_v6_primary_analysis"
-PROTOCOL_REVISION = "four_baselines_noise_free_vs_positive_noise_sagodi_primary_pilot3_v2"
+PROTOCOL_REVISION = "four_baselines_noise_free_vs_positive_noise_sagodi_core_pilot1_v3"
 ROOT_MARKER = ".source_v6_primary_analysis_root.json"
-CONFIG_CONTRACT_SHA256 = "c1ff90844f242eed06ed52732cdd221228a31dc28514f7564d94983ed2d245d6"
+CONFIG_CONTRACT_SHA256 = "b96d97352efbc54daa43c529deda2604daae92868f4aa06c6f02338cd8624f42"
 MODEL_IDS = (*baseline_v6.MODEL_IDS, "lru_n52")
 CONDITIONS = ("noise_free", "positive_state_noise_training")
 
@@ -41,8 +41,30 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> dict[str, Any]:
         raise ValueError("source-v6 analysis config differs")
     if payload.get("campaign_id") != CAMPAIGN_ID or payload.get("protocol_revision") != PROTOCOL_REVISION:
         raise ValueError("source-v6 analysis identity differs")
-    if payload["models"] != list(MODEL_IDS) or payload["conditions"] != list(CONDITIONS) or payload["seeds"] != list(range(3)) or payload["expected_runs"] != 24:
+    if (
+        payload["models"] != list(MODEL_IDS)
+        or payload["conditions"] != list(CONDITIONS)
+        or payload["seeds"] != [0]
+        or payload["expected_runs"] != 8
+    ):
         raise ValueError("source-v6 analysis denominator differs")
+    expected_analysis = {
+        "scope": "core_slow_manifold_timescale_separation_projected_drift",
+        "trajectory_count": 256,
+        "spline_count": 128,
+        "task_horizon": 128,
+        "blank_horizon": 2048,
+        "slow_relative_speed": 0.001,
+        "full_local_jacobian_eigenspectrum": True,
+        "projected_flow": True,
+        "flow_reversal_fixed_point_topology": False,
+        "finite_time_and_asymptotic_memory": False,
+        "carrier_ambient_normal_recovery": False,
+        "analysis_state_noise_disabled": True,
+        "eligibility_nmse_db_below": -20.0,
+    }
+    if payload["analysis"] != expected_analysis:
+        raise ValueError("source-v6 core analysis contract differs")
     return payload
 
 
@@ -94,7 +116,13 @@ def _checkpoint_binding(row: Mapping[str, Any]) -> tuple[Path, str, str]:
     return checkpoint, sha256_file(checkpoint), sha256_file(receipt)
 
 
-def build_plan(root: Path, baseline_root: Path, lru_root: Path, noise_root: Path) -> tuple[AnalysisSpec, ...]:
+def build_plan(
+    root: Path,
+    baseline_root: Path,
+    lru_root: Path,
+    noise_root: Path,
+    seeds: Sequence[int] = (0,),
+) -> tuple[AnalysisSpec, ...]:
     baseline_v6.require_verified_main(baseline_root)
     lru_v6._require_stage(lru_root, "lru_main", 3)
     if not noise_v1._stage_valid(noise_root, "main", 12):
@@ -104,17 +132,26 @@ def build_plan(root: Path, baseline_root: Path, lru_root: Path, noise_root: Path
     noise_rows = _plan_rows(noise_root / "main" / "plan.json")
     indexed: dict[tuple[str, str, int], Mapping[str, Any]] = {}
     for row in (*source_rows, *lru_rows):
-        indexed[(str(row["model_id"]), "noise_free", int(row["model_seed"]))] = row
+        seed = int(row["model_seed"])
+        if seed in seeds:
+            indexed[(str(row["model_id"]), "noise_free", seed)] = row
     for row in noise_rows:
-        indexed[(str(row["model_id"]), "positive_state_noise_training", int(row["model_seed"]))] = row
-    expected = {(model, condition, seed) for model in MODEL_IDS for condition in CONDITIONS for seed in range(3)}
+        seed = int(row["model_seed"])
+        if seed in seeds:
+            indexed[(str(row["model_id"]), "positive_state_noise_training", seed)] = row
+    expected = {
+        (model, condition, seed)
+        for model in MODEL_IDS
+        for condition in CONDITIONS
+        for seed in seeds
+    }
     if set(indexed) != expected:
         missing, extra = sorted(expected - set(indexed)), sorted(set(indexed) - expected)
         raise RuntimeError(f"analysis checkpoint matrix differs; missing={missing[:3]}, extra={extra[:3]}")
     specs = []
     for model in MODEL_IDS:
         for condition in CONDITIONS:
-            for seed in range(3):
+            for seed in seeds:
                 checkpoint, checkpoint_sha, receipt_sha = _checkpoint_binding(indexed[(model, condition, seed)])
                 run_id = f"{model}__{condition}__seed{seed:02d}"
                 specs.append(AnalysisSpec(run_id, model, condition, seed, str(checkpoint), checkpoint_sha, receipt_sha, str(root / "runs" / run_id)))
@@ -124,7 +161,13 @@ def build_plan(root: Path, baseline_root: Path, lru_root: Path, noise_root: Path
 def _prepare_root(root: Path, baseline_root: Path, lru_root: Path, noise_root: Path, config_path: Path) -> tuple[dict[str, Any], tuple[AnalysisSpec, ...]]:
     root = root.expanduser().resolve()
     config = load_config(config_path)
-    specs = build_plan(root, baseline_root.resolve(), lru_root.resolve(), noise_root.resolve())
+    specs = build_plan(
+        root,
+        baseline_root.resolve(),
+        lru_root.resolve(),
+        noise_root.resolve(),
+        tuple(int(seed) for seed in config["seeds"]),
+    )
     parent = {
         "baseline_root": str(baseline_root.resolve()), "lru_root": str(lru_root.resolve()), "state_noise_root": str(noise_root.resolve()),
         "baseline_main_receipt": sha256_file(baseline_root / "main" / "completion_receipt.json"),
@@ -158,10 +201,14 @@ def _complete(spec: AnalysisSpec) -> bool:
     except (OSError, ValueError, TypeError, KeyError):
         return False
     valid, _ = verify_completion_receipt(output / "completion_receipt.json", expected_job_id=f"sagodi-primary-{spec.model_id}-{identity[:12]}", expected_metadata={"analysis_identity": identity})
-    return bool(valid and summary.get("analysis_status") in {"complete_structural_summary_eligible", "ineligible_for_structural_summary", "structural_analysis_not_estimable"} and sha256_file(spec.checkpoint) == spec.checkpoint_sha256)
+    return bool(valid and summary.get("analysis_status") in {"complete_core_structural_summary_eligible", "ineligible_for_structural_summary", "structural_analysis_not_estimable"} and sha256_file(spec.checkpoint) == spec.checkpoint_sha256)
 
 
-def _run(specs: Sequence[AnalysisSpec], slots: Sequence[str]) -> None:
+def _run(
+    specs: Sequence[AnalysisSpec],
+    slots: Sequence[str],
+    config: Mapping[str, Any],
+) -> None:
     queue = [spec for spec in specs if not _complete(spec)]
     running: dict[str, tuple[subprocess.Popen[Any], AnalysisSpec, Any]] = {}
     repo = Path(__file__).resolve().parents[2]
@@ -179,7 +226,30 @@ def _run(specs: Sequence[AnalysisSpec], slots: Sequence[str]) -> None:
                     attempts.mkdir(parents=True, exist_ok=True)
                     os.replace(output, attempts / f"{output.name}.{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}")
                 handle = (logs / f"{spec.run_id}.log").open("ab")
-                command = [sys.executable, "-m", "repro.sagodi_protocol.sagodi_primary_runner", "--source-v6", "--checkpoint", spec.checkpoint, "--protocol", str(PROTOCOL), "--output", spec.output_dir, "--device", "cuda:0"]
+                analysis = config["analysis"]
+                command = [
+                    sys.executable,
+                    "-m",
+                    "repro.sagodi_protocol.sagodi_primary_runner",
+                    "--source-v6",
+                    "--core-only",
+                    "--trajectory-count",
+                    str(analysis["trajectory_count"]),
+                    "--spline-count",
+                    str(analysis["spline_count"]),
+                    "--task-horizon",
+                    str(analysis["task_horizon"]),
+                    "--blank-horizon",
+                    str(analysis["blank_horizon"]),
+                    "--checkpoint",
+                    spec.checkpoint,
+                    "--protocol",
+                    str(PROTOCOL),
+                    "--output",
+                    spec.output_dir,
+                    "--device",
+                    "cuda:0",
+                ]
                 environment = os.environ.copy()
                 environment["CUDA_VISIBLE_DEVICES"] = slot
                 process = subprocess.Popen(command, cwd=repo, env=environment, stdout=handle, stderr=subprocess.STDOUT)
@@ -207,29 +277,33 @@ def _aggregate(specs: Sequence[AnalysisSpec]) -> dict[str, Any]:
     for spec in specs:
         summary = strict_json_load(Path(spec.output_dir) / "summary.json")
         row = {"run_id": spec.run_id, "model_id": spec.model_id, "condition": spec.condition, "seed": spec.model_seed, "analysis_status": summary["analysis_status"]}
-        if summary["analysis_status"] == "complete_structural_summary_eligible":
+        if summary["analysis_status"] == "complete_core_structural_summary_eligible":
             row.update({
                 "uniform_flow_norm": summary["projected_flow"]["uniform_norm"],
-                "stable_fixed_point_count": summary["fixed_point_topology"]["stable_count"],
-                "saddle_fixed_point_count": summary["fixed_point_topology"]["saddle_count"],
                 "largest_real_part_mean": summary["full_local_eigenspectrum"]["largest_real_part"]["mean"],
                 "top_two_real_part_gap_mean": summary["full_local_eigenspectrum"]["top_two_real_part_gap"]["mean"],
-                "asymptotic_structure": summary["asymptotic_structure"],
+                "manifold_reconstruction_qa": summary["manifold_reconstruction"]["qa"],
             })
         rows.append(row)
-    counts = {model: {condition: {status: sum(row["model_id"] == model and row["condition"] == condition and row["analysis_status"] == status for row in rows) for status in ("complete_structural_summary_eligible", "ineligible_for_structural_summary", "structural_analysis_not_estimable")} for condition in CONDITIONS} for model in MODEL_IDS}
+    statuses = (
+        "complete_core_structural_summary_eligible",
+        "ineligible_for_structural_summary",
+        "structural_analysis_not_estimable",
+    )
+    counts = {model: {condition: {status: sum(row["model_id"] == model and row["condition"] == condition and row["analysis_status"] == status for row in rows) for status in statuses} for condition in CONDITIONS} for model in MODEL_IDS}
     return {"schema_version": 1, "campaign_id": CAMPAIGN_ID, "registered_run_count": len(rows), "status_counts": counts, "runs": rows}
 
 
 def run_campaign(root: Path, baseline_root: Path, lru_root: Path, noise_root: Path, config_path: Path, slots: Sequence[str]) -> Path:
-    _, specs = _prepare_root(root, baseline_root, lru_root, noise_root, config_path)
-    _run(specs, slots)
+    config, specs = _prepare_root(root, baseline_root, lru_root, noise_root, config_path)
+    _run(specs, slots, config)
     if not all(_complete(spec) for spec in specs):
         raise RuntimeError("source-v6 analysis did not complete all registered outcomes")
     summary = root / "summary.json"
     atomic_json(summary, _aggregate(specs))
-    atomic_json(root / "COMPLETE", {"schema_version": 1, "registered_run_count": 24, "completed_at_utc": _utc_now()})
-    write_completion_receipt(root / "completion_receipt.json", job_id=f"{CAMPAIGN_ID}__complete", artifacts=[root / "plan.json", summary, root / "COMPLETE", *[Path(spec.output_dir) / "completion_receipt.json" for spec in specs]], metadata={"campaign_id": CAMPAIGN_ID, "run_count": 24})
+    run_count = len(specs)
+    atomic_json(root / "COMPLETE", {"schema_version": 1, "registered_run_count": run_count, "completed_at_utc": _utc_now()})
+    write_completion_receipt(root / "completion_receipt.json", job_id=f"{CAMPAIGN_ID}__complete", artifacts=[root / "plan.json", summary, root / "COMPLETE", *[Path(spec.output_dir) / "completion_receipt.json" for spec in specs]], metadata={"campaign_id": CAMPAIGN_ID, "run_count": run_count})
     return summary
 
 

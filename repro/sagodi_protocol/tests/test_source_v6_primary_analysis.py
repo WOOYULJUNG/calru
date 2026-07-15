@@ -7,6 +7,28 @@ import torch
 from repro.sagodi_protocol.artifacts import strict_json_load
 from repro.sagodi_protocol.primary_v4 import build_v4_model
 from repro.sagodi_protocol.sagodi_primary_runner import PrimaryAnalysisSpec, run_primary_analysis
+from repro.sagodi_protocol.source_v6_primary_analysis_campaign import load_config
+
+
+def test_source_v6_core_campaign_freezes_eight_runs() -> None:
+    config = load_config()
+    assert config["seeds"] == [0]
+    assert config["expected_runs"] == 8
+    assert config["analysis"]["trajectory_count"] == 256
+    assert config["analysis"]["spline_count"] == 128
+    assert config["analysis"]["finite_time_and_asymptotic_memory"] is False
+
+
+def test_source_v6_core_spec_requires_frozen_reduced_sizes() -> None:
+    spec = PrimaryAnalysisSpec(
+        trajectory_count=256,
+        spline_count=128,
+        task_horizon=128,
+        blank_horizon=2048,
+        source_v6=True,
+        core_only=True,
+    )
+    spec.validate()
 
 
 def test_source_v6_lru_checkpoint_runs_primary_smoke(tmp_path: Path) -> None:
@@ -52,13 +74,17 @@ def test_source_v6_lru_checkpoint_runs_primary_smoke(tmp_path: Path) -> None:
             normal_recovery_radii_over_manifold_scale=(0.01,),
             normal_recovery_horizons=(0, 1, 4),
             source_v6=True,
+            core_only=True,
             smoke=True,
         ),
     )
     summary = strict_json_load(summary_path)
     assert summary["smoke"] is True
     assert summary["analysis_status"] in {
-        "complete_structural_summary_eligible",
+        "complete_core_structural_summary_eligible",
         "structural_analysis_not_estimable",
     }
     assert summary["project_resolutions"]["source_v6_public_code_task"] is True
+    if summary["analysis_status"] == "complete_core_structural_summary_eligible":
+        assert summary["fixed_point_topology"]["status"] == "omitted_from_pilot_core"
+        assert summary["finite_time_angular_memory"]["status"] == "omitted_from_pilot_core"

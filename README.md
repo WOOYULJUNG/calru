@@ -107,10 +107,11 @@ std의 fresh main은 40 runs다. No-RP/CA-LRU와 RP 전용 hyperparameter는 후
 campaign으로 분리한다. 세부 계약은
 [`STATE_NOISE_SEARCH_V1_FREEZE_ko.md`](repro/sagodi_protocol/STATE_NOISE_SEARCH_V1_FREEZE_ko.md)에 있다.
 
-Noise-free parent와 positive-noise main의 80 baseline checkpoint에는 같은
-Ságodi-primary 분석을 적용한다. T128에 맞춰 16T blank horizon은 2,048이며,
-slow-manifold reconstruction, flow reversal, full local Jacobian eigenspectrum,
-projected drift, finite-time/asymptotic memory를 계산한다. 계약은
+현재 exploratory pilot은 noise-free와 positive-noise main에서 대표 seed 0만
+골라 총 8 baseline checkpoint에 Ságodi-core 분석을 적용한다. T128에 맞춰 16T
+blank horizon은 2,048이며, slow-manifold reconstruction, full local Jacobian
+eigenspectrum, projected drift만 계산한다. Flow reversal, basin/capacity와 recovery는
+pilot 범위에서 제외한다. 계약은
 [`SOURCE_V6_PRIMARY_ANALYSIS_FREEZE_ko.md`](repro/sagodi_protocol/SOURCE_V6_PRIMARY_ANALYSIS_FREEZE_ko.md)에 있다.
 
 ### 5. CA-LRU RP search와 2×2 factorial v1

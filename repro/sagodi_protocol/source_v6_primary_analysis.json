@@ -1,21 +1,24 @@
 {
   "schema_version": 1,
   "campaign_id": "source_v6_primary_analysis",
-  "protocol_revision": "four_baselines_noise_free_vs_positive_noise_sagodi_primary_pilot3_v2",
+  "protocol_revision": "four_baselines_noise_free_vs_positive_noise_sagodi_core_pilot1_v3",
   "models": ["sagodi_rnn_tanh_n128", "sagodi_gru_n128", "sagodi_lstm_n64", "lru_n52"],
   "conditions": ["noise_free", "positive_state_noise_training"],
-  "seeds": [0, 1, 2],
-  "expected_runs": 24,
+  "seeds": [0],
+  "expected_runs": 8,
   "analysis": {
-    "trajectory_count": 1024,
-    "spline_count": 1024,
+    "scope": "core_slow_manifold_timescale_separation_projected_drift",
+    "trajectory_count": 256,
+    "spline_count": 128,
     "task_horizon": 128,
     "blank_horizon": 2048,
     "slow_relative_speed": 0.001,
     "full_local_jacobian_eigenspectrum": true,
-    "projected_flow_and_flow_reversal_topology": true,
-    "finite_time_and_asymptotic_memory": true,
-    "training_and_analysis_state_noise_are_disabled": true,
+    "projected_flow": true,
+    "flow_reversal_fixed_point_topology": false,
+    "finite_time_and_asymptotic_memory": false,
+    "carrier_ambient_normal_recovery": false,
+    "analysis_state_noise_disabled": true,
     "eligibility_nmse_db_below": -20.0
   }
 }

@@ -15,9 +15,10 @@ Two project resolutions are made explicit in every result:
   finite-step displacement ``D(F0(s)) - D(s)``.
 
 Full paper-task runs fail closed on 1,024 trajectories/spline points, ``T=256``,
-and ``16T=4096``.  The explicit ``--source-v6`` adaptation keeps the same counts
-but freezes the public-code task at ``T=128`` and ``16T=2048``. ``--smoke``
-permits smaller values for focused integration tests and labels every artifact.
+and ``16T=4096``.  The explicit ``--source-v6`` adaptation freezes the
+public-code task at ``T=128`` and ``16T=2048``.  ``--core-only`` registers the
+exploratory 256-trajectory/128-spline structural subset; ``--smoke`` permits
+smaller values for focused integration tests and labels every artifact.
 """
 
 from __future__ import annotations
@@ -153,6 +154,7 @@ class PrimaryAnalysisSpec:
     )
     normal_recovery_horizons: tuple[int, ...] = NORMAL_RECOVERY_HORIZONS
     source_v6: bool = False
+    core_only: bool = False
     smoke: bool = False
 
     def validate(self) -> None:
@@ -196,7 +198,22 @@ class PrimaryAnalysisSpec:
             != tuple(sorted(set(self.normal_recovery_horizons)))
         ):
             raise ValueError("normal recovery horizons must be increasing and start at zero")
-        if not self.smoke:
+        if self.core_only and not self.smoke:
+            expected = {
+                "trajectory_count": 256,
+                "spline_count": 128,
+                "task_horizon": 128,
+                "blank_horizon": 2048,
+                "slow_relative_speed": SLOW_RELATIVE_SPEED,
+                "inclusion_nmse_db": INCLUSION_NMSE_DB,
+                "source_v6": True,
+            }
+            for name, frozen in expected.items():
+                if getattr(self, name) != frozen:
+                    raise ValueError(
+                        f"pilot core analysis freezes {name}={frozen}"
+                    )
+        elif not self.smoke:
             expected = {
                 "trajectory_count": FULL_TRAJECTORY_COUNT,
                 "spline_count": FULL_SPLINE_COUNT,
@@ -2088,6 +2105,11 @@ def run_primary_analysis(
         "analysis": "sagodi_primary_single_checkpoint",
         "analysis_identity": identity,
         "analysis_role": "Ságodi_evaluation_tool_not_CA_LRU_method",
+        "analysis_scope": (
+            "pilot_core_slow_manifold_timescale_gap_projected_drift"
+            if active_spec.core_only
+            else "full_sagodi_primary"
+        ),
         "smoke": bool(active_spec.smoke),
         "checkpoint": {
             "path": str(checkpoint),
@@ -2118,7 +2140,7 @@ def run_primary_analysis(
                 "linear output-projected vector field"
             ),
             "candidate_selection": (
-                "nearest in Euclidean actual decoded output space to 1024 uniform "
+                f"nearest in Euclidean actual decoded output space to {active_spec.spline_count} uniform "
                 "unit-ring targets"
             ),
             "analysis_state_noise": {
@@ -2245,126 +2267,134 @@ def run_primary_analysis(
         "claim_gate": False,
     }
 
-    normal_anchor_count = int(active_spec.normal_recovery_anchor_count)
-    normal_horizons = tuple(active_spec.normal_recovery_horizons)
-    if active_spec.smoke:
-        normal_anchor_count = min(normal_anchor_count, active_spec.spline_count)
-        normal_horizons = tuple(
-            value for value in normal_horizons if value <= active_spec.blank_horizon
+    recovery_path: Path | None = None
+    if not active_spec.core_only:
+        normal_anchor_count = int(active_spec.normal_recovery_anchor_count)
+        normal_horizons = tuple(active_spec.normal_recovery_horizons)
+        if active_spec.smoke:
+            normal_anchor_count = min(normal_anchor_count, active_spec.spline_count)
+            normal_horizons = tuple(
+                value
+                for value in normal_horizons
+                if value <= active_spec.blank_horizon
+            )
+            if active_spec.blank_horizon not in normal_horizons:
+                normal_horizons = (*normal_horizons, int(active_spec.blank_horizon))
+        atomic_json(
+            progress,
+            {
+                "schema_version": SCHEMA_VERSION,
+                "analysis_identity": identity,
+                "stage": "carrier_ambient_normal_recovery",
+                "updated_unix_seconds": time.time(),
+            },
         )
-        if active_spec.blank_horizon not in normal_horizons:
-            normal_horizons = (*normal_horizons, int(active_spec.blank_horizon))
-    atomic_json(
-        progress,
-        {
-            "schema_version": SCHEMA_VERSION,
-            "analysis_identity": identity,
-            "stage": "carrier_ambient_normal_recovery",
-            "updated_unix_seconds": time.time(),
-        },
-    )
-    try:
-        recovery = carrier_ambient_normal_recovery(
-            reconstruction.spline_state,
-            reconstruction.spline_angle,
-            adapter.actual_f0,
-            lambda state: _blank_decode_primary(model, adapter, state),
-            anchor_count=normal_anchor_count,
-            ambient_directions_per_anchor=(
-                active_spec.normal_recovery_ambient_directions
+        try:
+            recovery = carrier_ambient_normal_recovery(
+                reconstruction.spline_state,
+                reconstruction.spline_angle,
+                adapter.actual_f0,
+                lambda state: _blank_decode_primary(model, adapter, state),
+                anchor_count=normal_anchor_count,
+                ambient_directions_per_anchor=(
+                    active_spec.normal_recovery_ambient_directions
+                ),
+                radii_over_manifold_scale=tuple(
+                    active_spec.normal_recovery_radii_over_manifold_scale
+                ),
+                horizons=normal_horizons,
+                seed=active_spec.normal_recovery_seed,
+                distance_chunk_size=active_spec.candidate_distance_chunk_size,
+            )
+            recovery_summary = _carrier_normal_recovery_summary(
+                recovery,
+                seed=active_spec.normal_recovery_seed,
+                anchor_count=normal_anchor_count,
+                ambient_directions_per_anchor=(
+                    active_spec.normal_recovery_ambient_directions
+                ),
+                radii_over_manifold_scale=tuple(
+                    active_spec.normal_recovery_radii_over_manifold_scale
+                ),
+                horizons=normal_horizons,
+                smoke=active_spec.smoke,
+            )
+        except torch.cuda.OutOfMemoryError:
+            raise
+        except StructuralNotEstimableError as error:
+            return _publish_structural_not_estimable(
+                destination=destination,
+                base_summary=base_summary,
+                progress=progress,
+                completion=completion,
+                identity=identity,
+                model_name=model.config.name,
+                task_trajectory_path=task_trajectory_path,
+                failed_stage="carrier_ambient_normal_recovery",
+                error=error,
+                completed_artifacts=(reconstruction_path,),
+            )
+        recovery_path = destination / "carrier_ambient_normal_recovery.npz"
+        (
+            persisted_direction,
+            persisted_tangent,
+            persisted_direction_norm_error,
+            persisted_absolute_tangent_dot_direction,
+        ) = _persisted_direction_arrays_and_qa(recovery)
+        _atomic_npz(
+            recovery_path,
+            family=np.asarray(recovery.family, dtype="U32"),
+            anchor_index=_as_numpy(recovery.anchor_index, dtype=np.int64),
+            anchor_angle=_as_numpy(recovery.anchor_angle),
+            direction_index=_as_numpy(recovery.direction_index, dtype=np.int64),
+            radius_over_manifold_scale=_as_numpy(
+                recovery.radius_over_manifold_scale
             ),
-            radii_over_manifold_scale=tuple(
-                active_spec.normal_recovery_radii_over_manifold_scale
+            radius_absolute=_as_numpy(recovery.radius_absolute),
+            direction=persisted_direction,
+            tangent=persisted_tangent,
+            direction_norm_error=persisted_direction_norm_error,
+            absolute_tangent_dot_direction=(
+                persisted_absolute_tangent_dot_direction
             ),
-            horizons=normal_horizons,
-            seed=active_spec.normal_recovery_seed,
-            distance_chunk_size=active_spec.candidate_distance_chunk_size,
+            horizon=_as_numpy(recovery.horizon, dtype=np.int64),
+            nearest_manifold_index=_as_numpy(
+                recovery.nearest_manifold_index, dtype=np.int64
+            ),
+            manifold_distance=_as_numpy(recovery.manifold_distance),
+            manifold_distance_ratio=_as_numpy(recovery.manifold_distance_ratio),
+            decoded_angle=_as_numpy(recovery.decoded_angle),
+            same_memory_error_radians=_as_numpy(
+                recovery.same_memory_error_radians
+            ),
+            clean_manifold_distance=_as_numpy(recovery.clean_manifold_distance),
+            clean_decoded_angle=_as_numpy(recovery.clean_decoded_angle),
+            clean_same_memory_error_radians=_as_numpy(
+                recovery.clean_same_memory_error_radians
+            ),
+            excess_same_memory_error_radians=_as_numpy(
+                recovery.excess_same_memory_error_radians
+            ),
+            manifold_distance_minus_clean=_as_numpy(
+                recovery.manifold_distance_minus_clean
+            ),
+            distance_to_matched_clean_state=_as_numpy(
+                recovery.distance_to_matched_clean_state
+            ),
+            distance_to_matched_clean_state_ratio=_as_numpy(
+                recovery.distance_to_matched_clean_state_ratio
+            ),
+            manifold_scale=np.asarray(
+                float(recovery.manifold_scale.detach().cpu()), dtype=np.float64
+            ),
+            analysis_recurrent_state_noise_enabled=np.asarray(False, dtype=np.bool_),
+            analysis_recurrent_state_noise_std=np.asarray(0.0, dtype=np.float64),
         )
-        recovery_summary = _carrier_normal_recovery_summary(
-            recovery,
-            seed=active_spec.normal_recovery_seed,
-            anchor_count=normal_anchor_count,
-            ambient_directions_per_anchor=(
-                active_spec.normal_recovery_ambient_directions
-            ),
-            radii_over_manifold_scale=tuple(
-                active_spec.normal_recovery_radii_over_manifold_scale
-            ),
-            horizons=normal_horizons,
-            smoke=active_spec.smoke,
-        )
-    except torch.cuda.OutOfMemoryError:
-        raise
-    except StructuralNotEstimableError as error:
-        return _publish_structural_not_estimable(
-            destination=destination,
-            base_summary=base_summary,
-            progress=progress,
-            completion=completion,
-            identity=identity,
-            model_name=model.config.name,
-            task_trajectory_path=task_trajectory_path,
-            failed_stage="carrier_ambient_normal_recovery",
-            error=error,
-            completed_artifacts=(reconstruction_path,),
-        )
-    recovery_path = destination / "carrier_ambient_normal_recovery.npz"
-    (
-        persisted_direction,
-        persisted_tangent,
-        persisted_direction_norm_error,
-        persisted_absolute_tangent_dot_direction,
-    ) = _persisted_direction_arrays_and_qa(recovery)
-    _atomic_npz(
-        recovery_path,
-        family=np.asarray(recovery.family, dtype="U32"),
-        anchor_index=_as_numpy(recovery.anchor_index, dtype=np.int64),
-        anchor_angle=_as_numpy(recovery.anchor_angle),
-        direction_index=_as_numpy(recovery.direction_index, dtype=np.int64),
-        radius_over_manifold_scale=_as_numpy(
-            recovery.radius_over_manifold_scale
-        ),
-        radius_absolute=_as_numpy(recovery.radius_absolute),
-        direction=persisted_direction,
-        tangent=persisted_tangent,
-        direction_norm_error=persisted_direction_norm_error,
-        absolute_tangent_dot_direction=(
-            persisted_absolute_tangent_dot_direction
-        ),
-        horizon=_as_numpy(recovery.horizon, dtype=np.int64),
-        nearest_manifold_index=_as_numpy(
-            recovery.nearest_manifold_index, dtype=np.int64
-        ),
-        manifold_distance=_as_numpy(recovery.manifold_distance),
-        manifold_distance_ratio=_as_numpy(recovery.manifold_distance_ratio),
-        decoded_angle=_as_numpy(recovery.decoded_angle),
-        same_memory_error_radians=_as_numpy(
-            recovery.same_memory_error_radians
-        ),
-        clean_manifold_distance=_as_numpy(recovery.clean_manifold_distance),
-        clean_decoded_angle=_as_numpy(recovery.clean_decoded_angle),
-        clean_same_memory_error_radians=_as_numpy(
-            recovery.clean_same_memory_error_radians
-        ),
-        excess_same_memory_error_radians=_as_numpy(
-            recovery.excess_same_memory_error_radians
-        ),
-        manifold_distance_minus_clean=_as_numpy(
-            recovery.manifold_distance_minus_clean
-        ),
-        distance_to_matched_clean_state=_as_numpy(
-            recovery.distance_to_matched_clean_state
-        ),
-        distance_to_matched_clean_state_ratio=_as_numpy(
-            recovery.distance_to_matched_clean_state_ratio
-        ),
-        manifold_scale=np.asarray(
-            float(recovery.manifold_scale.detach().cpu()), dtype=np.float64
-        ),
-        analysis_recurrent_state_noise_enabled=np.asarray(False, dtype=np.bool_),
-        analysis_recurrent_state_noise_std=np.asarray(0.0, dtype=np.float64),
-    )
-    base_summary["carrier_ambient_normal_recovery"] = recovery_summary
+        base_summary["carrier_ambient_normal_recovery"] = recovery_summary
+    else:
+        base_summary["carrier_ambient_normal_recovery"] = {
+            "status": "omitted_from_pilot_core"
+        }
 
     try:
         with torch.no_grad():
@@ -2376,12 +2406,14 @@ def run_primary_analysis(
             angular_flow = signed_angular_flow(
                 projected.output, projected.projected_vector_field
             )
-        topology = cyclic_flow_reversal_topology(
-            reconstruction.spline_angle,
-            angular_flow,
-            zero_tolerance=active_spec.flow_zero_tolerance,
-            angle_tolerance=max(100.0 * torch.finfo(dtype).eps, 1.0e-12),
-        )
+        topology = None
+        if not active_spec.core_only:
+            topology = cyclic_flow_reversal_topology(
+                reconstruction.spline_angle,
+                angular_flow,
+                zero_tolerance=active_spec.flow_zero_tolerance,
+                angle_tolerance=max(100.0 * torch.finfo(dtype).eps, 1.0e-12),
+            )
     except StructuralNotEstimableError as error:
         return _publish_structural_not_estimable(
             destination=destination,
@@ -2393,7 +2425,9 @@ def run_primary_analysis(
             task_trajectory_path=task_trajectory_path,
             failed_stage="projected_flow_and_fixed_point_topology",
             error=error,
-            completed_artifacts=(reconstruction_path, recovery_path),
+            completed_artifacts=tuple(
+                path for path in (reconstruction_path, recovery_path) if path is not None
+            ),
         )
     projected_path = destination / "projected_flow_and_topology.npz"
     _atomic_npz(
@@ -2405,13 +2439,13 @@ def run_primary_analysis(
         pointwise_euclidean_norm=_as_numpy(projected.pointwise_norm),
         signed_angular_flow=_as_numpy(angular_flow),
         stable_fixed_point_angle=np.asarray(
-            [item.angle for item in topology.stable], dtype=np.float64
+            [] if topology is None else [item.angle for item in topology.stable], dtype=np.float64
         ),
         saddle_fixed_point_angle=np.asarray(
-            [item.angle for item in topology.saddles], dtype=np.float64
+            [] if topology is None else [item.angle for item in topology.saddles], dtype=np.float64
         ),
     )
-    topology_summary = {
+    topology_summary = {"status": "omitted_from_pilot_core"} if topology is None else {
         "kind": topology.kind,
         "orientation": topology.orientation,
         "zero_tolerance": topology.zero_tolerance,
@@ -2457,11 +2491,54 @@ def run_primary_analysis(
             failed_stage="full_local_jacobian_eigenspectrum",
             error=error,
             completed_artifacts=(
-                reconstruction_path,
-                recovery_path,
-                projected_path,
+                *tuple(
+                    path for path in (reconstruction_path, recovery_path, projected_path)
+                    if path is not None
+                ),
             ),
         )
+    if active_spec.core_only:
+        base_summary.update(
+            {
+                "analysis_status": "complete_core_structural_summary_eligible",
+                "projected_flow": flow_summary,
+                "fixed_point_topology": topology_summary,
+                "full_local_eigenspectrum": spectrum_summary,
+                "finite_time_angular_memory": {"status": "omitted_from_pilot_core"},
+                "asymptotic_structure": {"status": "omitted_from_pilot_core"},
+            }
+        )
+        summary_path = destination / "summary.json"
+        atomic_json(summary_path, base_summary)
+        atomic_json(
+            progress,
+            {
+                "schema_version": SCHEMA_VERSION,
+                "analysis_identity": identity,
+                "stage": "complete_core",
+                "updated_unix_seconds": time.time(),
+            },
+        )
+        write_completion_receipt(
+            completion,
+            job_id=f"sagodi-primary-{model.config.name}-{identity[:12]}",
+            artifacts=[
+                destination / "analysis_identity.json",
+                progress,
+                task_trajectory_path,
+                reconstruction_path,
+                projected_path,
+                spectrum_path,
+                summary_path,
+            ],
+            metadata={
+                "analysis_identity": identity,
+                "analysis_status": "complete_core_structural_summary_eligible",
+                "model_id": model.config.name,
+                "checkpoint_sha256": sha256_file(checkpoint),
+            },
+        )
+        return summary_path
     atomic_json(
         progress,
         {
@@ -2583,6 +2660,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--spectrum-chunk-size", type=int, default=DEFAULT_SPECTRUM_CHUNK_SIZE)
     parser.add_argument("--source-v6", action="store_true")
+    parser.add_argument("--core-only", action="store_true")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--trajectory-count", type=int)
     parser.add_argument("--spline-count", type=int)
@@ -2599,8 +2677,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         "task_horizon": args.task_horizon,
         "blank_horizon": args.blank_horizon,
     }
-    if not args.smoke and any(value is not None for value in overrides.values()):
-        raise ValueError("analysis-size overrides require --smoke")
+    if not (args.smoke or args.core_only) and any(value is not None for value in overrides.values()):
+        raise ValueError("analysis-size overrides require --smoke or --core-only")
     defaults = PrimaryAnalysisSpec(
         task_horizon=128 if args.source_v6 else FULL_TASK_HORIZON,
         blank_horizon=2048 if args.source_v6 else FULL_BLANK_HORIZON,
@@ -2623,6 +2701,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         ),
         spectrum_chunk_size=args.spectrum_chunk_size,
         source_v6=bool(args.source_v6),
+        core_only=bool(args.core_only),
         smoke=bool(args.smoke),
     )
     summary = run_primary_analysis(

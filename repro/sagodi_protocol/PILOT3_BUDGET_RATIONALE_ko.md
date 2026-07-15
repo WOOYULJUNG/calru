@@ -28,7 +28,8 @@ LRU 계열에 불리했다.
 - LR grid screening: 각 cell seeds 100,101, 2,000 updates.
 - State-noise std screening: 각 cell seeds 100,101, 2,000 updates.
 - 선택된 baseline main: fresh seeds 0,1,2, 5,000 updates.
-- Baseline Ságodi analysis: model × noise 조건별 main seeds 0,1,2만 분석.
+- Baseline Ságodi core analysis: model × noise 조건별 대표 seed 0만 분석하고,
+  slow manifold·full local spectrum·projected drift만 계산한다.
 - CA-LRU RP search: seed 100 sentinel과 seeds 101,102 fanout을 유지한다.
 - CA-LRU 2×2 main: 조건별 fresh seeds 0,1,2, 5,000 updates.
 
@@ -46,7 +47,7 @@ updates마다 validation을 기록하므로, pilot 종료 뒤 3k/4k/5k 결과를
 | LRU main | 10 | 3 |
 | Four-baseline noise tuning | 100 | 40 |
 | Four-baseline noise main | 40 | 12 |
-| Baseline Ságodi analysis | 80 | 24 |
+| Baseline Ságodi analysis | 80 | 8 |
 | CA-LRU RP sentinel/fanout | 47 | 37 |
 | CA-LRU 2×2 main | 40 | 12 |
 

@@ -94,9 +94,11 @@ repro/sagodi_protocol/run_lru_then_baseline_noise_v1.sh \
 
 세부 해석과 재현 계약은 `STATE_NOISE_SEARCH_V1_FREEZE_ko.md`를 따른다.
 
-네 baseline의 noise-free/positive-noise main이 완료되면 24 checkpoint를
-Ságodi-primary analyzer에 등록한다. NMSE-ineligible seed도 denominator에 남으며,
-eligible seed에서만 full structural analysis를 실행한다.
+네 baseline의 noise-free/positive-noise main이 완료되면 대표 seed 0의 8
+checkpoint를 Ságodi-core analyzer에 등록한다. NMSE-ineligible checkpoint도
+denominator에 남으며, eligible checkpoint에서는 task-aligned slow manifold,
+full local Jacobian eigenspectrum, output-projected residual drift만 계산한다.
+Fixed-point topology, basin/capacity, recovery 분석은 pilot에서 제외한다.
 
 ```bash
 repro/sagodi_protocol/run_source_v6_primary_analysis.sh \
