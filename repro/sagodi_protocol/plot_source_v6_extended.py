@@ -8,6 +8,9 @@ matching axes across separate model-specific dashboards.  The figures are
 descriptive seed-0 pilot outputs; they are not confirmatory multi-seed
 summaries.  A separate right-hand ``Ideal CA`` panel is explicitly schematic
 and never presented as measured data.
+
+The optional paper mode removes state-noise rows and appends the predetermined
+H-C seed-0 panel. Raw noisy artifacts remain untouched for auditability.
 """
 
 from __future__ import annotations
@@ -35,10 +38,12 @@ CALRU_PANELS = (
     ("calru", "no_rp", "CA-LRU\nno RP"),
     ("calru", "rp", "CA-LRU"),
 )
+HC_PANEL = ("hc", "hybrid_rp_recurrent", "H-C\n(2/3 seeds pass)")
 CONDITIONS = (
     ("noise_free", "noise-free", "#2b6cb0"),
     ("positive_state_noise_training", "state-noise", "#c05621"),
 )
+NO_NOISE_CONDITIONS = (CONDITIONS[0],)
 CALRU_CONDITIONS = {
     ("no_rp", "noise_free"): "no_rp_no_noise",
     ("no_rp", "positive_state_noise_training"): "no_rp_with_noise",
@@ -95,13 +100,17 @@ def _retention_from_checkpoint(path: Path) -> tuple[np.ndarray, np.ndarray, str]
     )
 
 
-def _panels(calru_root: Path | None) -> tuple[tuple[str, str, str], ...]:
-    return BASELINE_PANELS + (CALRU_PANELS if calru_root is not None else ())
+def _panels(
+    calru_root: Path | None, hc_analysis_root: Path | None
+) -> tuple[tuple[str, str, str], ...]:
+    panels = BASELINE_PANELS + (CALRU_PANELS if calru_root is not None else ())
+    return panels + ((HC_PANEL,) if hc_analysis_root is not None else ())
 
 
 def _run_dir(
     baseline_root: Path,
     calru_root: Path | None,
+    hc_analysis_root: Path | None,
     panel: tuple[str, str, str],
     condition: str,
 ) -> Path:
@@ -111,16 +120,23 @@ def _run_dir(
     if source == "calru" and calru_root is not None:
         factorial_condition = CALRU_CONDITIONS[(model, condition)]
         return calru_root / "runs" / f"{factorial_condition}__seed00"
+    if source == "hc" and hc_analysis_root is not None:
+        if condition != "noise_free":
+            return hc_analysis_root / "unavailable_noise_condition"
+        return hc_analysis_root / "seed00"
     raise ValueError(f"unsupported panel source: {source}")
 
 
 def _load_run(
     baseline_root: Path,
     calru_root: Path | None,
+    hc_analysis_root: Path | None,
     panel: tuple[str, str, str],
     condition: str,
 ) -> dict[str, Any]:
-    directory = _run_dir(baseline_root, calru_root, panel, condition)
+    directory = _run_dir(
+        baseline_root, calru_root, hc_analysis_root, panel, condition
+    )
     summary_path = directory / "summary.json"
     if not summary_path.exists():
         return {"status": "missing", "directory": str(directory)}
@@ -129,6 +145,7 @@ def _load_run(
         "status": summary.get("analysis_status", "unknown"),
         "directory": str(directory),
         "summary": summary,
+        "source": panel[0],
     }
     for stem in (
         "projected_flow_and_topology",
@@ -138,6 +155,8 @@ def _load_run(
         "asymptotic_structure",
     ):
         path = directory / f"{stem}.npz"
+        if panel[0] == "hc" and stem == "carrier_ambient_normal_recovery":
+            path = directory / "normal_recovery.npz"
         if path.exists():
             result[stem] = np.load(path, allow_pickle=False)
     return result
@@ -176,26 +195,32 @@ def _annotate_not_estimable(ax: plt.Axes, run: Mapping[str, Any]) -> None:
 
 
 def _base_grid(
-    title: str, panels: tuple[tuple[str, str, str], ...]
+    title: str,
+    panels: tuple[tuple[str, str, str], ...],
+    conditions: tuple[tuple[str, str, str], ...],
 ) -> tuple[plt.Figure, np.ndarray, plt.Axes]:
     column_count = len(panels)
-    fig = plt.figure(figsize=(3.36 * (column_count + 1), 6.4), constrained_layout=True)
+    row_count = len(conditions)
+    fig = plt.figure(
+        figsize=(3.15 * (column_count + 1), 3.35 * row_count),
+        constrained_layout=True,
+    )
     grid = fig.add_gridspec(
-        2,
+        row_count,
         column_count + 1,
         width_ratios=tuple(1.0 for _ in panels) + (1.08,),
     )
     axes = np.asarray(
         [
             [fig.add_subplot(grid[row, column]) for column in range(column_count)]
-            for row in range(2)
+            for row in range(row_count)
         ]
     )
     ideal = fig.add_subplot(grid[:, column_count])
     fig.suptitle(title, fontsize=15, fontweight="bold")
     for column, (_, _, label) in enumerate(panels):
         axes[0, column].set_title(label, fontsize=11, fontweight="bold")
-    for row, (_, label, _) in enumerate(CONDITIONS):
+    for row, (_, label, _) in enumerate(conditions):
         axes[row, 0].set_ylabel(label, fontsize=10, fontweight="bold")
     ideal.set_title("Ideal CA\n(schematic)", fontsize=11, fontweight="bold")
     ideal.set_facecolor("#f0fff4")
@@ -228,16 +253,22 @@ def _nearest_indices(angle: np.ndarray, targets: np.ndarray) -> np.ndarray:
 def plot_geometry_topology(
     root: Path,
     calru_root: Path | None,
+    hc_analysis_root: Path | None,
     panels: tuple[tuple[str, str, str], ...],
+    conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
     prefix: str,
 ) -> None:
     scope = "Model comparison" if calru_root is not None else "Baseline"
-    fig, axes, ideal = _base_grid(f"{scope} geometry and projected topology", panels)
+    fig, axes, ideal = _base_grid(
+        f"{scope} geometry and projected topology", panels, conditions
+    )
     runs = {
-        (panel, condition): _load_run(root, calru_root, panel, condition)
+        (panel, condition): _load_run(
+            root, calru_root, hc_analysis_root, panel, condition
+        )
         for panel in panels
-        for condition, _, _ in CONDITIONS
+        for condition, _, _ in conditions
     }
     points: list[np.ndarray] = []
     for run in runs.values():
@@ -248,7 +279,7 @@ def plot_geometry_topology(
         limit = float(np.max(np.abs(all_points))) * 1.08
     else:
         limit = 1.0
-    for row, (condition, _, color) in enumerate(CONDITIONS):
+    for row, (condition, _, color) in enumerate(conditions):
         for column, panel in enumerate(panels):
             ax = axes[row, column]
             run = runs[(panel, condition)]
@@ -303,7 +334,7 @@ def plot_geometry_topology(
             ax.set_ylim(-limit, limit)
             ax.set_aspect("equal", adjustable="box")
             ax.grid(alpha=0.18)
-            if row == 1:
+            if row == len(conditions) - 1:
                 ax.set_xlabel("output x")
             if column == 0:
                 ax.set_ylabel("output y")
@@ -351,16 +382,22 @@ def plot_geometry_topology(
 def plot_jacobian(
     root: Path,
     calru_root: Path | None,
+    hc_analysis_root: Path | None,
     panels: tuple[tuple[str, str, str], ...],
+    conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
     prefix: str,
 ) -> None:
     scope = "Model comparison" if calru_root is not None else "Baseline"
-    fig, axes, ideal = _base_grid(f"{scope} top-5 local Jacobian real parts", panels)
+    fig, axes, ideal = _base_grid(
+        f"{scope} top-5 local Jacobian real parts", panels, conditions
+    )
     runs = {
-        (panel, condition): _load_run(root, calru_root, panel, condition)
+        (panel, condition): _load_run(
+            root, calru_root, hc_analysis_root, panel, condition
+        )
         for panel in panels
-        for condition, _, _ in CONDITIONS
+        for condition, _, _ in conditions
     }
     values: list[np.ndarray] = []
     for run in runs.values():
@@ -373,7 +410,7 @@ def plot_jacobian(
         bound = max(0.01, float(np.max(np.abs(np.concatenate(values)))) * 1.1)
     else:
         bound = 0.01
-    for row, (condition, _, color) in enumerate(CONDITIONS):
+    for row, (condition, _, color) in enumerate(conditions):
         for column, panel in enumerate(panels):
             ax = axes[row, column]
             run = runs[(panel, condition)]
@@ -381,7 +418,11 @@ def plot_jacobian(
                 _annotate_not_estimable(ax, run)
                 continue
             data = run["full_local_eigenspectrum"]
-            angle = np.asarray(run["projected_flow_and_topology"]["spline_angle"])
+            angle = np.asarray(
+                data["spline_angle"]
+                if "spline_angle" in data.files
+                else run["projected_flow_and_topology"]["spline_angle"]
+            )
             eigenvalues = np.asarray(data["vector_field_eigenvalues"])
             ranked = np.sort(np.real(eigenvalues), axis=1)[:, ::-1][:, :5]
             gap = ranked[:, 0] - ranked[:, 1]
@@ -410,7 +451,7 @@ def plot_jacobian(
             ax.set_xlim(0.0, 2.0 * np.pi)
             ax.set_ylim(-bound, bound)
             ax.grid(alpha=0.18)
-            if row == 1:
+            if row == len(conditions) - 1:
                 ax.set_xlabel(r"memory angle $\theta$")
             if column == 0:
                 ax.set_ylabel(r"real part of $J_F-I$")
@@ -460,51 +501,124 @@ def plot_jacobian(
 def plot_retention_spectrum(
     root: Path,
     calru_root: Path,
+    hc_training_root: Path | None,
+    hc_analysis_root: Path | None,
+    conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
     prefix: str,
 ) -> None:
     """Compare the 52-mode retention spectra for the LRU-family models."""
 
-    columns = (
+    columns: list[tuple[str, str, str, Path, bool]] = [
         (
             "LRU",
             "lru_n52__noise_free__seed00",
             "lru_n52__positive_state_noise_training__seed00",
             root,
+            False,
         ),
         (
             "CA-LRU\nno RP",
             "no_rp_no_noise__seed00",
             "no_rp_with_noise__seed00",
             calru_root,
+            False,
         ),
         (
             "CA-LRU",
             "rp_no_noise__seed00",
             "rp_with_noise__seed00",
             calru_root,
+            False,
         ),
+    ]
+    if hc_training_root is not None and hc_analysis_root is not None:
+        columns.append(
+            (
+                "H-C",
+                "hybrid_rp__recurrent__seed00",
+                "",
+                hc_training_root,
+                True,
+            )
+        )
+    fig, axes = plt.subplots(
+        len(conditions),
+        len(columns),
+        figsize=(3.45 * len(columns), 3.5 * len(conditions)),
+        constrained_layout=True,
+        squeeze=False,
     )
-    fig, axes = plt.subplots(2, 3, figsize=(13.2, 7.0), constrained_layout=True)
     fig.suptitle("LRU-family retention spectra (seed 0)", fontsize=15, fontweight="bold")
-    for column, (label, _, _, _) in enumerate(columns):
+    for column, (label, _, _, _, _) in enumerate(columns):
         axes[0, column].set_title(label, fontsize=11, fontweight="bold")
-    for row, (_, row_label, color) in enumerate(CONDITIONS):
+    for row, (_, row_label, color) in enumerate(conditions):
         axes[row, 0].set_ylabel(f"{row_label}\nretention $\\lambda$", fontsize=10, fontweight="bold")
-        for column, (_, clean_run, noisy_run, artifact_root) in enumerate(columns):
+        for column, (_, clean_run, noisy_run, artifact_root, is_hc) in enumerate(columns):
             run_id = clean_run if row == 0 else noisy_run
-            checkpoint = _checkpoint_for_run(artifact_root, run_id)
+            if is_hc:
+                if row != 0:
+                    _annotate_not_estimable(axes[row, column], {"status": "missing"})
+                    continue
+                checkpoint = (
+                    artifact_root
+                    / "runs"
+                    / run_id
+                    / "checkpoint_trained.pt"
+                ).resolve(strict=True)
+            else:
+                checkpoint = _checkpoint_for_run(artifact_root, run_id)
             values, runtime, kind = _retention_from_checkpoint(checkpoint)
-            ordered = np.sort(values)
+            order = np.argsort(values)
+            ordered = values[order]
             percentile = (np.arange(ordered.size, dtype=float) + 0.5) / ordered.size
             ax = axes[row, column]
             ax.plot(percentile, ordered, color=color, linewidth=1.6)
             ax.scatter(percentile, ordered, color=color, s=9, alpha=0.75, linewidths=0)
+            if is_hc:
+                payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+                state_dict = payload["state_dict"]
+                carrier = np.load(
+                    hc_analysis_root / "seed00" / "slow_manifold_reconstruction.npz",
+                    allow_pickle=False,
+                )["spline_state"]
+                state = torch.as_tensor(carrier, dtype=torch.float32)
+                prefix_key = "core.blocks.0.rec.retention_gate."
+                hidden = torch.nn.functional.gelu(
+                    state @ state_dict[prefix_key + "0.weight"].T
+                    + state_dict[prefix_key + "0.bias"]
+                )
+                raw = (
+                    hidden @ state_dict[prefix_key + "2.weight"].T
+                    + state_dict[prefix_key + "2.bias"]
+                )
+                dynamic = torch.as_tensor(values, dtype=state.dtype)[None, :] * torch.exp(
+                    0.05 * torch.tanh(raw)
+                )
+                dynamic = dynamic[:, order].numpy()
+                median_dynamic = np.median(dynamic, axis=0)
+                lower_dynamic = np.quantile(dynamic, 0.05, axis=0)
+                upper_dynamic = np.quantile(dynamic, 0.95, axis=0)
+                ax.fill_between(
+                    percentile,
+                    lower_dynamic,
+                    upper_dynamic,
+                    color="#805ad5",
+                    alpha=0.16,
+                    label="dynamic 5–95%",
+                )
+                ax.plot(
+                    percentile,
+                    median_dynamic,
+                    color="#805ad5",
+                    linewidth=1.2,
+                    label="dynamic median",
+                )
             ax.axhline(0.999, color="#718096", linestyle="--", linewidth=0.7)
             ax.set_xlim(0.0, 1.0)
             ax.set_ylim(0.0, 1.02)
             ax.grid(alpha=0.16)
-            if row == 1:
+            if row == len(conditions) - 1:
                 ax.set_xlabel("mode quantile")
             if column > 0:
                 ax.set_ylabel("")
@@ -549,9 +663,11 @@ def plot_retention_spectrum(
                 fontsize=4.8,
                 color="#4a5568",
             )
+            if is_hc:
+                ax.legend(frameon=False, fontsize=6, loc="lower left")
     fig.supxlabel(
-        "Main: float64-recomputed retention spectrum; inset: most persistent modes. "
-        "Exact-one count uses checkpoint runtime dtype.",
+        "Main: float64-recomputed base retention; H-C shading: state-dependent 5–95% "
+        "range over the reconstructed carrier. Inset: most persistent base modes.",
         fontsize=7,
         color="#4a5568",
     )
@@ -561,18 +677,25 @@ def plot_retention_spectrum(
 def plot_memory(
     root: Path,
     calru_root: Path | None,
+    hc_analysis_root: Path | None,
     panels: tuple[tuple[str, str, str], ...],
+    conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
     prefix: str,
 ) -> None:
     scope = "Model comparison" if calru_root is not None else "Baseline"
-    fig, axes, ideal = _base_grid(f"{scope} finite-time angular memory", panels)
+    fig, axes, ideal = _base_grid(
+        f"{scope} finite-time angular memory", panels, conditions
+    )
     runs = {
-        (panel, condition): _load_run(root, calru_root, panel, condition)
+        (panel, condition): _load_run(
+            root, calru_root, hc_analysis_root, panel, condition
+        )
         for panel in panels
-        for condition, _, _ in CONDITIONS
+        for condition, _, _ in conditions
     }
-    for row, (condition, _, color) in enumerate(CONDITIONS):
+    horizon_in_tasks = 16.0
+    for row, (condition, _, color) in enumerate(conditions):
         for column, panel in enumerate(panels):
             ax = axes[row, column]
             run = runs[(panel, condition)]
@@ -580,32 +703,35 @@ def plot_memory(
                 _annotate_not_estimable(ax, run)
                 continue
             data = run["finite_time_angular_memory"]
-            time = np.asarray(data["time"], dtype=float) / 256.0
+            task_horizon = float(run["summary"]["analysis_spec"]["task_horizon"])
+            time = np.asarray(data["time"], dtype=float) / task_horizon
             absolute = np.asarray(data["absolute_error"])
             mean = np.asarray(data["instantaneous_mean_error"])
             lower = np.quantile(absolute, 0.05, axis=0)
             upper = np.quantile(absolute, 0.95, axis=0)
             ax.fill_between(time, lower, upper, color=color, alpha=0.16)
             ax.plot(time, mean, color=color, linewidth=1.6)
-            ax.axvline(8.0, color="#718096", linestyle="--", linewidth=0.8)
+            ax.axvline(horizon_in_tasks, color="#718096", linestyle="--", linewidth=0.8)
             terminal = run["summary"]["finite_time_angular_memory"]["terminal_mean_error_radians"]
             ax.text(
                 0.03,
                 0.97,
-                f"error@8T={terminal:.3f} rad",
+                f"error@16T={terminal:.3f} rad",
                 transform=ax.transAxes,
                 va="top",
                 fontsize=7,
                 bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
             )
-            ax.set_xlim(0.0, 8.0)
+            ax.set_xlim(0.0, horizon_in_tasks)
             ax.set_ylim(0.0, np.pi)
             ax.grid(alpha=0.18)
-            if row == 1:
+            if row == len(conditions) - 1:
                 ax.set_xlabel(r"blank horizon $t/T$")
             if column == 0:
                 ax.set_ylabel("circular error (rad)")
-    ideal.plot((0.0, 8.0), (0.0, 0.0), color="#2f855a", linewidth=2.4)
+    ideal.plot(
+        (0.0, horizon_in_tasks), (0.0, 0.0), color="#2f855a", linewidth=2.4
+    )
     ideal.text(
         0.5,
         0.92,
@@ -616,7 +742,7 @@ def plot_memory(
         fontsize=8,
         color="#22543d",
     )
-    ideal.set_xlim(0.0, 8.0)
+    ideal.set_xlim(0.0, horizon_in_tasks)
     ideal.set_ylim(0.0, np.pi)
     ideal.set_xlabel(r"blank horizon $t/T$")
     ideal.set_ylabel("circular error (rad)")
@@ -624,13 +750,23 @@ def plot_memory(
     _save(fig, destination, f"{prefix}_memory_retention")
 
 
-def _normal_series(data: Mapping[str, np.ndarray], radius: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _normal_series(
+    data: Mapping[str, np.ndarray],
+    radius: float,
+    *,
+    family_name: str = "ambient_normal",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     family = np.asarray(data["family"]).astype(str)
-    selected = (family == "ambient_normal") & np.isclose(
+    selected = (family == family_name) & np.isclose(
         np.asarray(data["radius_over_manifold_scale"], dtype=float), radius
     )
     horizon = np.asarray(data["horizon"], dtype=int)
-    ratio = np.asarray(data["manifold_distance_ratio"], dtype=float)
+    ratio_key = (
+        "distance_to_matched_clean_state_ratio"
+        if "distance_to_matched_clean_state_ratio" in data
+        else "manifold_distance_ratio"
+    )
+    ratio = np.asarray(data[ratio_key], dtype=float)
     if ratio.ndim != 2 or ratio.shape[1] != horizon.size:
         raise ValueError("normal-recovery ratio must have shape [trial, horizon]")
     selected_horizons: list[int] = []
@@ -657,16 +793,22 @@ def _normal_series(data: Mapping[str, np.ndarray], radius: float) -> tuple[np.nd
 def plot_normal_recovery(
     root: Path,
     calru_root: Path | None,
+    hc_analysis_root: Path | None,
     panels: tuple[tuple[str, str, str], ...],
+    conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
     prefix: str,
 ) -> None:
     scope = "Model comparison" if calru_root is not None else "Baseline"
-    fig, axes, ideal = _base_grid(f"{scope} finite normal-kick recovery", panels)
+    fig, axes, ideal = _base_grid(
+        f"{scope} finite normal-kick recovery", panels, conditions
+    )
     runs = {
-        (panel, condition): _load_run(root, calru_root, panel, condition)
+        (panel, condition): _load_run(
+            root, calru_root, hc_analysis_root, panel, condition
+        )
         for panel in panels
-        for condition, _, _ in CONDITIONS
+        for condition, _, _ in conditions
     }
     all_values: list[float] = []
     for run in runs.values():
@@ -675,9 +817,13 @@ def plot_normal_recovery(
             for radius in RADIUS_COLORS:
                 _, median, lower, upper = _normal_series(data, radius)
                 all_values.extend(np.concatenate((lower, upper)).tolist())
+            _, _, lower, upper = _normal_series(
+                data, 0.05, family_name="in_plane_radial"
+            )
+            all_values.extend(np.concatenate((lower, upper)).tolist())
     ymin = max(1.0e-2, min(all_values) * 0.75) if all_values else 1.0e-2
     ymax = max(10.0, max(all_values) * 1.25) if all_values else 10.0
-    for row, (condition, _, condition_color) in enumerate(CONDITIONS):
+    for row, (condition, _, condition_color) in enumerate(conditions):
         for column, panel in enumerate(panels):
             ax = axes[row, column]
             run = runs[(panel, condition)]
@@ -702,15 +848,36 @@ def plot_normal_recovery(
                 )
                 if alpha:
                     ax.fill_between(horizon, lower, upper, color=radius_color, alpha=alpha)
+            radial_horizon, radial_median, radial_lower, radial_upper = _normal_series(
+                data, 0.05, family_name="in_plane_radial"
+            )
+            if radial_horizon.size:
+                ax.plot(
+                    radial_horizon,
+                    radial_median,
+                    color="#805ad5",
+                    linestyle="--",
+                    linewidth=1.8,
+                    marker="s",
+                    markersize=2.8,
+                    label="radial r=0.05" if row == 0 and column == 0 else None,
+                )
+                ax.fill_between(
+                    radial_horizon,
+                    radial_lower,
+                    radial_upper,
+                    color="#805ad5",
+                    alpha=0.10,
+                )
             ax.axhline(1.0, color="#718096", linestyle="--", linewidth=0.8)
             ax.set_xscale("symlog", linthresh=1.0)
             ax.set_yscale("log")
             ax.set_ylim(ymin, ymax)
             ax.grid(alpha=0.18, which="both")
-            if row == 1:
+            if row == len(conditions) - 1:
                 ax.set_xlabel("blank horizon")
             if column == 0:
-                ax.set_ylabel(r"normal distance ratio $d_t/d_0$")
+                ax.set_ylabel(r"paired-clean ratio $d_t/d_0$")
     axes[0, 0].legend(frameon=False, fontsize=8, loc="upper right")
     ideal_ratio = np.power(1.0 + HORIZONS, -0.5)
     ideal.plot(HORIZONS, ideal_ratio, color="#2f855a", linewidth=2.2, marker="o", markersize=3)
@@ -729,7 +896,7 @@ def plot_normal_recovery(
     ideal.set_yscale("log")
     ideal.set_ylim(ymin, ymax)
     ideal.set_xlabel("blank horizon")
-    ideal.set_ylabel(r"normal distance ratio $d_t/d_0$")
+    ideal.set_ylabel(r"paired-clean ratio $d_t/d_0$")
     ideal.grid(alpha=0.18, which="both")
     _save(fig, destination, f"{prefix}_normal_recovery")
 
@@ -748,18 +915,24 @@ def _set_circular_angle_axes(ax: plt.Axes) -> None:
 def plot_asymptotic_memory_map(
     root: Path,
     calru_root: Path | None,
+    hc_analysis_root: Path | None,
     panels: tuple[tuple[str, str, str], ...],
+    conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
     prefix: str,
 ) -> None:
     scope = "Model comparison" if calru_root is not None else "Baseline"
-    fig, axes, ideal = _base_grid(f"{scope} asymptotic memory map", panels)
+    fig, axes, ideal = _base_grid(
+        f"{scope} asymptotic memory map", panels, conditions
+    )
     runs = {
-        (panel, condition): _load_run(root, calru_root, panel, condition)
+        (panel, condition): _load_run(
+            root, calru_root, hc_analysis_root, panel, condition
+        )
         for panel in panels
-        for condition, _, _ in CONDITIONS
+        for condition, _, _ in conditions
     }
-    for row, (condition, _, color) in enumerate(CONDITIONS):
+    for row, (condition, _, color) in enumerate(conditions):
         for column, panel in enumerate(panels):
             ax = axes[row, column]
             run = runs[(panel, condition)]
@@ -816,7 +989,7 @@ def plot_asymptotic_memory_map(
                 zorder=2,
             )
             _set_circular_angle_axes(ax)
-            if row == 1:
+            if row == len(conditions) - 1:
                 ax.set_xlabel(r"initial memory $\theta_0$")
             if column == 0:
                 ax.set_ylabel(r"terminal memory $\theta_\infty$")
@@ -860,6 +1033,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--calru-artifact-root", type=Path)
+    parser.add_argument("--hc-training-root", type=Path)
+    parser.add_argument("--hc-analysis-root", type=Path)
+    parser.add_argument("--no-noise", action="store_true")
+    parser.add_argument("--prefix")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     root = args.artifact_root.expanduser().resolve(strict=True)
@@ -868,26 +1045,76 @@ def main() -> int:
         if args.calru_artifact_root is not None
         else None
     )
-    panels = _panels(calru_root)
+    hc_training_root = (
+        args.hc_training_root.expanduser().resolve(strict=True)
+        if args.hc_training_root is not None
+        else None
+    )
+    hc_analysis_root = (
+        args.hc_analysis_root.expanduser().resolve(strict=True)
+        if args.hc_analysis_root is not None
+        else None
+    )
+    if (hc_training_root is None) != (hc_analysis_root is None):
+        parser.error("--hc-training-root and --hc-analysis-root must be provided together")
+    if hc_analysis_root is not None and not args.no_noise:
+        parser.error("H-C comparison requires --no-noise because no noisy H-C run exists")
+    conditions = NO_NOISE_CONDITIONS if args.no_noise else CONDITIONS
+    panels = _panels(calru_root, hc_analysis_root)
     default_output = (calru_root if calru_root is not None else root) / "figures"
     destination = (args.output_dir or default_output).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    prefix = "fig_model_comparison" if calru_root is not None else "fig_baseline"
-    plot_geometry_topology(root, calru_root, panels, destination, prefix)
-    plot_jacobian(root, calru_root, panels, destination, prefix)
+    prefix = args.prefix or (
+        "fig_model_comparison_no_noise_hc"
+        if hc_analysis_root is not None
+        else ("fig_model_comparison" if calru_root is not None else "fig_baseline")
+    )
+    plot_geometry_topology(
+        root, calru_root, hc_analysis_root, panels, conditions, destination, prefix
+    )
+    plot_jacobian(
+        root, calru_root, hc_analysis_root, panels, conditions, destination, prefix
+    )
     if calru_root is not None:
-        plot_retention_spectrum(root, calru_root, destination, prefix)
-    plot_memory(root, calru_root, panels, destination, prefix)
-    plot_normal_recovery(root, calru_root, panels, destination, prefix)
-    plot_asymptotic_memory_map(root, calru_root, panels, destination, prefix)
+        plot_retention_spectrum(
+            root,
+            calru_root,
+            hc_training_root,
+            hc_analysis_root,
+            conditions,
+            destination,
+            prefix,
+        )
+    plot_memory(
+        root, calru_root, hc_analysis_root, panels, conditions, destination, prefix
+    )
+    plot_normal_recovery(
+        root, calru_root, hc_analysis_root, panels, conditions, destination, prefix
+    )
+    plot_asymptotic_memory_map(
+        root, calru_root, hc_analysis_root, panels, conditions, destination, prefix
+    )
     manifest = {
         "schema_version": 1,
         "baseline_artifact_root": str(root),
         "calru_artifact_root": str(calru_root) if calru_root is not None else None,
+        "hc_training_root": str(hc_training_root) if hc_training_root is not None else None,
+        "hc_analysis_root": str(hc_analysis_root) if hc_analysis_root is not None else None,
         "output_dir": str(destination),
         "models": [label.replace("\n", " ") for _, _, label in panels],
-        "conditions": [label for _, label, _ in CONDITIONS],
+        "conditions": [label for _, label, _ in conditions],
         "seed_scope": "seed00 descriptive panels from each artifact",
+        "hc_seed_audit": {
+            "displayed_seed": 0,
+            "task_success_seeds": [0, 2],
+            "failed_seed": 1,
+            "failure": "task failure and non-finite blank rollout at step 622",
+        } if hc_analysis_root is not None else None,
+        "noise_policy": (
+            "noise-trained panels excluded from paper figure; raw artifacts retained"
+            if args.no_noise
+            else "noise-free and state-noise panels shown"
+        ),
         "ideal_reference": {
             "role": "conceptual_schematic_not_measured_data",
             "geometry": "continuous fixed-point ring with zero projected flow",
@@ -898,9 +1125,10 @@ def main() -> int:
         },
         "figures": sorted(path.name for path in destination.glob(f"{prefix}_*.pdf")),
         "normal_recovery": {
-            "family": "ambient_normal",
+            "families": ["ambient_normal", "in_plane_radial"],
             "radii_over_manifold_scale": [0.01, 0.05, 0.1],
-            "summary": "median with 10-90 percentile band for radius 0.05",
+            "distance": "distance to the matched clean rollout",
+            "summary": "median with 10-90 percentile band; radial family shown at radius 0.05",
         },
         "retention_spectrum": {
             "scope": "seed00 LRU-family checkpoints",

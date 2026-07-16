@@ -69,3 +69,7 @@ H-C를 분석할 때는 별도 output 경로와 `--retention-mode hybrid_rp`를 
 32개 anchor의 full local Jacobian, ambient/radial finite-kick recovery를 저장한다.
 큰 kick이 발산하더라도 같은 seed의 reconstruction, flow, Jacobian과 더 작은 반지름의
 recovery 결과는 보존한다.
+
+Noise 조건을 논문용 model-comparison figure에서 제외하고 H-C를 추가하려면 기존
+plotting command에 `--hc-training-root`, `--hc-analysis-root`, `--no-noise`
+옵션을 함께 준다. Raw noise artifact는 삭제하지 않는다.

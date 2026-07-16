@@ -18,6 +18,8 @@ import torch
 
 from repro.sagodi_protocol.artifacts import atomic_json
 from repro.sagodi_protocol.sagodi_primary_analysis import (
+    circular_absolute_error,
+    circular_difference,
     carrier_ambient_normal_recovery,
     cyclic_flow_reversal_topology,
     dense_full_jacobian_eigenspectrum,
@@ -139,6 +141,62 @@ def _tangent_radial_gains(
     }
 
 
+@torch.no_grad()
+def _finite_time_memory(
+    manifold_state: torch.Tensor,
+    target_angle: torch.Tensor,
+    autonomous_map: Any,
+    decoder: Any,
+    *,
+    horizon: int,
+) -> dict[str, torch.Tensor]:
+    """Roll the reconstructed carrier and retain the full angular-error curve."""
+
+    state = manifold_state.clone()
+    predicted = torch.empty(
+        state.shape[0], horizon + 1, device=state.device, dtype=state.dtype
+    )
+    for step in range(horizon + 1):
+        output = decoder(state)
+        if not bool(torch.isfinite(output).all()):
+            raise FloatingPointError(f"non-finite decoded blank rollout at step {step}")
+        predicted[:, step] = torch.atan2(output[:, 1], output[:, 0])
+        if step < horizon:
+            state = autonomous_map(state)
+            if not bool(torch.isfinite(state).all()):
+                raise FloatingPointError(f"non-finite blank rollout at step {step + 1}")
+    signed = circular_difference(predicted, target_angle[:, None])
+    absolute = signed.abs()
+    return {
+        "time": torch.arange(horizon + 1, device=state.device),
+        "target_angle": target_angle,
+        "predicted_angle": predicted,
+        "signed_error": signed,
+        "absolute_error": absolute,
+        "instantaneous_minimum_error": absolute.min(dim=0).values,
+        "instantaneous_mean_error": absolute.mean(dim=0),
+        "instantaneous_maximum_error": absolute.max(dim=0).values,
+        "terminal_state": state,
+    }
+
+
+def _assigned_stable_angles(
+    observed: torch.Tensor, stable_angles: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, float]:
+    if not stable_angles.numel():
+        return observed.clone(), torch.zeros(0, dtype=torch.int64), float("nan")
+    distance = circular_absolute_error(
+        observed[:, None], stable_angles.to(observed)[None, :]
+    )
+    assignment = distance.argmin(dim=1)
+    assigned = stable_angles.to(observed)[assignment]
+    counts = torch.bincount(assignment, minlength=stable_angles.numel())
+    proportions = counts.to(torch.float64) / float(observed.numel())
+    positive = proportions[proportions > 0]
+    effective = float(torch.exp(-(positive * torch.log(positive)).sum()).cpu())
+    return assigned, counts, effective
+
+
 def analyze_seed(
     *,
     root: Path,
@@ -209,6 +267,30 @@ def analyze_seed(
     )
     target = batch.output_targets
     mse = (prediction - target).square().mean()
+    stable_angles = torch.as_tensor(
+        [item.angle for item in topology.reversals if item.kind == "stable"],
+        device=device,
+        dtype=reconstruction.spline_angle.dtype,
+    )
+    saddle_angles = torch.as_tensor(
+        [item.angle for item in topology.reversals if item.kind == "saddle"],
+        device=device,
+        dtype=reconstruction.spline_angle.dtype,
+    )
+    finite_memory = _finite_time_memory(
+        reconstruction.spline_state,
+        reconstruction.spline_angle,
+        adapter.actual_f0,
+        decoder,
+        horizon=spec.blank_horizon,
+    )
+    terminal_angle = finite_memory["predicted_angle"][:, -1]
+    assigned_angle, basin_counts, effective_basin_count = _assigned_stable_angles(
+        terminal_angle, stable_angles
+    )
+    terminal_error = circular_absolute_error(
+        terminal_angle, reconstruction.spline_angle
+    )
     seed_output = output / f"seed{seed:02d}"
     seed_output.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -227,8 +309,58 @@ def analyze_seed(
         map_eigenvalues=_np(eigenvalues),
         map_jacobian=_np(spectrum.map_jacobian),
     )
+    np.savez_compressed(
+        seed_output / "projected_flow_and_topology.npz",
+        spline_angle=_np(reconstruction.spline_angle),
+        output=_np(flow.output),
+        next_output=_np(flow.next_output),
+        projected_vector_field=_np(flow.projected_vector_field),
+        pointwise_euclidean_norm=_np(flow.pointwise_norm),
+        signed_angular_flow=_np(angular_flow),
+        stable_fixed_point_angle=_np(stable_angles),
+        saddle_fixed_point_angle=_np(saddle_angles),
+    )
+    vector_field_eigenvalues = eigenvalues - 1.0
+    ranked_real = torch.sort(vector_field_eigenvalues.real, dim=1, descending=True).values
+    np.savez_compressed(
+        seed_output / "full_local_eigenspectrum.npz",
+        spline_index=_np(anchor_index),
+        spline_angle=_np(reconstruction.spline_angle[anchor_index]),
+        map_eigenvalues=_np(eigenvalues),
+        vector_field_eigenvalues=_np(vector_field_eigenvalues),
+        largest_real_part=_np(ranked_real[:, 0]),
+        second_largest_real_part=_np(ranked_real[:, 1]),
+        real_part_gap=_np(ranked_real[:, 0] - ranked_real[:, 1]),
+        map_spectral_radius=_np(magnitudes.max(dim=1).values),
+    )
+    np.savez_compressed(
+        seed_output / "finite_time_angular_memory.npz",
+        **{
+            key: _np(value)
+            for key, value in finite_memory.items()
+            if key != "terminal_state"
+        },
+    )
+    np.savez_compressed(
+        seed_output / "asymptotic_structure.npz",
+        initial_angle=_np(reconstruction.spline_angle),
+        observed_terminal_angle=_np(terminal_angle),
+        stable_fixed_point_angle=_np(stable_angles),
+        saddle_fixed_point_angle=_np(saddle_angles),
+        uniform_grid_basin_counts=_np(basin_counts),
+        assigned_stable_angle=_np(assigned_angle),
+        asymptotic_absolute_error=_np(terminal_error),
+    )
+    topology_payload = _topology_payload(topology)
     summary = {
         "schema_version": 1,
+        "analysis_status": "complete_extended_structural_analysis",
+        "analysis_spec": {
+            "trajectory_count": int(spec.trajectory_count),
+            "spline_count": int(spec.spline_count),
+            "task_horizon": int(spec.task_horizon),
+            "blank_horizon": int(spec.blank_horizon),
+        },
         "model": (
             "G-C_gradient_only_recurrent_writer"
             if retention_mode == "gradient_only"
@@ -242,7 +374,23 @@ def analyze_seed(
             "pointwise_norm": _summary(flow.pointwise_norm),
             "absolute_angular_flow": _summary(angular_flow.abs()),
         },
-        "topology": _topology_payload(topology),
+        "topology": topology_payload,
+        "fixed_point_topology": topology_payload,
+        "finite_time_angular_memory": {
+            "blank_horizon": int(spec.blank_horizon),
+            "initial_memory_count": int(reconstruction.spline_angle.numel()),
+            "terminal_mean_error_radians": float(terminal_error.mean().cpu()),
+            "terminal_median_error_radians": float(terminal_error.median().cpu()),
+            "terminal_maximum_error_radians": float(terminal_error.max().cpu()),
+        },
+        "asymptotic_structure": {
+            "topology": topology.kind,
+            "stable_count": int(stable_angles.numel()),
+            "saddle_count": int(saddle_angles.numel()),
+            "asymptotic_mean_error_radians": float(terminal_error.mean().cpu()),
+            "asymptotic_maximum_error_radians": float(terminal_error.max().cpu()),
+            "effective_basin_count": effective_basin_count,
+        },
         "jacobian": {
             "spectral_radius": _summary(magnitudes.max(dim=1).values),
             "eigenvalue_magnitude_top1": _summary(magnitudes.max(dim=1).values),
