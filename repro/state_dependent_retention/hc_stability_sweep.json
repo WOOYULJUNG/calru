@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "campaign_id": "hc_dynamic_retention_stability_sweep_v1",
+  "scientific_role": "targeted_exp_tanh_amplitude_and_gate_initialization_sweep",
+  "model_seeds": [0, 1, 2],
+  "reference_condition": {
+    "id": "a0p05_zero",
+    "reuse_existing_checkpoint": true,
+    "max_log_modulation": 0.05,
+    "gate_output_weight_std": 0.0,
+    "gate_output_bias": 0.0
+  },
+  "sweep_cells": [
+    {
+      "id": "a0p01_zero",
+      "max_log_modulation": 0.01,
+      "gate_output_weight_std": 0.0,
+      "gate_output_bias": 0.0
+    },
+    {
+      "id": "a0p025_zero",
+      "max_log_modulation": 0.025,
+      "gate_output_weight_std": 0.0,
+      "gate_output_bias": 0.0
+    },
+    {
+      "id": "a0p05_smallnormal",
+      "max_log_modulation": 0.05,
+      "gate_output_weight_std": 0.01,
+      "gate_output_bias": 0.0
+    },
+    {
+      "id": "a0p025_smallnormal",
+      "max_log_modulation": 0.025,
+      "gate_output_weight_std": 0.01,
+      "gate_output_bias": 0.0
+    },
+    {
+      "id": "a0p05_negbias",
+      "max_log_modulation": 0.05,
+      "gate_output_weight_std": 0.0,
+      "gate_output_bias": -0.1
+    }
+  ],
+  "fixed_architecture": {
+    "writer_kind": "recurrent",
+    "retention_mode": "hybrid_rp",
+    "width": 52,
+    "gate_hidden": 52
+  },
+  "training": {
+    "optimizer": "Adam",
+    "learning_rate": 0.01,
+    "betas": [0.9, 0.999],
+    "epsilon": 1e-8,
+    "weight_decay": 0.0,
+    "updates": 5000,
+    "batch_size": 64,
+    "state_noise_std": 0.0,
+    "target_noise_std": 0.0,
+    "output_dropout": 0.0
+  },
+  "retention_plasticity": {
+    "warmup_updates": 1500,
+    "eta_lambda": 1000.0,
+    "damage_epsilon": 3e-5,
+    "intervention_interval_updates": 50,
+    "probe_batch_size": 96,
+    "blank_ablation_horizon": 500
+  },
+  "screen": {
+    "blank_horizon": 2048,
+    "progress_interval_updates": 50,
+    "validation_interval_updates": 500
+  }
+}

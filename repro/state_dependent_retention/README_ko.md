@@ -73,3 +73,44 @@ recovery 결과는 보존한다.
 Noise 조건을 논문용 model-comparison figure에서 제외하고 H-C를 추가하려면 기존
 plotting command에 `--hc-training-root`, `--hc-analysis-root`, `--no-noise`
 옵션을 함께 준다. Raw noise artifact는 삭제하지 않는다.
+
+## H-C dynamic-retention stability sweep
+
+`exp(a*tanh(r(h)))`에서 성공 seed는 radial restoring profile을 형성했지만 실패
+seed는 소수 좌표의 gate가 `+1`에 포화되어 발산했다. 이를 겨냥한 별도 campaign은
+writer, RP, LR, batch, update, task/RP random stream을 고정하고 다음 다섯 셀만 새로
+학습한다.
+
+| cell | `a` | gate output weight init | gate output bias |
+|---|---:|---:|---:|
+| `a0p01_zero` | 0.01 | zero | 0 |
+| `a0p025_zero` | 0.025 | zero | 0 |
+| `a0p05_smallnormal` | 0.05 | Normal(0, 0.01) | 0 |
+| `a0p025_smallnormal` | 0.025 | Normal(0, 0.01) | 0 |
+| `a0p05_negbias` | 0.05 | zero | -0.1 |
+
+기존 `a0p05_zero` H-C 체크포인트는 reference로 재사용하며 중복 학습하지 않는다.
+각 새 셀은 seeds 0--2, 5,000 updates로 실행하고 2,048-step blank stability screen을
+checkpoint 저장 뒤 수행한다.
+
+```bash
+PYTHONPATH=. /home/biadmin/ca_rnn/.conda-calru-p0/bin/python \
+  -m repro.state_dependent_retention.run_hc_stability_sweep \
+  --stage main \
+  --root /path/to/hc_dynamic_retention_stability_sweep_v1 \
+  --bank /path/to/main_test.npz \
+  --gpus 0,1,2,3,4,5
+```
+
+기존 체크포인트에서 radial `lambda(h)` profile과 autonomous saturation을 다시
+계산하는 명령은 다음과 같다.
+
+```bash
+PYTHONPATH=. /home/biadmin/ca_rnn/.conda-calru-p0/bin/python \
+  -m repro.state_dependent_retention.analyze_dynamic_retention \
+  --root /path/to/training-campaign \
+  --bank /path/to/main_test.npz \
+  --manifold-root /path/to/attractor-analysis \
+  --output /path/to/dynamic-retention-analysis \
+  --blank-horizon 2048
+```

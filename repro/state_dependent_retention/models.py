@@ -68,6 +68,8 @@ class StateDependentRetentionRec(PANNonlinearWriterRec):
         max_log_modulation: float,
         gate_seed: int,
         writer_seed: int,
+        gate_output_weight_std: float = 0.0,
+        gate_output_bias: float = 0.0,
     ) -> None:
         if writer_kind not in WRITER_KINDS:
             raise ValueError(f"unknown writer kind: {writer_kind}")
@@ -77,6 +79,12 @@ class StateDependentRetentionRec(PANNonlinearWriterRec):
             raise ValueError("gate_hidden must be positive")
         if not 0.0 < float(max_log_modulation) < math.log(2.0):
             raise ValueError("max_log_modulation must lie in (0, log(2))")
+        if not math.isfinite(float(gate_output_weight_std)) or float(
+            gate_output_weight_std
+        ) < 0.0:
+            raise ValueError("gate_output_weight_std must be finite and nonnegative")
+        if not math.isfinite(float(gate_output_bias)):
+            raise ValueError("gate_output_bias must be finite")
 
         super().__init__(
             input_dim=int(source.input_dim),
@@ -93,6 +101,8 @@ class StateDependentRetentionRec(PANNonlinearWriterRec):
         self.writer_mode = writer_kind
         self.gate_hidden = int(gate_hidden)
         self.max_log_modulation = float(max_log_modulation)
+        self.gate_output_weight_std = float(gate_output_weight_std)
+        self.gate_output_bias = float(gate_output_bias)
 
         with torch.no_grad():
             self.theta.copy_(source.theta)
@@ -112,10 +122,19 @@ class StateDependentRetentionRec(PANNonlinearWriterRec):
             )
             nn.init.xavier_uniform_(gate[0].weight)
             nn.init.zeros_(gate[0].bias)
-            # Zero output makes every variant exactly the historical constant
-            # retention model at initialization.
-            nn.init.zeros_(gate[2].weight)
-            nn.init.zeros_(gate[2].bias)
+            # The registered comparison keeps both values at zero and thus
+            # starts exactly at the historical constant-retention model.  The
+            # explicit alternatives are used only by a separate initialization
+            # sweep and do not change that default contract.
+            if self.gate_output_weight_std == 0.0:
+                nn.init.zeros_(gate[2].weight)
+            else:
+                nn.init.normal_(
+                    gate[2].weight,
+                    mean=0.0,
+                    std=self.gate_output_weight_std,
+                )
+            nn.init.constant_(gate[2].bias, self.gate_output_bias)
             return gate
 
         self.retention_gate = _seeded_module(gate_seed, make_gate)
@@ -184,6 +203,8 @@ def build_state_dependent_model(
     retention_mode: RetentionMode = "gradient_only",
     gate_hidden: int = 52,
     max_log_modulation: float = 0.05,
+    gate_output_weight_std: float = 0.0,
+    gate_output_bias: float = 0.0,
 ) -> V4Model:
     """Build a paired width-52 model whose only mechanism change is writer form."""
 
@@ -208,6 +229,8 @@ def build_state_dependent_model(
         writer_seed=derived_seed(
             model_seed, "state_dependent_retention", "writer", writer_kind
         ),
+        gate_output_weight_std=gate_output_weight_std,
+        gate_output_bias=gate_output_bias,
     )
     model.core.blocks[0].rec = replacement
     return model

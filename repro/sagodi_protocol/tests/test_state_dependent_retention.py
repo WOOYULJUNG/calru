@@ -49,6 +49,26 @@ def test_dynamic_retention_starts_at_base_and_can_cross_one() -> None:
     assert bool((modulated[:, 0] > 1.0).all())
 
 
+def test_explicit_gate_output_initializations_are_seeded_and_bounded() -> None:
+    kwargs = {
+        "model_seed": 13,
+        "max_log_modulation": 0.025,
+        "gate_output_weight_std": 0.01,
+        "gate_output_bias": -0.1,
+    }
+    first = recurrence(build_state_dependent_model("recurrent", **kwargs))
+    second = recurrence(build_state_dependent_model("recurrent", **kwargs))
+    assert torch.equal(first.retention_gate[2].weight, second.retention_gate[2].weight)
+    assert bool((first.retention_gate[2].weight != 0.0).any())
+    assert torch.allclose(
+        first.retention_gate[2].bias,
+        torch.full_like(first.retention_gate[2].bias, -0.1),
+    )
+    values = first.state_dependent_lambda(torch.randn(16, 52)) / first.lam_mag()
+    assert bool((values >= torch.exp(torch.tensor(-0.025))).all())
+    assert bool((values <= torch.exp(torch.tensor(0.025))).all())
+
+
 def test_task_gradient_reaches_base_and_state_gate() -> None:
     rec = recurrence(build_state_dependent_model("recurrent", model_seed=5))
     states = torch.randn(8, 52)
