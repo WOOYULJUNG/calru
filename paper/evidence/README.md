@@ -8,6 +8,8 @@
 
 - [`raw/`](raw/): legacy 실험에서 가져온 불변 JSON/CSV snapshot
 - [`tables/`](tables/): raw snapshot을 평균과 표본 표준편차로 집계한 9개 CSV
+- [`hc_local_grid_v2/`](hc_local_grid_v2/): 최종 H-C 후보를 고른 24-run 개발
+  sweep과 checkpoint-only CA 분석 snapshot
 - [`DATA_DICTIONARY.md`](DATA_DICTIONARY.md): metric, task, column의 정확한 뜻
 - [`PROVENANCE.md`](PROVENANCE.md): legacy source, 변환 과정, evidence tier와 한계
 - [`raw/file_manifest.csv`](raw/file_manifest.csv): raw 파일의 크기·SHA-256·legacy
@@ -73,6 +75,10 @@ make check-provenance
 행은 final CA-LRU가 아닌 legacy linear scaffold다. Table-level tier가 이 행들을
 final-scaffold causal ablation으로 바꾸지는 않는다. Smoke/pilot과 집계가 불일치한
 과거 결과는 이 bundle에 claim-bearing table로 import하지 않았다.
+
+`hc_local_grid_v2/`는 seeds 0–2를 사용해 architecture hyperparameter를 선택한
+development/diagnostic evidence다. 이 snapshot의 1위 조건을 독립 confirmatory
+결과처럼 취급하거나 trajectory를 독립 replicate로 세면 안 된다.
 
 ## 집계와 전체 학습은 다르다
 

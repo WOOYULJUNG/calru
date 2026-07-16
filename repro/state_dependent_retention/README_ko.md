@@ -132,3 +132,27 @@ PYTHONPATH=. /home/biadmin/ca_rnn/.conda-calru-p0/bin/python \
   --bank /path/to/main_test.npz \
   --gpus 0,1,2,3,4,5
 ```
+
+학습이 끝난 뒤 3/3 seed blank-stability를 통과한 셀만 동일한 full CA protocol로
+분석하고 중앙 reference 조건을 포함한 비교표를 만들려면 다음을 실행한다. 이 명령은
+등록된 모든 `result.json`이 생길 때까지 기다린 뒤, 통과 셀의 slow-manifold
+reconstruction, full local Jacobian, 2,048-step memory drift, projected flow,
+4,096-step normal recovery를 GPU별로 병렬 계산한다.
+
+```bash
+PYTHONPATH=. /home/biadmin/ca_rnn/.conda-calru-p0/bin/python \
+  -m repro.state_dependent_retention.postprocess_hc_local_grid \
+  --training-root /path/to/hc_dynamic_retention_local_grid_v2 \
+  --config repro/state_dependent_retention/hc_local_grid_v2.json \
+  --bank /path/to/main_test.npz \
+  --output-root /path/to/hc_local_grid_v2_ca_postprocess \
+  --gpus 0,1,2,3,4,5 \
+  --reference-screen-summary /path/to/previous_stability_sweep/summary.json \
+  --reference-summary-condition a0p05_negbias \
+  --reference-analysis-root /path/to/hc_ca_a0p05_negbias
+```
+
+`comparison.json`과 `comparison.md`의 rank sum은 검토 순서를 정하는 진단값이다.
+가장 작은 숫자를 자동으로 논문 모델로 채택하는 규칙이 아니며, all-seed stability,
+tangent neutrality, normal recovery, finite-time memory drift와 task error를 함께
+검토해야 한다.
