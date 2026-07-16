@@ -22,6 +22,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 
 
 BASELINE_PANELS = (
@@ -56,6 +57,42 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"expected JSON object: {path}")
     return value
+
+
+def _checkpoint_for_run(root: Path, run_id: str) -> Path:
+    plan = _load_json(root / "plan.json")
+    runs = plan.get("runs")
+    if not isinstance(runs, list):
+        raise ValueError(f"analysis plan lacks runs: {root / 'plan.json'}")
+    matches = [item for item in runs if item.get("run_id") == run_id]
+    if len(matches) != 1:
+        raise ValueError(f"expected one checkpoint for {run_id}, found {len(matches)}")
+    return Path(str(matches[0]["checkpoint"])).expanduser().resolve(strict=True)
+
+
+def _retention_from_checkpoint(path: Path) -> tuple[np.ndarray, np.ndarray, str]:
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    state = payload.get("state_dict")
+    if not isinstance(state, dict):
+        raise ValueError(f"checkpoint lacks state_dict: {path}")
+    nu = state.get("core.blocks.0.rec.nu")
+    theta = state.get("core.blocks.0.rec.theta")
+    if isinstance(nu, torch.Tensor):
+        values64 = torch.exp(-torch.exp(nu.detach().to(torch.float64))).clamp(0.0, 0.9999)
+        runtime = torch.exp(-torch.exp(nu.detach())).clamp(0.0, 0.9999)
+        kind = "complex LRU magnitude"
+    elif isinstance(theta, torch.Tensor):
+        theta64 = theta.detach().to(torch.float64)
+        values64 = torch.sqrt(torch.sigmoid(theta64).clamp(1.0e-8, 1.0 - 1.0e-8))
+        runtime = torch.sqrt(torch.sigmoid(theta.detach()).clamp(1.0e-8, 1.0 - 1.0e-8))
+        kind = "real retention"
+    else:
+        raise ValueError(f"checkpoint has neither LRU nu nor CA-LRU theta: {path}")
+    return (
+        values64.cpu().numpy().astype(float),
+        runtime.cpu().numpy().astype(float),
+        kind,
+    )
 
 
 def _panels(calru_root: Path | None) -> tuple[tuple[str, str, str], ...]:
@@ -420,6 +457,107 @@ def plot_jacobian(
     _save(fig, destination, f"{prefix}_jacobian_spectrum")
 
 
+def plot_retention_spectrum(
+    root: Path,
+    calru_root: Path,
+    destination: Path,
+    prefix: str,
+) -> None:
+    """Compare the 52-mode retention spectra for the LRU-family models."""
+
+    columns = (
+        (
+            "LRU",
+            "lru_n52__noise_free__seed00",
+            "lru_n52__positive_state_noise_training__seed00",
+            root,
+        ),
+        (
+            "CA-LRU\nno RP",
+            "no_rp_no_noise__seed00",
+            "no_rp_with_noise__seed00",
+            calru_root,
+        ),
+        (
+            "CA-LRU",
+            "rp_no_noise__seed00",
+            "rp_with_noise__seed00",
+            calru_root,
+        ),
+    )
+    fig, axes = plt.subplots(2, 3, figsize=(13.2, 7.0), constrained_layout=True)
+    fig.suptitle("LRU-family retention spectra (seed 0)", fontsize=15, fontweight="bold")
+    for column, (label, _, _, _) in enumerate(columns):
+        axes[0, column].set_title(label, fontsize=11, fontweight="bold")
+    for row, (_, row_label, color) in enumerate(CONDITIONS):
+        axes[row, 0].set_ylabel(f"{row_label}\nretention $\\lambda$", fontsize=10, fontweight="bold")
+        for column, (_, clean_run, noisy_run, artifact_root) in enumerate(columns):
+            run_id = clean_run if row == 0 else noisy_run
+            checkpoint = _checkpoint_for_run(artifact_root, run_id)
+            values, runtime, kind = _retention_from_checkpoint(checkpoint)
+            ordered = np.sort(values)
+            percentile = (np.arange(ordered.size, dtype=float) + 0.5) / ordered.size
+            ax = axes[row, column]
+            ax.plot(percentile, ordered, color=color, linewidth=1.6)
+            ax.scatter(percentile, ordered, color=color, s=9, alpha=0.75, linewidths=0)
+            ax.axhline(0.999, color="#718096", linestyle="--", linewidth=0.7)
+            ax.set_xlim(0.0, 1.0)
+            ax.set_ylim(0.0, 1.02)
+            ax.grid(alpha=0.16)
+            if row == 1:
+                ax.set_xlabel("mode quantile")
+            if column > 0:
+                ax.set_ylabel("")
+            exact_one = int(np.sum(runtime == 1.0))
+            above = int(np.sum(values > 0.9999))
+            ax.text(
+                0.03,
+                0.97,
+                f"median={np.median(values):.4f}\n"
+                f"max={np.max(values):.9f}\n"
+                f"$\\lambda>0.9999$: {above}/{values.size}\n"
+                f"runtime $\\lambda=1$: {exact_one}",
+                transform=ax.transAxes,
+                va="top",
+                fontsize=7,
+                bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
+            )
+            inset = ax.inset_axes((0.53, 0.12, 0.43, 0.36))
+            top = np.sort(values)[::-1][:12]
+            deficit = np.maximum(1.0 - top, 1.0e-12)
+            inset.plot(
+                np.arange(1, top.size + 1),
+                deficit,
+                color=color,
+                marker="o",
+                markersize=2.4,
+                linewidth=1.0,
+            )
+            inset.set_yscale("log")
+            inset.set_xlim(1, 12)
+            inset.set_ylim(5.0e-9, 5.0e-1)
+            inset.set_title(r"top-12 deficit $1-\lambda$", fontsize=6)
+            inset.tick_params(labelsize=5, length=2)
+            inset.grid(alpha=0.15, which="both")
+            inset.text(
+                0.98,
+                0.04,
+                kind,
+                transform=inset.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=4.8,
+                color="#4a5568",
+            )
+    fig.supxlabel(
+        "Main: float64-recomputed retention spectrum; inset: most persistent modes. "
+        "Exact-one count uses checkpoint runtime dtype.",
+        fontsize=7,
+        color="#4a5568",
+    )
+    _save(fig, destination, f"{prefix}_retention_spectrum")
+
+
 def plot_memory(
     root: Path,
     calru_root: Path | None,
@@ -737,6 +875,8 @@ def main() -> int:
     prefix = "fig_model_comparison" if calru_root is not None else "fig_baseline"
     plot_geometry_topology(root, calru_root, panels, destination, prefix)
     plot_jacobian(root, calru_root, panels, destination, prefix)
+    if calru_root is not None:
+        plot_retention_spectrum(root, calru_root, destination, prefix)
     plot_memory(root, calru_root, panels, destination, prefix)
     plot_normal_recovery(root, calru_root, panels, destination, prefix)
     plot_asymptotic_memory_map(root, calru_root, panels, destination, prefix)
@@ -761,6 +901,12 @@ def main() -> int:
             "family": "ambient_normal",
             "radii_over_manifold_scale": [0.01, 0.05, 0.1],
             "summary": "median with 10-90 percentile band for radius 0.05",
+        },
+        "retention_spectrum": {
+            "scope": "seed00 LRU-family checkpoints",
+            "main": "float64-recomputed sorted retention values",
+            "inset": "top-12 retention deficits on a logarithmic scale",
+            "exact_one_count": "checkpoint runtime dtype",
         },
     }
     with (destination / "figure_manifest.json").open("w", encoding="utf-8") as handle:
