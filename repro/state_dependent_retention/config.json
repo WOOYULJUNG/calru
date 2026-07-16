@@ -23,7 +23,7 @@
     "weight_decay": 0.0,
     "updates": 5000,
     "batch_size": 64,
-    "state_noise_std": 0.01,
+    "state_noise_std": 0.0,
     "target_noise_std": 0.0,
     "output_dropout": 0.0,
     "evaluation_state_noise_std": 0.0,

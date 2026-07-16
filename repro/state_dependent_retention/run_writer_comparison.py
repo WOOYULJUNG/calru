@@ -1,9 +1,9 @@
 """Train the B/B+/C state-dependent-retention writer comparison.
 
 The launcher assigns independent workers to GPUs and is safe to leave inside a
-tmux session.  All three writer variants receive the same task streams, state
-noise stream, optimizer settings, RP schedule, and outer scaffold for a given
-model seed.
+tmux session.  All three writer variants receive the same task streams,
+optimizer settings, conditional RP schedule, and outer scaffold for a given
+model seed.  State, target, and output noise are disabled.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def _load_config(path: Path) -> dict[str, Any]:
         "learning_rate": 0.01,
         "updates": 5000,
         "batch_size": 64,
-        "state_noise_std": 0.01,
+        "state_noise_std": 0.0,
         "target_noise_std": 0.0,
         "output_dropout": 0.0,
         "evaluation_state_noise_std": 0.0,
@@ -296,11 +296,16 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
         weight_decay=float(training["weight_decay"]),
     )
     bank = _to_device(load_fixed_bank(spec.evaluation_bank), device)
-    state_noise_seed = derived_seed(
-        spec.model_seed, CAMPAIGN_ID, "paired_state_noise"
+    state_noise_std = float(training["state_noise_std"])
+    state_noise_seed = (
+        derived_seed(spec.model_seed, CAMPAIGN_ID, "paired_state_noise")
+        if state_noise_std > 0.0
+        else None
     )
-    state_generator = torch.Generator(device=device.type).manual_seed(
-        state_noise_seed
+    state_generator = (
+        torch.Generator(device=device.type).manual_seed(int(state_noise_seed))
+        if state_noise_seed is not None
+        else None
     )
     rp_updates = set(_expected_rp_updates(spec, config))
     manifest = {
@@ -328,8 +333,13 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
         "retention_learning": config["retention_learning"][spec.retention_mode],
         "paired_streams": {
             "task_stream": "shared_across_writers_within_seed",
+            "state_noise_enabled": state_noise_std > 0.0,
             "state_noise_seed": state_noise_seed,
-            "state_noise_stream": "shared_across_writers_within_seed",
+            "state_noise_stream": (
+                "shared_across_writers_within_seed"
+                if state_noise_seed is not None
+                else "disabled"
+            ),
         },
         "evaluation_bank": str(Path(spec.evaluation_bank).resolve()),
         "evaluation_bank_sha256": sha256_file(spec.evaluation_bank),
@@ -352,7 +362,7 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
         prediction = model.forward_sequence(
             batch.inputs,
             initial_memory=_initial_memory(batch),
-            state_noise_std=float(training["state_noise_std"]),
+            state_noise_std=state_noise_std,
             noise_generator=state_generator,
         )
         loss = masked_mse(prediction, batch.output_targets, batch.mask)
@@ -623,7 +633,8 @@ def _launch(
             "writers": config["writers"],
             "retention_modes": config["retention_modes"],
             "state_dependent_retention_shared": True,
-            "paired_task_and_noise_streams": True,
+            "paired_task_streams": True,
+            "state_noise": "disabled",
             "parameter_matching": config["architecture"]["parameter_matching"],
         },
     }

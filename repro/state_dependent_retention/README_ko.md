@@ -29,8 +29,8 @@ perturbation을 nonzero ring으로 되돌리려면 expansion이 필요하기 때
   ordinary task-loss backpropagation으로 학습한다.
 
 현재 screen은 width-matched이며 parameter-matched가 아니다. 공통 조건은 width 52,
-T=256 angular integration, Adam LR 0.01, batch 64, 5,000 updates, state noise 0.01,
-target noise/output dropout 0, seeds 0--2다.
+T=256 angular integration, Adam LR 0.01, batch 64, 5,000 updates이며 state noise,
+target noise, output dropout은 모두 0이다. Seeds는 0--2다.
 
 실행 예:
 
