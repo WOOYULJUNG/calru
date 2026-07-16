@@ -158,14 +158,18 @@ def make_bank(topology: str, config: dict[str, Any]) -> tuple[dict[str, np.ndarr
     count = int(bank["atlas_points"])
     anchors, initial_memory, tangent = _anchors(topology, count)
     input_dim = {"s1": 1, "t2": 2, "s2": 3}[topology]
-    transport = _smooth_commands(
+    # One shared non-zero schedule makes the primary atlas a controlled image
+    # of the uniform anchor set.  Path-history variability is measured only by
+    # the separate multi-path closed bank below.
+    common_transport = _smooth_commands(
         seed=derived_seed(int(bank["seed"]), topology, "transport"),
         horizon=int(bank["transport_horizon"]),
-        batch=count,
+        batch=1,
         dimension=input_dim,
         smoothing=float(bank["command_smoothing"]),
         std=float(bank["command_std"]),
     )
+    transport = np.repeat(common_transport, count, axis=1)
     transported_latent_path, transported_output_path = _integrate(
         topology, anchors, transport
     )
@@ -225,6 +229,10 @@ def make_bank(topology: str, config: dict[str, Any]) -> tuple[dict[str, np.ndarr
         "oracle_max_closed_path_error_radians": float(closure),
         "initializer_atlas_is_diagnostic_only": True,
         "transported_endpoint_atlas_is_primary": True,
+        "transport_control_pairing": (
+            "one_common_nonzero_schedule_across_all_anchors_to_isolate_topology"
+        ),
+        "path_history_variation_source": "separate_closed_path_bank",
         "config_sha256": canonical_sha256(config),
     }
     arrays["metadata_json"] = np.frombuffer(

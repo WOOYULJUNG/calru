@@ -81,9 +81,14 @@ def test_small_analysis_banks_are_deterministic_and_exactly_closed(topology):
     assert left_metadata["oracle_max_closed_path_error_radians"] < 1e-6
     assert left["initializer_memory"].shape[0] == 64
     assert left["transport_inputs"].shape[:2] == (8, 64)
+    np.testing.assert_array_equal(
+        left["transport_inputs"],
+        np.repeat(left["transport_inputs"][:, :1], 64, axis=1),
+    )
     assert left["closed_inputs"].shape[:2] == (8, 128)
     assert left_metadata["initializer_atlas_is_diagnostic_only"]
     assert left_metadata["transported_endpoint_atlas_is_primary"]
+    assert "common_nonzero_schedule" in left_metadata["transport_control_pairing"]
 
 
 def test_projected_random_normals_are_orthogonal_to_tangent():
