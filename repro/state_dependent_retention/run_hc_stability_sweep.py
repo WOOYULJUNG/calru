@@ -37,6 +37,9 @@ from repro.sagodi_protocol.artifacts import (
     strict_json_load,
 )
 from repro.sagodi_protocol.metrics import masked_mse, task_metrics
+from repro.sagodi_protocol.sagodi_primary_analysis import (
+    StructuralNotEstimableError,
+)
 from repro.sagodi_protocol.sagodi_primary_runner import _blank_decode_primary
 from repro.sagodi_protocol.source_resolved_protocol import source_angular_integration
 from repro.sagodi_protocol.state import StateAdapter
@@ -341,8 +344,15 @@ def _autonomous_screen(model, bank: Batch, horizon: int) -> dict[str, Any]:
         "terminal_memory": None,
     }
     if failure_step is None:
-        decoded = _blank_decode_primary(model, adapter, state)
-        if bool(torch.isfinite(decoded).all()):
+        try:
+            decoded = _blank_decode_primary(model, adapter, state)
+        except StructuralNotEstimableError as error:
+            result["stable_through_horizon"] = False
+            result["terminal_memory"] = {
+                "status": "nonfinite_decode",
+                "reason": str(error),
+            }
+        else:
             target = bank.output_targets[-1]
             predicted_angle = torch.atan2(decoded[:, 1], decoded[:, 0])
             target_angle = torch.atan2(target[:, 1], target[:, 0])
@@ -356,8 +366,6 @@ def _autonomous_screen(model, bank: Batch, horizon: int) -> dict[str, Any]:
                 "median_angular_error_radians": float(angular.median()),
                 "maximum_angular_error_radians": float(angular.max()),
             }
-        else:
-            result["terminal_memory"] = {"status": "nonfinite_decode"}
     return result
 
 
@@ -549,6 +557,95 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
             "status": "completed",
             "run_id": spec.run_id,
             "update": spec.updates,
+            "updated_at_utc": _utc_now(),
+        },
+    )
+    atomic_json(output / "COMPLETE", {"schema_version": 1, "run_id": spec.run_id})
+    return output
+
+
+def rescreen_worker(spec: WorkerSpec, device_text: str) -> Path:
+    """Finish a post-training run whose original stability screen raised.
+
+    Training is never repeated or modified.  The immutable post-training
+    checkpoint, trace, RP trace, manifest, and fixed bank are reloaded, then
+    only the task and blank-stability screens are evaluated with the current
+    failure-recording semantics.
+    """
+
+    config_path = Path(spec.config_path).resolve(strict=True)
+    config = _load_config(config_path)
+    output = Path(spec.output_dir).resolve(strict=True)
+    manifest = strict_json_load(output / "run_manifest.json")
+    checkpoint_path = output / "checkpoint_trained.pt"
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    expected_cell = {
+        "id": spec.cell.identifier,
+        "max_log_modulation": spec.cell.max_log_modulation,
+        "gate_output_weight_std": spec.cell.gate_output_weight_std,
+        "gate_output_bias": spec.cell.gate_output_bias,
+    }
+    if manifest.get("run_id") != spec.run_id or manifest.get("cell") != expected_cell:
+        raise RuntimeError("rescreen manifest differs from requested run")
+    if (
+        checkpoint.get("cell") != expected_cell
+        or int(checkpoint.get("model_seed", -1)) != spec.model_seed
+        or int(checkpoint.get("updates_completed", -1)) != spec.updates
+    ):
+        raise RuntimeError("rescreen checkpoint identity differs")
+    device = torch.device(device_text)
+    baseline_v6._configure_determinism(spec.model_seed)
+    torch.set_num_threads(1)
+    model = build_state_dependent_model(
+        "recurrent",
+        model_seed=spec.model_seed,
+        retention_mode="hybrid_rp",
+        gate_hidden=52,
+        max_log_modulation=spec.cell.max_log_modulation,
+        gate_output_weight_std=spec.cell.gate_output_weight_std,
+        gate_output_bias=spec.cell.gate_output_bias,
+    ).to(device)
+    model.load_state_dict(checkpoint["state_dict"], strict=True)
+    _finite_model(model)
+    bank = _to_device(load_fixed_bank(spec.bank), device)
+    task = _task_evaluation(model, bank)
+    autonomous = _autonomous_screen(
+        model,
+        bank,
+        horizon=(16 if spec.smoke else int(config["screen"]["blank_horizon"])),
+    )
+    trace = strict_json_load(output / "training_trace.json")
+    rp_trace = strict_json_load(output / "rp_trace.json")
+    elapsed = float(trace[-1]["elapsed_seconds"]) if trace else 0.0
+    total = sum(parameter.numel() for parameter in model.parameters())
+    trainable = sum(
+        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+    )
+    result = {
+        "schema_version": 1,
+        "status": "completed",
+        "campaign_id": str(config["campaign_id"]),
+        "run_id": spec.run_id,
+        "cell": expected_cell,
+        "model_seed": spec.model_seed,
+        "updates_completed": spec.updates,
+        "rp_call_count": len(rp_trace),
+        "parameters_total": total,
+        "parameters_gradient_trainable": trainable,
+        "task_evaluation": task,
+        "autonomous_screen": autonomous,
+        "elapsed_seconds": elapsed,
+        "screen_recovered_from_post_training_checkpoint": True,
+    }
+    atomic_json(output / "result.json", result)
+    atomic_json(
+        output / "progress.json",
+        {
+            "schema_version": 1,
+            "status": "completed",
+            "run_id": spec.run_id,
+            "update": spec.updates,
+            "screen_recovered_from_post_training_checkpoint": True,
             "updated_at_utc": _utc_now(),
         },
     )
@@ -818,7 +915,11 @@ def _launch(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stage", choices=("smoke", "main", "worker", "status"), required=True)
+    parser.add_argument(
+        "--stage",
+        choices=("smoke", "main", "worker", "rescreen", "status"),
+        required=True,
+    )
     parser.add_argument("--root")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--bank")
@@ -833,9 +934,11 @@ def main() -> int:
     args = parser.parse_args()
     config_path = Path(args.config).expanduser().resolve(strict=True)
     config = _load_config(config_path)
-    if args.stage == "worker":
+    if args.stage in {"worker", "rescreen"}:
         if None in (args.cell, args.seed, args.output_dir, args.bank, args.updates, args.batch_size):
-            parser.error("worker requires cell, seed, output-dir, bank, updates, batch-size")
+            parser.error(
+                "worker/rescreen requires cell, seed, output-dir, bank, updates, batch-size"
+            )
         candidates = {cell.identifier: cell for cell in _cells(config)}
         if args.cell not in candidates:
             parser.error(f"unknown sweep cell: {args.cell}")
@@ -849,7 +952,10 @@ def main() -> int:
             batch_size=int(args.batch_size),
             smoke=bool(args.smoke),
         )
-        run_worker(spec, args.device)
+        if args.stage == "worker":
+            run_worker(spec, args.device)
+        else:
+            rescreen_worker(spec, args.device)
         return 0
     if args.root is None or args.bank is None:
         parser.error("smoke/main/status require --root and --bank")
