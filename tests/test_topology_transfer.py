@@ -9,6 +9,13 @@ from repro.manifold_benchmark.topology_models import (
     build_topology_model,
     load_transfer_config,
 )
+from repro.manifold_benchmark.launch_topology_hparam import (
+    broad_jobs,
+    refine_jobs,
+    robust_jobs,
+    smoke_jobs,
+)
+from repro.manifold_benchmark.run_topology_hparam import load_search_config
 from repro.manifold_benchmark.launch_topology_transfer import (
     _balanced_queues,
     _jobs,
@@ -123,3 +130,50 @@ def test_pilot_launcher_balances_hc_across_six_gpus():
     assert sum(map(len, queues)) == 36
     assert all(any(job["model"] == "hc" for job in queue) for queue in queues)
     assert max(loads) - min(loads) <= 1.5
+
+
+@pytest.mark.parametrize("model_id", ("calru", "hc"))
+@pytest.mark.parametrize("topology", TOPOLOGIES)
+def test_search_models_support_all_topologies_with_rp(model_id, topology):
+    config = load_search_config()
+    model = build_topology_model(model_id, topology, model_seed=93, config=config)
+    input_dim, memory_dim, output_dim = TOPOLOGY_DIMS[topology]
+    prediction = model.forward_sequence(
+        torch.randn(3, 2, input_dim), initial_memory=torch.randn(2, memory_dim)
+    )
+    assert prediction.shape == (3, 2, output_dim)
+    assert model.rp_enabled
+    assert model.dynamic_lambda(model.initialize(torch.randn(2, memory_dim))) is not None
+
+
+def test_hparam_campaign_has_frozen_75_full_runs_and_six_smokes():
+    config = load_search_config()
+    smoke = smoke_jobs(config)
+    broad = broad_jobs(config)
+    assert len(smoke) == 6
+    assert len(broad) == 39
+    selected = {
+        "selected": {
+            topology: {
+                "hc": next(job for job in broad if job["model"] == "hc" and job["topology"] == topology),
+                "calru": next(job for job in broad if job["model"] == "calru" and job["topology"] == topology),
+            }
+            for topology in TOPOLOGIES
+        }
+    }
+    refine = refine_jobs(config, selected)
+    assert len(refine) == 24
+    refine_selected = {
+        "selected_hc_finalists": {
+            topology: [
+                job
+                for job in refine
+                if job["model"] == "hc" and job["topology"] == topology
+            ][:2]
+            for topology in TOPOLOGIES
+        }
+    }
+    robust = robust_jobs(config, refine_selected)
+    assert len(robust) == 12
+    assert len(broad) + len(refine) + len(robust) == 75
+    assert all(job["updates"] == 5000 for job in broad + refine + robust)

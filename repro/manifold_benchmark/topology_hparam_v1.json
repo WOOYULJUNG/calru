@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "campaign_id": "manifold_topology_hparam_v1",
+  "scientific_question": "topology-specific capability of CA-LRU with RP and H-C under validation-only selection",
+  "generator_tag": "manifold-generator-v1",
+  "models": {
+    "calru": {
+      "ring_model_id": "ca_lru_n52",
+      "width": 52,
+      "learning_rate": 0.01,
+      "recurrent_weight_decay": 0.0,
+      "gradient_clip_norm": null
+    },
+    "hc": {
+      "ring_model_id": "hc_a0p05_negbias",
+      "width": 52,
+      "learning_rate": 0.01,
+      "recurrent_weight_decay": 0.0,
+      "gradient_clip_norm": null,
+      "writer_kind": "recurrent",
+      "retention_mode": "hybrid_rp",
+      "max_log_modulation": 0.05,
+      "gate_hidden": 52,
+      "gate_output_weight_std": 0.0,
+      "gate_output_bias": -0.1
+    }
+  },
+  "training": {
+    "optimizer": "Adam",
+    "betas": [0.9, 0.999],
+    "epsilon": 1e-8,
+    "batch_size": 64,
+    "horizon": 128,
+    "updates": 5000,
+    "state_noise_std": 0.0,
+    "target_noise_std": 0.0,
+    "output_dropout": 0.0,
+    "loss": "mean_over_time_batch_and_output_components",
+    "report_interval": 100,
+    "validation_trajectories": 64
+  },
+  "retention_plasticity": {
+    "warmup_updates": 1500,
+    "eta_lambda": 1000.0,
+    "damage_epsilon": 3e-5,
+    "intervention_interval_updates": 50,
+    "probe_batch_size": 96,
+    "blank_ablation_horizon": 500,
+    "topology_normalization": "component_mean_damage_divided_by_target_power_plus_epsilon"
+  },
+  "search": {
+    "selection_split": "validation",
+    "test_bank_access": false,
+    "topologies": ["s1", "t2", "s2"],
+    "smoke": {
+      "seed": 9,
+      "updates": 300
+    },
+    "broad": {
+      "seed": 10,
+      "hc_learning_rates": [0.001, 0.003, 0.01, 0.03],
+      "hc_max_log_modulations": [0.025, 0.05],
+      "hc_extra_cells": [
+        {"learning_rate": 0.01, "max_log_modulation": 0.01},
+        {"learning_rate": 0.003, "max_log_modulation": 0.10}
+      ],
+      "calru_learning_rates": [0.003, 0.01, 0.03]
+    },
+    "refine": {
+      "seed": 10,
+      "hc_gate_output_biases": [-0.3, -0.1, 0.1],
+      "rp_doses": [
+        {"name": "gentle", "eta_lambda": 300.0, "intervention_interval_updates": 100},
+        {"name": "current", "eta_lambda": 1000.0, "intervention_interval_updates": 50}
+      ],
+      "calru_additional_seeds": [11, 12]
+    },
+    "robust": {
+      "hc_finalists_per_topology": 2,
+      "additional_seeds": [11, 12]
+    },
+    "blank_horizons": [512, 2048, 4096],
+    "task_gate_nmse_db_strictly_below": -20.0,
+    "final_checkpoint_only": true,
+    "best_checkpoint_selection": false
+  },
+  "execution": {
+    "devices": [0, 1, 2, 3, 4, 5],
+    "attempts_per_job": 2,
+    "individual_failure_policy": "record_and_continue",
+    "restart_policy": "skip_only_jobs_with_COMPLETED_json",
+    "full_update_runs_are_not_early_stopped": true
+  }
+}

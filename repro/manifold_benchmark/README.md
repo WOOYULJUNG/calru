@@ -72,3 +72,22 @@ finished or partially finished root with:
 PYTHONPATH=. python -m repro.manifold_benchmark.summarize_topology_transfer \
   /path/to/output
 ```
+
+## Topology-specific CA-LRU/H-C search
+
+`topology_hparam_v1.json` defines a separate validation-only capability search.
+It adds constant-retention `CA-LRU + RP` beside state-dependent-retention H-C,
+keeps noise/dropout disabled, and never opens the test bank during selection.
+The registered campaign is six smoke jobs followed by 75 full 5,000-update
+runs: 39 broad, 24 refinement, and 12 H-C finalist robustness runs.
+
+```bash
+PYTHONPATH=. python -m repro.manifold_benchmark.launch_topology_hparam \
+  --phase all --devices 0,1,2,3,4,5 --output /path/to/output
+```
+
+Every active run atomically saves `progress.pt` at the report interval. Running
+the same command again skips completed receipts and resumes unfinished jobs.
+An individual twice-failed cell is recorded in `FAILED.json`; it does not stop
+the remaining GPU queues. Broad and refinement selections are frozen to JSON
+before the next phase begins.

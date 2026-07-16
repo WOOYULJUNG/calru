@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from repro.sagodi_protocol.artifacts import derived_seed, strict_json_load
 from repro.sagodi_protocol.exact_models import (
@@ -23,6 +24,7 @@ from repro.state_dependent_retention.models import StateDependentRetentionRec
 
 CONFIG_PATH = Path(__file__).with_name("topology_transfer_v1.json")
 MODEL_IDS = ("rnn", "gru", "lstm", "hc")
+SEARCH_MODEL_IDS = ("calru", "hc")
 TOPOLOGY_DIMS = {
     "s1": (1, 2, 2),
     "t2": (2, 4, 4),
@@ -52,9 +54,9 @@ def load_transfer_config(path: Path | str = CONFIG_PATH) -> dict[str, Any]:
 
 
 def transfer_spec(model_id: str, config: Mapping[str, Any] | None = None) -> ModelTransferSpec:
-    if model_id not in MODEL_IDS:
-        raise ValueError(f"unknown topology model {model_id!r}")
     payload = load_transfer_config() if config is None else config
+    if model_id not in payload.get("models", {}):
+        raise ValueError(f"unknown topology model {model_id!r}")
     row = payload["models"][model_id]
     return ModelTransferSpec(
         model_id=model_id,
@@ -148,6 +150,27 @@ def _build_hc_core(
     return core
 
 
+def _build_calru_core(*, input_dim: int, output_dim: int, width: int) -> nn.Module:
+    """Build constant-retention CA-LRU with the registered recurrent writer."""
+
+    return build_model_variant(
+        variant="PAN-RNW-full",
+        input_dim=input_dim,
+        output_dim=output_dim,
+        rank=2,
+        d_model=width,
+        rec_dim=width,
+        layers=1,
+        dropout=0.0,
+        plru_tau=0.001,
+        plru_c=50.0,
+        pan_lambda_min=0.90,
+        pan_lambda_max=0.999,
+        rank_matched_lambda_high=0.999,
+        rank_matched_lambda_low=0.0,
+    )
+
+
 class TopologyRecurrentModel(nn.Module):
     """A frozen ring core recipe with topology-specific boundary dimensions."""
 
@@ -212,7 +235,7 @@ class TopologyRecurrentModel(nn.Module):
 
     @property
     def rp_enabled(self) -> bool:
-        return self.model_id == "hc"
+        return self.model_id in SEARCH_MODEL_IDS
 
     def primary_from_reported(self, state: torch.Tensor) -> torch.Tensor:
         return state[..., : self.primary_state_size]
@@ -227,6 +250,39 @@ class TopologyRecurrentModel(nn.Module):
             dtype=primary.dtype,
         )
         return torch.cat((primary, suffix), dim=-1)
+
+    def reported_from_primary_for_input(
+        self, primary: torch.Tensor, inputs: torch.Tensor
+    ) -> torch.Tensor:
+        """Reconstruct a decoder-consistent reported state for an input token."""
+
+        if self.primary_state_size == self.reported_state_size:
+            return primary
+        if not self.is_full_block or bool(getattr(self.core, "carry_stream", False)):
+            raise ValueError("reported-state reconstruction requires a non-carrying full block")
+        if primary.ndim != 2 or inputs.ndim != 2:
+            raise ValueError("primary and inputs must be rank-2 tensors")
+        if primary.shape[0] != inputs.shape[0] or inputs.shape[-1] != self.input_dim:
+            raise ValueError("primary and input batch or feature dimensions differ")
+        rec_states = [primary[:, state_slice] for state_slice in self.core._rec_slices]
+        stream = self.core.encoder(inputs)
+        for block, rec_state in zip(self.core.blocks, rec_states):
+            rec_out = block.rec.output(rec_state)
+            if block.update_mode == "glu":
+                update = F.glu(block.glu_proj(F.gelu(rec_out)), dim=-1)
+            elif block.update_mode == "gelu":
+                update = F.gelu(rec_out)
+            elif block.update_mode == "linear":
+                update = rec_out
+            else:  # pragma: no cover - constructor invariant
+                raise RuntimeError(f"unsupported block update {block.update_mode!r}")
+            base = (
+                stream + block.dropout(update)
+                if block.use_residual
+                else block.dropout(update)
+            )
+            stream = block.norm_out(base)
+        return self.core.merge_state(rec_states, stream)
 
     def initialize(self, initial_memory: torch.Tensor) -> torch.Tensor:
         if initial_memory.ndim != 2 or initial_memory.shape[-1] != self.initial_memory_dim:
@@ -284,12 +340,16 @@ class TopologyRecurrentModel(nn.Module):
         return method() if method is not None else ()
 
     def dynamic_lambda(self, state: torch.Tensor) -> torch.Tensor | None:
-        if self.model_id != "hc":
+        if self.model_id not in SEARCH_MODEL_IDS:
             return None
         recurrence = self.core.blocks[0].rec
-        if not isinstance(recurrence, StateDependentRetentionRec):
-            raise TypeError("H-C recurrence type changed")
-        return recurrence.state_dependent_lambda(self.primary_from_reported(state))
+        primary = self.primary_from_reported(state)
+        if self.model_id == "hc":
+            if not isinstance(recurrence, StateDependentRetentionRec):
+                raise TypeError("H-C recurrence type changed")
+            return recurrence.state_dependent_lambda(primary)
+        values = recurrence.lam_mag().to(dtype=primary.dtype, device=primary.device)
+        return values.expand(*primary.shape[:-1], values.shape[-1])
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -336,6 +396,12 @@ def build_topology_model(
             width=spec.width,
             model_seed=model_seed,
             config=payload,
+        )
+    elif model_id == "calru":
+        core = _build_calru_core(
+            input_dim=input_dim,
+            output_dim=output_dim,
+            width=spec.width,
         )
     else:
         core = _build_baseline_core(model_id, input_dim, output_dim, spec.width)
@@ -407,6 +473,7 @@ def clip_gradients(model: TopologyRecurrentModel) -> float | None:
 __all__ = [
     "CONFIG_PATH",
     "MODEL_IDS",
+    "SEARCH_MODEL_IDS",
     "TOPOLOGY_DIMS",
     "ModelTransferSpec",
     "TopologyRecurrentModel",
