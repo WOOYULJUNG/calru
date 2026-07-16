@@ -145,13 +145,14 @@ def analyze_seed(
     bank: Batch,
     output: Path,
     seed: int,
+    retention_mode: str,
     device: torch.device,
 ) -> dict[str, Any]:
-    run = root / "runs" / f"gradient_only__recurrent__seed{seed:02d}"
+    run = root / "runs" / f"{retention_mode}__recurrent__seed{seed:02d}"
     checkpoint_path = run / "checkpoint_trained.pt"
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     model = build_state_dependent_model(
-        "recurrent", model_seed=seed, retention_mode="gradient_only"
+        "recurrent", model_seed=seed, retention_mode=retention_mode
     ).to(device)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
     model.eval()
@@ -228,7 +229,11 @@ def analyze_seed(
     )
     summary = {
         "schema_version": 1,
-        "model": "G-C_gradient_only_recurrent_writer",
+        "model": (
+            "G-C_gradient_only_recurrent_writer"
+            if retention_mode == "gradient_only"
+            else "H-C_hybrid_rp_recurrent_writer"
+        ),
         "seed": seed,
         "task_mse_full_tensor": float(mse.cpu()),
         "reconstruction": reconstruction.qa,
@@ -350,6 +355,11 @@ def main() -> int:
     parser.add_argument("--bank", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--seeds", default="0,1,2")
+    parser.add_argument(
+        "--retention-mode",
+        choices=("gradient_only", "hybrid_rp"),
+        default="gradient_only",
+    )
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
     root = Path(args.root).expanduser().resolve(strict=True)
@@ -363,13 +373,15 @@ def main() -> int:
         existing = json.loads(seed_summary.read_text(encoding="utf-8"))
         summaries[str(int(existing["seed"]))] = existing
     for seed in seeds:
-        print(f"analyzing G-C seed {seed}", flush=True)
+        label = "G-C" if args.retention_mode == "gradient_only" else "H-C"
+        print(f"analyzing {label} seed {seed}", flush=True)
         try:
             summaries[str(seed)] = analyze_seed(
                 root=root,
                 bank=bank,
                 output=output,
                 seed=seed,
+                retention_mode=args.retention_mode,
                 device=torch.device(args.device),
             )
         except Exception as error:
@@ -379,7 +391,11 @@ def main() -> int:
             print(f"seed {seed} failed: {failure['error']}", flush=True)
     atomic_json(
         output / "summary.json",
-        {"schema_version": 1, "model": "G-C", "seeds": _native(summaries)},
+        {
+            "schema_version": 1,
+            "model": "G-C" if args.retention_mode == "gradient_only" else "H-C",
+            "seeds": _native(summaries),
+        },
     )
     return 0 if all(value.get("status") != "failed" for value in summaries.values()) else 1
 

@@ -63,6 +63,8 @@ PYTHONPATH=. python -m repro.state_dependent_retention.analyze_attractor \
   --device cuda:0
 ```
 
+H-C를 분석할 때는 별도 output 경로와 `--retention-mode hybrid_rp`를 지정한다.
+
 이 분석은 slow-manifold reconstruction, output-projected flow와 flow reversal,
 32개 anchor의 full local Jacobian, ambient/radial finite-kick recovery를 저장한다.
 큰 kick이 발산하더라도 같은 seed의 reconstruction, flow, Jacobian과 더 작은 반지름의
