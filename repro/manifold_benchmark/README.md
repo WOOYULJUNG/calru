@@ -72,3 +72,33 @@ finished or partially finished root with:
 PYTHONPATH=. python -m repro.manifold_benchmark.summarize_topology_transfer \
   /path/to/output
 ```
+
+## Frozen topology analysis v1
+
+The exploratory 3-seed analysis contract is in `topology_analysis_v1.json`.
+Analysis is developed on a branch/worktree separate from the running training
+commit. It uses final-update checkpoints only, treats trained-model seed as the
+unit of replication, retains task failures in the 36-run denominator, and
+uses validation NMSE plus the hold baseline to determine geometry eligibility.
+
+Prepare and automatically run the analysis after all training jobs finish:
+
+```bash
+PYTHONPATH=. python -m repro.manifold_benchmark.aggregate_topology_pilot \
+  --run-root /path/to/manifold_topology_transfer_v1-pilot-1f4a80d \
+  --analysis-root /path/to/manifold_topology_transfer_v1-pilot-1f4a80d/analysis_v1 \
+  --devices 0,1,2,3,4,5 --wait
+```
+
+The launcher blocks fresh test analysis until all 36 completion receipts and
+checkpoint integrity checks pass. It then runs task transfer, long blank
+memory, transported-endpoint geometry, tangent/normal dynamics, finite normal
+kick recovery, and H-C retention analysis. The initializer atlas is diagnostic
+only; transported endpoints are the primary learned-state atlas. PCA is used
+only for visualization.
+
+One limitation is recorded rather than hidden: the frozen training-v1 runner
+evaluates test after each individual final checkpoint, although it never uses
+that result for learning-rate selection, stopping, eligibility, or checkpoint
+selection. A confirmatory campaign should move all test access behind the
+36-run campaign barrier.
