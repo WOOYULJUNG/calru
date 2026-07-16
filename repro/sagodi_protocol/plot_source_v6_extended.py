@@ -46,6 +46,8 @@ CALRU_CONDITIONS = {
 }
 HORIZONS = np.asarray((0, 1, 4, 16, 64, 256, 1024, 4096), dtype=float)
 RADIUS_COLORS = {0.01: "#90cdf4", 0.05: "#2b6cb0", 0.1: "#1a365d"}
+EIGEN_COLORS = ("#2b6cb0", "#805ad5", "#2f855a", "#c05621", "#4a5568")
+EIGEN_LINESTYLES = ("-", "--", "-.", ":", (0, (3, 1, 1, 1)))
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -317,7 +319,7 @@ def plot_jacobian(
     prefix: str,
 ) -> None:
     scope = "Model comparison" if calru_root is not None else "Baseline"
-    fig, axes, ideal = _base_grid(f"{scope} local Jacobian spectrum", panels)
+    fig, axes, ideal = _base_grid(f"{scope} top-5 local Jacobian real parts", panels)
     runs = {
         (panel, condition): _load_run(root, calru_root, panel, condition)
         for panel in panels
@@ -327,7 +329,9 @@ def plot_jacobian(
     for run in runs.values():
         if _is_estimable(run):
             data = run["full_local_eigenspectrum"]
-            values.extend((np.asarray(data["lambda1_real"]), np.asarray(data["lambda2_real"])))
+            eigenvalues = np.asarray(data["vector_field_eigenvalues"])
+            ranked = np.sort(np.real(eigenvalues), axis=1)[:, ::-1][:, :5]
+            values.append(ranked.reshape(-1))
     if values:
         bound = max(0.01, float(np.max(np.abs(np.concatenate(values)))) * 1.1)
     else:
@@ -341,16 +345,26 @@ def plot_jacobian(
                 continue
             data = run["full_local_eigenspectrum"]
             angle = np.asarray(run["projected_flow_and_topology"]["spline_angle"])
-            lambda1 = np.asarray(data["lambda1_real"])
-            lambda2 = np.asarray(data["lambda2_real"])
-            gap = np.asarray(data["gap"])
-            ax.plot(angle, lambda1, color=color, linewidth=1.5, label=r"$\lambda_1$")
-            ax.plot(angle, lambda2, color="#4a5568", linewidth=1.2, label=r"$\lambda_2$")
+            eigenvalues = np.asarray(data["vector_field_eigenvalues"])
+            ranked = np.sort(np.real(eigenvalues), axis=1)[:, ::-1][:, :5]
+            gap = ranked[:, 0] - ranked[:, 1]
+            exact_zero_count = np.sum(np.real(eigenvalues) == 0.0, axis=1)
+            for rank in range(5):
+                ax.plot(
+                    angle,
+                    ranked[:, rank],
+                    color=EIGEN_COLORS[rank],
+                    linestyle=EIGEN_LINESTYLES[rank],
+                    linewidth=1.45 if rank == 0 else 1.05,
+                    alpha=0.95 if rank < 2 else 0.8,
+                    label=rf"$\lambda_{rank + 1}$",
+                )
             ax.axhline(0.0, color="#718096", linewidth=0.8, linestyle="--")
             ax.text(
                 0.03,
                 0.97,
-                f"median gap={np.median(gap):.3g}",
+                f"median gap(1,2)={np.median(gap):.3g}\n"
+                f"exact-zero modes={np.median(exact_zero_count):.0f}",
                 transform=ax.transAxes,
                 va="top",
                 fontsize=7,
@@ -363,29 +377,46 @@ def plot_jacobian(
                 ax.set_xlabel(r"memory angle $\theta$")
             if column == 0:
                 ax.set_ylabel(r"real part of $J_F-I$")
-    axes[0, 0].legend(frameon=False, fontsize=8, loc="lower left")
+    axes[0, 0].legend(frameon=False, fontsize=7, loc="lower left", ncol=2)
     theta = np.linspace(0.0, 2.0 * np.pi, 256)
-    schematic_normal = -0.30 * bound * np.ones_like(theta)
-    ideal.plot(theta, np.zeros_like(theta), color="#2f855a", linewidth=2.0, label=r"tangent $\lambda=0$")
-    ideal.plot(theta, schematic_normal, color="#276749", linewidth=1.6, label=r"normal $\lambda<0$")
-    ideal.fill_between(theta, schematic_normal, 0.0, color="#68d391", alpha=0.15)
+    schematic_levels = (0.0, -0.18 * bound, -0.30 * bound, -0.42 * bound, -0.54 * bound)
+    for rank, level in enumerate(schematic_levels):
+        ideal.plot(
+            theta,
+            np.full_like(theta, level),
+            color=EIGEN_COLORS[rank],
+            linestyle=EIGEN_LINESTYLES[rank],
+            linewidth=1.8 if rank == 0 else 1.15,
+            label=rf"$\lambda_{rank + 1}$",
+        )
+    ideal.fill_between(theta, schematic_levels[-1], 0.0, color="#68d391", alpha=0.10)
     ideal.axhline(0.0, color="#718096", linewidth=0.8, linestyle="--")
     ideal.text(
         0.5,
         0.92,
-        "one neutral tangent mode\nall normal modes contracting\nnormal magnitude is schematic",
+        "one neutral tangent mode\nnext four modes contracting\nranks are schematic",
         transform=ideal.transAxes,
         ha="center",
         va="top",
         fontsize=8,
         color="#22543d",
     )
+    ideal.text(
+        0.5,
+        0.09,
+        "data panels: ranked by real part\nnot tangent-aligned eigenmodes",
+        transform=ideal.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=7,
+        color="#276749",
+    )
     ideal.set_xlim(0.0, 2.0 * np.pi)
     ideal.set_ylim(-bound, bound)
     ideal.set_xlabel(r"memory angle $\theta$")
     ideal.set_ylabel(r"real part of $J_F-I$")
     ideal.grid(alpha=0.18)
-    ideal.legend(frameon=False, fontsize=7, loc="center right")
+    ideal.legend(frameon=False, fontsize=7, loc="center right", ncol=2)
     _save(fig, destination, f"{prefix}_jacobian_spectrum")
 
 
