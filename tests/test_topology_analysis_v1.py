@@ -17,6 +17,7 @@ from repro.manifold_benchmark.analyze_tangent_normal import (
     _random_normals,
 )
 from repro.manifold_benchmark.make_analysis_banks import make_bank
+from repro.manifold_benchmark.plot_topology_analysis import _optional_number
 from repro.manifold_benchmark.topology_analysis_common import (
     expected_jobs,
     load_analysis_config,
@@ -32,6 +33,13 @@ def test_blank_json_scalar_maps_nonfinite_values_to_null():
     assert _finite_scalar_or_none(torch.tensor(float("inf"))) is None
     assert _finite_scalar_or_none(torch.tensor(float("-inf"))) is None
     assert _finite_scalar_or_none(torch.tensor(1.25)) == pytest.approx(1.25)
+
+
+def test_plot_optional_number_maps_failed_csv_cells_to_nan():
+    assert math.isnan(_optional_number(""))
+    assert math.isnan(_optional_number("nan"))
+    assert math.isnan(_optional_number("inf"))
+    assert _optional_number("0.25") == pytest.approx(0.25)
 
 
 def test_hc_reported_state_reconstruction_matches_full_block_step():

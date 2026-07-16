@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,16 @@ TOPOLOGY_LABELS = {"s1": r"$S^1$", "t2": r"$T^2$", "s2": r"$S^2$"}
 def _csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def _optional_number(value: str) -> float:
+    """Map blank/non-finite CSV cells to NaN so failed runs break plot lines."""
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return math.nan
+    return number if math.isfinite(number) else math.nan
 
 
 def _save(fig, root: Path, name: str) -> list[str]:
@@ -74,7 +85,7 @@ def figure_blank(analysis: Path, figures: Path) -> list[str]:
             curves = []
             for seed in (10, 11, 12):
                 curve = [
-                    float(
+                    _optional_number(
                         next(
                             row["memory_error_mean"]
                             for row in model_rows
