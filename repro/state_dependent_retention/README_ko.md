@@ -114,3 +114,21 @@ PYTHONPATH=. /home/biadmin/ca_rnn/.conda-calru-p0/bin/python \
   --output /path/to/dynamic-retention-analysis \
   --blank-horizon 2048
 ```
+
+### H-C local grid v2
+
+첫 stability sweep에서 가장 강했던 `a=0.05`, gate output bias `-0.1`을 중심으로
+`a in {0.035, 0.05, 0.065}`와 bias `in {-0.05, -0.10, -0.15}`의 국소
+factorial grid를 탐색한다. Output weight는 모두 zero-init이며 나머지 학습/RP/noise
+계약은 위 campaign과 같다. 중앙 조건은 기존 checkpoint를 reference로 재사용하므로
+`hc_local_grid_v2.json`에는 나머지 8개 cell만 포함한다.
+
+```bash
+PYTHONPATH=. /home/biadmin/ca_rnn/.conda-calru-p0/bin/python \
+  -m repro.state_dependent_retention.run_hc_stability_sweep \
+  --stage main \
+  --config repro/state_dependent_retention/hc_local_grid_v2.json \
+  --root /path/to/hc_dynamic_retention_local_grid_v2 \
+  --bank /path/to/main_test.npz \
+  --gpus 0,1,2,3,4,5
+```

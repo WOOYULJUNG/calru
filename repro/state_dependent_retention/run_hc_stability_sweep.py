@@ -49,6 +49,8 @@ from .models import build_state_dependent_model, recurrence
 MODULE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = MODULE_DIR / "hc_stability_sweep.json"
 CAMPAIGN_ID = "hc_dynamic_retention_stability_sweep_v1"
+LOCAL_GRID_CAMPAIGN_ID = "hc_dynamic_retention_local_grid_v2"
+SUPPORTED_CAMPAIGN_IDS = (CAMPAIGN_ID, LOCAL_GRID_CAMPAIGN_ID)
 
 
 def _utc_now() -> str:
@@ -74,7 +76,8 @@ def _atomic_torch_save(path: Path, payload: Mapping[str, Any]) -> None:
 
 def _load_config(path: Path) -> dict[str, Any]:
     config = strict_json_load(path)
-    if config.get("campaign_id") != CAMPAIGN_ID:
+    campaign_id = config.get("campaign_id")
+    if campaign_id not in SUPPORTED_CAMPAIGN_IDS:
         raise ValueError("wrong H-C stability sweep campaign id")
     if config.get("model_seeds") != [0, 1, 2]:
         raise ValueError("H-C stability sweep requires seeds 0,1,2")
@@ -135,13 +138,23 @@ def _load_config(path: Path) -> dict[str, Any]:
         identifiers.add(identifier)
         tuples.add(values)
     reference = config.get("reference_condition", {})
-    if (
-        reference.get("id") != "a0p05_zero"
-        or not reference.get("reuse_existing_checkpoint")
-        or reference.get("max_log_modulation") != 0.05
-        or reference.get("gate_output_weight_std") != 0.0
-        or reference.get("gate_output_bias") != 0.0
-    ):
+    expected_reference = {
+        CAMPAIGN_ID: {
+            "id": "a0p05_zero",
+            "reuse_existing_checkpoint": True,
+            "max_log_modulation": 0.05,
+            "gate_output_weight_std": 0.0,
+            "gate_output_bias": 0.0,
+        },
+        LOCAL_GRID_CAMPAIGN_ID: {
+            "id": "a0p05_bm0p10",
+            "reuse_existing_checkpoint": True,
+            "max_log_modulation": 0.05,
+            "gate_output_weight_std": 0.0,
+            "gate_output_bias": -0.1,
+        },
+    }[campaign_id]
+    if reference != expected_reference:
         raise ValueError("incumbent H-C reference contract differs")
     screen = config.get("screen", {})
     if (
@@ -391,9 +404,10 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
     )
     bank = _to_device(load_fixed_bank(spec.bank), device)
     rp_schedule = set(_rp_updates(spec, config))
+    campaign_id = str(config["campaign_id"])
     manifest = {
         "schema_version": 1,
-        "campaign_id": CAMPAIGN_ID,
+        "campaign_id": campaign_id,
         "run_id": spec.run_id,
         "cell": {
             "id": spec.cell.identifier,
@@ -495,7 +509,7 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
         checkpoint_path,
         {
             "schema_version": 1,
-            "checkpoint_type": CAMPAIGN_ID,
+            "checkpoint_type": campaign_id,
             "checkpoint_stage": "post_training_pre_screen",
             "cell": manifest["cell"],
             "model_seed": spec.model_seed,
@@ -513,7 +527,7 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
     result = {
         "schema_version": 1,
         "status": "completed",
-        "campaign_id": CAMPAIGN_ID,
+        "campaign_id": campaign_id,
         "run_id": spec.run_id,
         "cell": manifest["cell"],
         "model_seed": spec.model_seed,
@@ -649,7 +663,7 @@ def _summarize(
         conditions[cell.identifier] = row
     summary = {
         "schema_version": 1,
-        "campaign_id": CAMPAIGN_ID,
+        "campaign_id": str(config["campaign_id"]),
         "updated_at_utc": _utc_now(),
         "reference_condition": config["reference_condition"],
         "conditions": conditions,
@@ -700,7 +714,7 @@ def _launch(
         shutil.copy2(config_path, destination)
     identity = {
         "schema_version": 1,
-        "campaign_id": CAMPAIGN_ID,
+        "campaign_id": str(config["campaign_id"]),
         "created_at_utc": _utc_now(),
         "git": git,
         "config_sha256": sha256_file(config_path),
