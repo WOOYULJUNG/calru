@@ -204,13 +204,38 @@ def analyze_seed(
     output: Path,
     seed: int,
     retention_mode: str,
+    sweep_cell: str | None,
     device: torch.device,
 ) -> dict[str, Any]:
-    run = root / "runs" / f"{retention_mode}__recurrent__seed{seed:02d}"
+    if sweep_cell is None:
+        run = root / "runs" / f"{retention_mode}__recurrent__seed{seed:02d}"
+    else:
+        if retention_mode != "hybrid_rp":
+            raise ValueError("sweep checkpoints require hybrid_rp retention")
+        run = root / "runs" / f"{sweep_cell}__seed{seed:02d}"
     checkpoint_path = run / "checkpoint_trained.pt"
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    model_kwargs: dict[str, Any] = {}
+    checkpoint_cell = checkpoint.get("cell")
+    if sweep_cell is not None:
+        if not isinstance(checkpoint_cell, dict):
+            raise ValueError("sweep checkpoint omits cell metadata")
+        if checkpoint_cell.get("id") != sweep_cell:
+            raise ValueError("sweep checkpoint cell id differs")
+        if int(checkpoint.get("model_seed", -1)) != seed:
+            raise ValueError("sweep checkpoint model seed differs")
+        model_kwargs = {
+            "max_log_modulation": float(checkpoint_cell["max_log_modulation"]),
+            "gate_output_weight_std": float(
+                checkpoint_cell["gate_output_weight_std"]
+            ),
+            "gate_output_bias": float(checkpoint_cell["gate_output_bias"]),
+        }
     model = build_state_dependent_model(
-        "recurrent", model_seed=seed, retention_mode=retention_mode
+        "recurrent",
+        model_seed=seed,
+        retention_mode=retention_mode,
+        **model_kwargs,
     ).to(device)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
     model.eval()
@@ -366,6 +391,8 @@ def analyze_seed(
             if retention_mode == "gradient_only"
             else "H-C_hybrid_rp_recurrent_writer"
         ),
+        "checkpoint": str(checkpoint_path),
+        "checkpoint_cell": checkpoint_cell,
         "seed": seed,
         "task_mse_full_tensor": float(mse.cpu()),
         "reconstruction": reconstruction.qa,
@@ -508,6 +535,14 @@ def main() -> int:
         choices=("gradient_only", "hybrid_rp"),
         default="gradient_only",
     )
+    parser.add_argument(
+        "--sweep-cell",
+        default=None,
+        help=(
+            "Analyze runs/<cell>__seedXX checkpoints and reconstruct the model "
+            "from checkpoint cell metadata."
+        ),
+    )
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
     root = Path(args.root).expanduser().resolve(strict=True)
@@ -530,6 +565,7 @@ def main() -> int:
                 output=output,
                 seed=seed,
                 retention_mode=args.retention_mode,
+                sweep_cell=args.sweep_cell,
                 device=torch.device(args.device),
             )
         except Exception as error:
