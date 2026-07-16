@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from repro.sagodi_protocol.artifacts import derived_seed, strict_json_load
 from repro.sagodi_protocol.exact_models import (
@@ -227,6 +228,39 @@ class TopologyRecurrentModel(nn.Module):
             dtype=primary.dtype,
         )
         return torch.cat((primary, suffix), dim=-1)
+
+    def reported_from_primary_for_input(
+        self, primary: torch.Tensor, inputs: torch.Tensor
+    ) -> torch.Tensor:
+        """Reconstruct a decoder-consistent reported state for an input token."""
+
+        if self.primary_state_size == self.reported_state_size:
+            return primary
+        if not self.is_full_block or bool(getattr(self.core, "carry_stream", False)):
+            raise ValueError("reported-state reconstruction requires a non-carrying full block")
+        if primary.ndim != 2 or inputs.ndim != 2:
+            raise ValueError("primary and inputs must be rank-2 tensors")
+        if primary.shape[0] != inputs.shape[0] or inputs.shape[-1] != self.input_dim:
+            raise ValueError("primary and input batch or feature dimensions differ")
+        rec_states = [primary[:, state_slice] for state_slice in self.core._rec_slices]
+        stream = self.core.encoder(inputs)
+        for block, rec_state in zip(self.core.blocks, rec_states):
+            rec_out = block.rec.output(rec_state)
+            if block.update_mode == "glu":
+                update = F.glu(block.glu_proj(F.gelu(rec_out)), dim=-1)
+            elif block.update_mode == "gelu":
+                update = F.gelu(rec_out)
+            elif block.update_mode == "linear":
+                update = rec_out
+            else:  # pragma: no cover - constructor invariant
+                raise RuntimeError(f"unsupported block update {block.update_mode!r}")
+            base = (
+                stream + block.dropout(update)
+                if block.use_residual
+                else block.dropout(update)
+            )
+            stream = block.norm_out(base)
+        return self.core.merge_state(rec_states, stream)
 
     def initialize(self, initial_memory: torch.Tensor) -> torch.Tensor:
         if initial_memory.ndim != 2 or initial_memory.shape[-1] != self.initial_memory_dim:

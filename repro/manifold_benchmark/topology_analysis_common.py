@@ -236,7 +236,16 @@ def blank_snapshots(
 
 
 def decode_primary(model, state: torch.Tensor) -> torch.Tensor:
-    return model.decode(model.reported_from_primary(state))
+    inputs = torch.zeros(
+        state.shape[0], model.input_dim, device=state.device, dtype=state.dtype
+    )
+    reconstruct = getattr(model, "reported_from_primary_for_input", None)
+    reported = (
+        reconstruct(state, inputs)
+        if reconstruct is not None
+        else model.reported_from_primary(state)
+    )
+    return model.decode(reported)
 
 
 def test_batch(

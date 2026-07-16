@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import torch
 
+from repro.manifold_benchmark.analyze_blank_memory import _finite_scalar_or_none
 from repro.manifold_benchmark.analyze_manifold_geometry import (
     _pairwise_latent,
     _spearman,
@@ -23,6 +24,26 @@ from repro.manifold_benchmark.topology_analysis_common import (
     normalized_geodesic_errors,
     summarize_error_tensor,
 )
+from repro.manifold_benchmark.topology_models import build_topology_model
+
+
+def test_blank_json_scalar_maps_nonfinite_values_to_null():
+    assert _finite_scalar_or_none(torch.tensor(float("nan"))) is None
+    assert _finite_scalar_or_none(torch.tensor(float("inf"))) is None
+    assert _finite_scalar_or_none(torch.tensor(float("-inf"))) is None
+    assert _finite_scalar_or_none(torch.tensor(1.25)) == pytest.approx(1.25)
+
+
+def test_hc_reported_state_reconstruction_matches_full_block_step():
+    model = build_topology_model("hc", "s1", model_seed=123)
+    memory = torch.randn(5, 2)
+    inputs = torch.randn(5, 1)
+    initial = model.initialize(memory)
+    reported = model.step(inputs, initial)
+    primary = model.primary_from_reported(reported)
+    reconstructed = model.reported_from_primary_for_input(primary, inputs)
+    torch.testing.assert_close(reconstructed, reported)
+    torch.testing.assert_close(model.decode(reconstructed), model.decode(reported))
 
 
 def test_analysis_contract_has_exact_36_run_denominator():

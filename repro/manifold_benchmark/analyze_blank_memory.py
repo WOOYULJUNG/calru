@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,13 @@ from .topology_analysis_common import (
 )
 
 
+def _finite_scalar_or_none(value: torch.Tensor) -> float | None:
+    """Return a JSON-safe scalar while preserving divergence as null."""
+
+    scalar = float(value.detach().cpu())
+    return scalar if math.isfinite(scalar) else None
+
+
 @torch.no_grad()
 def analyze_record(record, config, analysis_root: Path, device: torch.device) -> dict[str, Any]:
     blank = config["blank_memory"]
@@ -38,11 +46,12 @@ def analyze_record(record, config, analysis_root: Path, device: torch.device) ->
     _, history = model.forward_sequence(
         batch.inputs, initial_memory=batch.initial_memory, return_states=True
     )
-    endpoint = model.primary_from_reported(history[-1])
+    endpoint_reported = history[-1]
+    endpoint = model.primary_from_reported(endpoint_reported)
     horizons = [int(value) for value in blank["horizons"]]
     snapshots = blank_snapshots(model, endpoint, horizons)
     target = batch.output_targets[-1]
-    clean_prediction = decode_primary(model, snapshots[0])
+    clean_prediction = model.decode(endpoint_reported)
     clean_state_norm = torch.linalg.vector_norm(snapshots[0], dim=-1)
     rows: list[dict[str, Any]] = []
     geodesic_arrays: list[np.ndarray] = []
@@ -51,14 +60,17 @@ def analyze_record(record, config, analysis_root: Path, device: torch.device) ->
     output_norm_arrays: list[np.ndarray] = []
     for horizon in horizons:
         state = snapshots[horizon]
-        prediction = decode_primary(model, state)
+        prediction = clean_prediction if horizon == 0 else decode_primary(model, state)
         error, _ = normalized_geodesic_errors(record.topology, prediction, target)
         displacement, _ = normalized_geodesic_errors(
             record.topology, prediction, clean_prediction
         )
         norms = torch.linalg.vector_norm(state, dim=-1)
         norm_error = output_norm_error(record.topology, prediction)
-        finite = bool(torch.isfinite(state).all() and torch.isfinite(prediction).all())
+        finite = all(
+            bool(torch.isfinite(value).all())
+            for value in (state, prediction, error, displacement, norms, norm_error)
+        )
         rows.append(
             {
                 "job_id": record.job_id,
@@ -66,13 +78,15 @@ def analyze_record(record, config, analysis_root: Path, device: torch.device) ->
                 "topology": record.topology,
                 "seed": record.seed,
                 "horizon": horizon,
-                "memory_error_mean": float(error.mean().cpu()),
-                "memory_error_median": float(error.median().cpu()),
-                "clean_output_displacement_mean": float(displacement.mean().cpu()),
-                "output_norm_error_mean": float(norm_error.mean().cpu()),
-                "causal_state_norm_mean": float(norms.mean().cpu()),
-                "causal_state_norm_ratio_to_h0": float(
-                    (norms / clean_state_norm.clamp_min(1e-8)).mean().cpu()
+                "memory_error_mean": _finite_scalar_or_none(error.mean()),
+                "memory_error_median": _finite_scalar_or_none(error.median()),
+                "clean_output_displacement_mean": _finite_scalar_or_none(
+                    displacement.mean()
+                ),
+                "output_norm_error_mean": _finite_scalar_or_none(norm_error.mean()),
+                "causal_state_norm_mean": _finite_scalar_or_none(norms.mean()),
+                "causal_state_norm_ratio_to_h0": _finite_scalar_or_none(
+                    (norms / clean_state_norm.clamp_min(1e-8)).mean()
                 ),
                 "finite": finite,
                 "diverged": not finite,
@@ -92,7 +106,12 @@ def analyze_record(record, config, analysis_root: Path, device: torch.device) ->
         causal_state_norm=np.stack(state_norm_arrays),
         output_norm_error=np.stack(output_norm_arrays),
     )
-    payload = {"schema_version": 1, "job_id": record.job_id, "rows": rows}
+    payload = {
+        "schema_version": 1,
+        "job_id": record.job_id,
+        "nonfinite_json_policy": "null_metrics_with_raw_arrays_preserved_in_npz",
+        "rows": rows,
+    }
     atomic_json(run_root / f"{record.job_id}.json", payload)
     return payload
 
