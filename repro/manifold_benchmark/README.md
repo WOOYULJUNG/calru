@@ -36,3 +36,39 @@ The command writes a pickle-free parent NPZ, `T=128` S1/T2/S2 banks, mandatory
 SHA-256 sidecars, exact-test results and topology calibration.  It emits
 `GENERATOR_ID_BANKS_READY.json` only if these initial checks pass.  This marker
 does not claim that the later OOD pairing suite is complete.
+
+## Zero-retuning topology transfer
+
+`topology_transfer_v1.json` freezes the ring-selected settings for RNN, GRU,
+LSTM and H-C. Only the input projection, true-`q0` initial-memory map and
+output decoder change dimension across S1/T2/S2. The forward contract is
+always `initialize(q0) -> step(u0) -> decode -> compare with Phi(q1)`; there is
+no cue token, teacher forcing, target noise, state noise or output dropout.
+
+Run one job with:
+
+```bash
+PYTHONPATH=. python -m repro.manifold_benchmark.run_topology_transfer \
+  --stage fixed_overfit --model hc --topology s2 --seed 9 --device cuda:0 \
+  --output /path/to/output
+```
+
+The stages are `fixed_overfit` (B=16, T=32, 1000 repeated-batch updates),
+`online_smoke` (seed 9, B=64, T=128, 500 fresh-batch updates), and `pilot`
+(seeds 10/11/12, 5000 updates). A complete grid can be scheduled with one
+restartable queue per GPU:
+
+```bash
+PYTHONPATH=. python -m repro.manifold_benchmark.launch_topology_transfer \
+  --stage pilot --devices 0,1,2,3,4,5 --output /path/to/output
+```
+
+Each completed job contains a manifest, trace, result, checkpoint and
+checksum receipt. `online_smoke` only reads the validation bank; `pilot`
+evaluates the independently seeded test bank after training. Aggregate a
+finished or partially finished root with:
+
+```bash
+PYTHONPATH=. python -m repro.manifold_benchmark.summarize_topology_transfer \
+  /path/to/output
+```
