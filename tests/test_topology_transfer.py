@@ -9,6 +9,10 @@ from repro.manifold_benchmark.topology_models import (
     build_topology_model,
     load_transfer_config,
 )
+from repro.manifold_benchmark.launch_topology_transfer import (
+    _balanced_queues,
+    _jobs,
+)
 from repro.manifold_benchmark.topology_training import (
     TOPOLOGIES,
     component_mean_mse,
@@ -112,3 +116,10 @@ def test_frozen_ring_selected_settings_are_explicit():
     assert config["training"]["state_noise_std"] == 0.0
     assert config["training"]["target_noise_std"] == 0.0
     assert config["training"]["output_dropout"] == 0.0
+
+
+def test_pilot_launcher_balances_hc_across_six_gpus():
+    queues, loads = _balanced_queues(_jobs("pilot", load_transfer_config()), 6)
+    assert sum(map(len, queues)) == 36
+    assert all(any(job["model"] == "hc" for job in queue) for queue in queues)
+    assert max(loads) - min(loads) <= 1.5

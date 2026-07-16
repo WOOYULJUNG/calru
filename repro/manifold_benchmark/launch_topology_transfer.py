@@ -39,6 +39,27 @@ def _job_id(job: dict[str, Any]) -> str:
     )
 
 
+def _estimated_cost(job: dict[str, Any]) -> float:
+    """Scheduling-only cost; it never changes a scientific job setting."""
+
+    return {"rnn": 1.0, "gru": 1.4, "lstm": 1.4, "hc": 3.0}[str(job["model"])]
+
+
+def _balanced_queues(
+    jobs: list[dict[str, Any]], worker_count: int
+) -> tuple[list[list[dict[str, Any]]], list[float]]:
+    queues: list[list[dict[str, Any]]] = [[] for _ in range(int(worker_count))]
+    loads = [0.0 for _ in range(int(worker_count))]
+    ordered = sorted(
+        enumerate(jobs), key=lambda item: (-_estimated_cost(item[1]), item[0])
+    )
+    for _, job in ordered:
+        worker = min(range(int(worker_count)), key=lambda index: (loads[index], index))
+        queues[worker].append(job)
+        loads[worker] += _estimated_cost(job)
+    return queues, loads
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=STAGES, required=True)
@@ -59,7 +80,7 @@ def main() -> None:
     output = args.output.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     jobs = _jobs(args.stage, config)
-    queues = [jobs[index:: len(devices)] for index in range(len(devices))]
+    queues, estimated_loads = _balanced_queues(jobs, len(devices))
     atomic_json(
         output / "launcher_manifest.json",
         {
@@ -70,6 +91,9 @@ def main() -> None:
             "queue_assignment": {
                 device: [_job_id(job) for job in queue]
                 for device, queue in zip(devices, queues)
+            },
+            "queue_estimated_relative_load": {
+                device: load for device, load in zip(devices, estimated_loads)
             },
             "restart_policy": "skip_only_jobs_with_COMPLETED_json",
         },
