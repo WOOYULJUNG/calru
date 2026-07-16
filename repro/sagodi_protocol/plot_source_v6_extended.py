@@ -262,6 +262,14 @@ def _nearest_indices(angle: np.ndarray, targets: np.ndarray) -> np.ndarray:
     return np.argmin(distance, axis=0)
 
 
+def _comparison_scope(
+    panels: tuple[tuple[str, str, str], ...], calru_root: Path | None
+) -> str:
+    if panels and all(source.startswith("hc_") for source, _, _ in panels):
+        return "H-C hyperparameter comparison"
+    return "Model comparison" if calru_root is not None else "Baseline"
+
+
 def plot_geometry_topology(
     root: Path,
     calru_root: Path | None,
@@ -271,7 +279,7 @@ def plot_geometry_topology(
     destination: Path,
     prefix: str,
 ) -> None:
-    scope = "Model comparison" if calru_root is not None else "Baseline"
+    scope = _comparison_scope(panels, calru_root)
     fig, axes, ideal = _base_grid(
         f"{scope} geometry and projected topology", panels, conditions
     )
@@ -400,7 +408,7 @@ def plot_jacobian(
     destination: Path,
     prefix: str,
 ) -> None:
-    scope = "Model comparison" if calru_root is not None else "Baseline"
+    scope = _comparison_scope(panels, calru_root)
     fig, axes, ideal = _base_grid(
         f"{scope} top-5 local Jacobian real parts", panels, conditions
     )
@@ -716,7 +724,7 @@ def plot_memory(
     destination: Path,
     prefix: str,
 ) -> None:
-    scope = "Model comparison" if calru_root is not None else "Baseline"
+    scope = _comparison_scope(panels, calru_root)
     fig, axes, ideal = _base_grid(
         f"{scope} finite-time angular memory", panels, conditions
     )
@@ -832,7 +840,7 @@ def plot_normal_recovery(
     destination: Path,
     prefix: str,
 ) -> None:
-    scope = "Model comparison" if calru_root is not None else "Baseline"
+    scope = _comparison_scope(panels, calru_root)
     fig, axes, ideal = _base_grid(
         f"{scope} finite normal-kick recovery", panels, conditions
     )
@@ -954,7 +962,7 @@ def plot_asymptotic_memory_map(
     destination: Path,
     prefix: str,
 ) -> None:
-    scope = "Model comparison" if calru_root is not None else "Baseline"
+    scope = _comparison_scope(panels, calru_root)
     fig, axes, ideal = _base_grid(
         f"{scope} asymptotic memory map", panels, conditions
     )
