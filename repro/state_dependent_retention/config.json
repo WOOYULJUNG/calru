@@ -2,7 +2,7 @@
   "schema_version": 1,
   "campaign_id": "state_dependent_retention_writer_v1",
   "scientific_role": "exploratory_width_matched_writer_screen",
-  "task": "source_angular_integration_T256",
+  "task": "source_angular_integration_T128",
   "writers": ["linear", "input_nonlinear", "recurrent"],
   "retention_modes": ["gradient_only", "hybrid_rp"],
   "model_seeds": [0, 1, 2],

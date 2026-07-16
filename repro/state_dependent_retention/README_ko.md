@@ -29,7 +29,7 @@ perturbation을 nonzero ring으로 되돌리려면 expansion이 필요하기 때
   ordinary task-loss backpropagation으로 학습한다.
 
 현재 screen은 width-matched이며 parameter-matched가 아니다. 공통 조건은 width 52,
-T=256 angular integration, Adam LR 0.01, batch 64, 5,000 updates이며 state noise,
+T=128 source-v6 angular integration, Adam LR 0.01, batch 64, 5,000 updates이며 state noise,
 target noise, output dropout은 모두 0이다. Seeds는 0--2다.
 
 실행 예:
@@ -51,3 +51,19 @@ optimizer update 직후 `checkpoint_trained.pt`를 원자적으로 저장하고 
 --training-only \
 --conditions gradient_only:recurrent,hybrid_rp:linear,hybrid_rp:input_nonlinear,hybrid_rp:recurrent
 ```
+
+학습된 G-C checkpoint의 attractor 구조는 학습과 분리하여 다음처럼 분석한다.
+
+```bash
+PYTHONPATH=. python -m repro.state_dependent_retention.analyze_attractor \
+  --root /path/to/training-only-campaign \
+  --bank /path/to/main_test.npz \
+  --output /path/to/attractor_analysis_g_c \
+  --seeds 0,1,2 \
+  --device cuda:0
+```
+
+이 분석은 slow-manifold reconstruction, output-projected flow와 flow reversal,
+32개 anchor의 full local Jacobian, ambient/radial finite-kick recovery를 저장한다.
+큰 kick이 발산하더라도 같은 seed의 reconstruction, flow, Jacobian과 더 작은 반지름의
+recovery 결과는 보존한다.
