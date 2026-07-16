@@ -9,8 +9,8 @@ descriptive seed-0 pilot outputs; they are not confirmatory multi-seed
 summaries.  A separate right-hand ``Ideal CA`` panel is explicitly schematic
 and never presented as measured data.
 
-The optional paper mode removes state-noise rows and appends the predetermined
-H-C seed-0 panel. Raw noisy artifacts remain untouched for auditability.
+The optional paper mode removes state-noise rows and appends one or more H-C
+seed-0 panels. Raw noisy artifacts remain untouched for auditability.
 """
 
 from __future__ import annotations
@@ -38,7 +38,14 @@ CALRU_PANELS = (
     ("calru", "no_rp", "CA-LRU\nno RP"),
     ("calru", "rp", "CA-LRU"),
 )
-HC_PANEL = ("hc", "hybrid_rp_recurrent", "H-C\n(2/3 seeds pass)")
+HC_PANELS = {
+    "hc_a0p05": (
+        "hc_a0p05",
+        "hybrid_rp_recurrent",
+        "H-C a=.05\n(2/3 stable)",
+    ),
+    "hc_a0p025": ("hc_a0p025", "a0p025_zero", "H-C a=.025\n(3/3 stable)"),
+}
 CONDITIONS = (
     ("noise_free", "noise-free", "#2b6cb0"),
     ("positive_state_noise_training", "state-noise", "#c05621"),
@@ -101,16 +108,18 @@ def _retention_from_checkpoint(path: Path) -> tuple[np.ndarray, np.ndarray, str]
 
 
 def _panels(
-    calru_root: Path | None, hc_analysis_root: Path | None
+    calru_root: Path | None, hc_analysis_roots: Mapping[str, Path]
 ) -> tuple[tuple[str, str, str], ...]:
     panels = BASELINE_PANELS + (CALRU_PANELS if calru_root is not None else ())
-    return panels + ((HC_PANEL,) if hc_analysis_root is not None else ())
+    return panels + tuple(
+        HC_PANELS[source] for source in HC_PANELS if source in hc_analysis_roots
+    )
 
 
 def _run_dir(
     baseline_root: Path,
     calru_root: Path | None,
-    hc_analysis_root: Path | None,
+    hc_analysis_roots: Mapping[str, Path],
     panel: tuple[str, str, str],
     condition: str,
 ) -> Path:
@@ -120,22 +129,22 @@ def _run_dir(
     if source == "calru" and calru_root is not None:
         factorial_condition = CALRU_CONDITIONS[(model, condition)]
         return calru_root / "runs" / f"{factorial_condition}__seed00"
-    if source == "hc" and hc_analysis_root is not None:
+    if source in hc_analysis_roots:
         if condition != "noise_free":
-            return hc_analysis_root / "unavailable_noise_condition"
-        return hc_analysis_root / "seed00"
+            return hc_analysis_roots[source] / "unavailable_noise_condition"
+        return hc_analysis_roots[source] / "seed00"
     raise ValueError(f"unsupported panel source: {source}")
 
 
 def _load_run(
     baseline_root: Path,
     calru_root: Path | None,
-    hc_analysis_root: Path | None,
+    hc_analysis_roots: Mapping[str, Path],
     panel: tuple[str, str, str],
     condition: str,
 ) -> dict[str, Any]:
     directory = _run_dir(
-        baseline_root, calru_root, hc_analysis_root, panel, condition
+        baseline_root, calru_root, hc_analysis_roots, panel, condition
     )
     summary_path = directory / "summary.json"
     if not summary_path.exists():
@@ -155,7 +164,10 @@ def _load_run(
         "asymptotic_structure",
     ):
         path = directory / f"{stem}.npz"
-        if panel[0] == "hc" and stem == "carrier_ambient_normal_recovery":
+        if (
+            panel[0] in hc_analysis_roots
+            and stem == "carrier_ambient_normal_recovery"
+        ):
             path = directory / "normal_recovery.npz"
         if path.exists():
             result[stem] = np.load(path, allow_pickle=False)
@@ -253,7 +265,7 @@ def _nearest_indices(angle: np.ndarray, targets: np.ndarray) -> np.ndarray:
 def plot_geometry_topology(
     root: Path,
     calru_root: Path | None,
-    hc_analysis_root: Path | None,
+    hc_analysis_roots: Mapping[str, Path],
     panels: tuple[tuple[str, str, str], ...],
     conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
@@ -265,7 +277,7 @@ def plot_geometry_topology(
     )
     runs = {
         (panel, condition): _load_run(
-            root, calru_root, hc_analysis_root, panel, condition
+            root, calru_root, hc_analysis_roots, panel, condition
         )
         for panel in panels
         for condition, _, _ in conditions
@@ -382,7 +394,7 @@ def plot_geometry_topology(
 def plot_jacobian(
     root: Path,
     calru_root: Path | None,
-    hc_analysis_root: Path | None,
+    hc_analysis_roots: Mapping[str, Path],
     panels: tuple[tuple[str, str, str], ...],
     conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
@@ -394,7 +406,7 @@ def plot_jacobian(
     )
     runs = {
         (panel, condition): _load_run(
-            root, calru_root, hc_analysis_root, panel, condition
+            root, calru_root, hc_analysis_roots, panel, condition
         )
         for panel in panels
         for condition, _, _ in conditions
@@ -501,45 +513,54 @@ def plot_jacobian(
 def plot_retention_spectrum(
     root: Path,
     calru_root: Path,
-    hc_training_root: Path | None,
-    hc_analysis_root: Path | None,
+    hc_variants: tuple[tuple[str, Path, str, Path, float], ...],
     conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
     prefix: str,
 ) -> None:
     """Compare the 52-mode retention spectra for the LRU-family models."""
 
-    columns: list[tuple[str, str, str, Path, bool]] = [
+    columns: list[tuple[str, str, str, Path, Path | None, float | None]] = [
         (
             "LRU",
             "lru_n52__noise_free__seed00",
             "lru_n52__positive_state_noise_training__seed00",
             root,
-            False,
+            None,
+            None,
         ),
         (
             "CA-LRU\nno RP",
             "no_rp_no_noise__seed00",
             "no_rp_with_noise__seed00",
             calru_root,
-            False,
+            None,
+            None,
         ),
         (
             "CA-LRU",
             "rp_no_noise__seed00",
             "rp_with_noise__seed00",
             calru_root,
-            False,
+            None,
+            None,
         ),
     ]
-    if hc_training_root is not None and hc_analysis_root is not None:
+    for (
+        label,
+        training_root,
+        run_id,
+        analysis_root,
+        max_log_modulation,
+    ) in hc_variants:
         columns.append(
             (
-                "H-C",
-                "hybrid_rp__recurrent__seed00",
+                label,
+                run_id,
                 "",
-                hc_training_root,
-                True,
+                training_root,
+                analysis_root,
+                max_log_modulation,
             )
         )
     fig, axes = plt.subplots(
@@ -549,12 +570,24 @@ def plot_retention_spectrum(
         constrained_layout=True,
         squeeze=False,
     )
-    fig.suptitle("LRU-family retention spectra (seed 0)", fontsize=15, fontweight="bold")
-    for column, (label, _, _, _, _) in enumerate(columns):
+    fig.suptitle(
+        "LRU-family retention spectra (seed 0)", fontsize=15, fontweight="bold"
+    )
+    for column, (label, _, _, _, _, _) in enumerate(columns):
         axes[0, column].set_title(label, fontsize=11, fontweight="bold")
     for row, (_, row_label, color) in enumerate(conditions):
-        axes[row, 0].set_ylabel(f"{row_label}\nretention $\\lambda$", fontsize=10, fontweight="bold")
-        for column, (_, clean_run, noisy_run, artifact_root, is_hc) in enumerate(columns):
+        axes[row, 0].set_ylabel(
+            f"{row_label}\nretention $\\lambda$", fontsize=10, fontweight="bold"
+        )
+        for column, (
+            _,
+            clean_run,
+            noisy_run,
+            artifact_root,
+            analysis_root,
+            max_log_modulation,
+        ) in enumerate(columns):
+            is_hc = analysis_root is not None
             run_id = clean_run if row == 0 else noisy_run
             if is_hc:
                 if row != 0:
@@ -579,7 +612,7 @@ def plot_retention_spectrum(
                 payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
                 state_dict = payload["state_dict"]
                 carrier = np.load(
-                    hc_analysis_root / "seed00" / "slow_manifold_reconstruction.npz",
+                    analysis_root / "seed00" / "slow_manifold_reconstruction.npz",
                     allow_pickle=False,
                 )["spline_state"]
                 state = torch.as_tensor(carrier, dtype=torch.float32)
@@ -593,7 +626,7 @@ def plot_retention_spectrum(
                     + state_dict[prefix_key + "2.bias"]
                 )
                 dynamic = torch.as_tensor(values, dtype=state.dtype)[None, :] * torch.exp(
-                    0.05 * torch.tanh(raw)
+                    float(max_log_modulation) * torch.tanh(raw)
                 )
                 dynamic = dynamic[:, order].numpy()
                 median_dynamic = np.median(dynamic, axis=0)
@@ -677,7 +710,7 @@ def plot_retention_spectrum(
 def plot_memory(
     root: Path,
     calru_root: Path | None,
-    hc_analysis_root: Path | None,
+    hc_analysis_roots: Mapping[str, Path],
     panels: tuple[tuple[str, str, str], ...],
     conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
@@ -689,7 +722,7 @@ def plot_memory(
     )
     runs = {
         (panel, condition): _load_run(
-            root, calru_root, hc_analysis_root, panel, condition
+            root, calru_root, hc_analysis_roots, panel, condition
         )
         for panel in panels
         for condition, _, _ in conditions
@@ -793,7 +826,7 @@ def _normal_series(
 def plot_normal_recovery(
     root: Path,
     calru_root: Path | None,
-    hc_analysis_root: Path | None,
+    hc_analysis_roots: Mapping[str, Path],
     panels: tuple[tuple[str, str, str], ...],
     conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
@@ -805,7 +838,7 @@ def plot_normal_recovery(
     )
     runs = {
         (panel, condition): _load_run(
-            root, calru_root, hc_analysis_root, panel, condition
+            root, calru_root, hc_analysis_roots, panel, condition
         )
         for panel in panels
         for condition, _, _ in conditions
@@ -915,7 +948,7 @@ def _set_circular_angle_axes(ax: plt.Axes) -> None:
 def plot_asymptotic_memory_map(
     root: Path,
     calru_root: Path | None,
-    hc_analysis_root: Path | None,
+    hc_analysis_roots: Mapping[str, Path],
     panels: tuple[tuple[str, str, str], ...],
     conditions: tuple[tuple[str, str, str], ...],
     destination: Path,
@@ -927,7 +960,7 @@ def plot_asymptotic_memory_map(
     )
     runs = {
         (panel, condition): _load_run(
-            root, calru_root, hc_analysis_root, panel, condition
+            root, calru_root, hc_analysis_roots, panel, condition
         )
         for panel in panels
         for condition, _, _ in conditions
@@ -1035,6 +1068,8 @@ def main() -> int:
     parser.add_argument("--calru-artifact-root", type=Path)
     parser.add_argument("--hc-training-root", type=Path)
     parser.add_argument("--hc-analysis-root", type=Path)
+    parser.add_argument("--hc-sweep-training-root", type=Path)
+    parser.add_argument("--hc-sweep-analysis-root", type=Path)
     parser.add_argument("--no-noise", action="store_true")
     parser.add_argument("--prefix")
     parser.add_argument("--output-dir", type=Path)
@@ -1055,61 +1090,133 @@ def main() -> int:
         if args.hc_analysis_root is not None
         else None
     )
+    hc_sweep_training_root = (
+        args.hc_sweep_training_root.expanduser().resolve(strict=True)
+        if args.hc_sweep_training_root is not None
+        else None
+    )
+    hc_sweep_analysis_root = (
+        args.hc_sweep_analysis_root.expanduser().resolve(strict=True)
+        if args.hc_sweep_analysis_root is not None
+        else None
+    )
     if (hc_training_root is None) != (hc_analysis_root is None):
         parser.error("--hc-training-root and --hc-analysis-root must be provided together")
-    if hc_analysis_root is not None and not args.no_noise:
+    if (hc_sweep_training_root is None) != (hc_sweep_analysis_root is None):
+        parser.error(
+            "--hc-sweep-training-root and --hc-sweep-analysis-root must be "
+            "provided together"
+        )
+    hc_analysis_roots = {
+        source: path
+        for source, path in (
+            ("hc_a0p05", hc_analysis_root),
+            ("hc_a0p025", hc_sweep_analysis_root),
+        )
+        if path is not None
+    }
+    hc_variants = tuple(
+        item
+        for item in (
+            (
+                "H-C a=.05",
+                hc_training_root,
+                "hybrid_rp__recurrent__seed00",
+                hc_analysis_root,
+                0.05,
+            )
+            if hc_training_root is not None and hc_analysis_root is not None
+            else None,
+            (
+                "H-C a=.025",
+                hc_sweep_training_root,
+                "a0p025_zero__seed00",
+                hc_sweep_analysis_root,
+                0.025,
+            )
+            if (
+                hc_sweep_training_root is not None
+                and hc_sweep_analysis_root is not None
+            )
+            else None,
+        )
+        if item is not None
+    )
+    if hc_analysis_roots and not args.no_noise:
         parser.error("H-C comparison requires --no-noise because no noisy H-C run exists")
     conditions = NO_NOISE_CONDITIONS if args.no_noise else CONDITIONS
-    panels = _panels(calru_root, hc_analysis_root)
+    panels = _panels(calru_root, hc_analysis_roots)
     default_output = (calru_root if calru_root is not None else root) / "figures"
     destination = (args.output_dir or default_output).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     prefix = args.prefix or (
         "fig_model_comparison_no_noise_hc"
-        if hc_analysis_root is not None
+        if hc_analysis_roots
         else ("fig_model_comparison" if calru_root is not None else "fig_baseline")
     )
     plot_geometry_topology(
-        root, calru_root, hc_analysis_root, panels, conditions, destination, prefix
+        root, calru_root, hc_analysis_roots, panels, conditions, destination, prefix
     )
     plot_jacobian(
-        root, calru_root, hc_analysis_root, panels, conditions, destination, prefix
+        root, calru_root, hc_analysis_roots, panels, conditions, destination, prefix
     )
     if calru_root is not None:
         plot_retention_spectrum(
             root,
             calru_root,
-            hc_training_root,
-            hc_analysis_root,
+            hc_variants,
             conditions,
             destination,
             prefix,
         )
     plot_memory(
-        root, calru_root, hc_analysis_root, panels, conditions, destination, prefix
+        root, calru_root, hc_analysis_roots, panels, conditions, destination, prefix
     )
     plot_normal_recovery(
-        root, calru_root, hc_analysis_root, panels, conditions, destination, prefix
+        root, calru_root, hc_analysis_roots, panels, conditions, destination, prefix
     )
     plot_asymptotic_memory_map(
-        root, calru_root, hc_analysis_root, panels, conditions, destination, prefix
+        root, calru_root, hc_analysis_roots, panels, conditions, destination, prefix
     )
     manifest = {
         "schema_version": 1,
         "baseline_artifact_root": str(root),
         "calru_artifact_root": str(calru_root) if calru_root is not None else None,
-        "hc_training_root": str(hc_training_root) if hc_training_root is not None else None,
-        "hc_analysis_root": str(hc_analysis_root) if hc_analysis_root is not None else None,
+        "hc_training_root": (
+            str(hc_training_root) if hc_training_root is not None else None
+        ),
+        "hc_analysis_root": (
+            str(hc_analysis_root) if hc_analysis_root is not None else None
+        ),
+        "hc_sweep_training_root": (
+            str(hc_sweep_training_root) if hc_sweep_training_root is not None else None
+        ),
+        "hc_sweep_analysis_root": (
+            str(hc_sweep_analysis_root) if hc_sweep_analysis_root is not None else None
+        ),
         "output_dir": str(destination),
         "models": [label.replace("\n", " ") for _, _, label in panels],
         "conditions": [label for _, label, _ in conditions],
         "seed_scope": "seed00 descriptive panels from each artifact",
         "hc_seed_audit": {
-            "displayed_seed": 0,
-            "task_success_seeds": [0, 2],
-            "failed_seed": 1,
-            "failure": "task failure and non-finite blank rollout at step 622",
-        } if hc_analysis_root is not None else None,
+            "a0p05": {
+                "displayed_seed": 0,
+                "stable_seeds": [0, 2],
+                "failed_seed": 1,
+                "failure": "task failure and non-finite blank rollout at step 622",
+            }
+            if hc_analysis_root is not None
+            else None,
+            "a0p025": {
+                "displayed_seed": 0,
+                "stable_seeds": [0, 1, 2],
+                "failed_seed": None,
+            }
+            if hc_sweep_analysis_root is not None
+            else None,
+        }
+        if hc_analysis_roots
+        else None,
         "noise_policy": (
             "noise-trained panels excluded from paper figure; raw artifacts retained"
             if args.no_noise
