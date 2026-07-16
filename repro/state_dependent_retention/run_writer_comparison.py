@@ -130,10 +130,11 @@ class WorkerSpec:
     updates: int
     batch_size: int
     smoke: bool
+    training_only: bool = False
 
     @property
     def run_id(self) -> str:
-        prefix = "smoke" if self.smoke else "main"
+        prefix = "smoke" if self.smoke else ("train" if self.training_only else "main")
         return (
             f"{prefix}__{self.retention_mode}__{self.writer_kind}"
             f"__seed{self.model_seed:02d}"
@@ -316,6 +317,8 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
         "retention_mode": spec.retention_mode,
         "model_seed": spec.model_seed,
         "smoke": spec.smoke,
+        "training_only": spec.training_only,
+        "evaluation_deferred": spec.training_only,
         "parameters_total": total,
         "parameters_gradient_trainable": trainable,
         "parameter_matching": architecture["parameter_matching"],
@@ -432,6 +435,71 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
         raise RuntimeError(
             f"RP call count differs: {len(rp_trace)} != {expected_rp_count}"
         )
+
+    # Persist the trained parameters before any long-horizon analysis.  A
+    # divergent blank rollout is a scientific outcome and must not erase a
+    # successfully trained checkpoint or block unrelated queued conditions.
+    training_result = {
+        "schema_version": 1,
+        "status": "training_completed",
+        "campaign_id": CAMPAIGN_ID,
+        "run_id": spec.run_id,
+        "writer_kind": spec.writer_kind,
+        "retention_mode": spec.retention_mode,
+        "model_seed": spec.model_seed,
+        "updates_completed": spec.updates,
+        "rp_call_count": len(rp_trace),
+        "parameters_total": total,
+        "parameters_gradient_trainable": trainable,
+        "evaluation_deferred": bool(spec.training_only),
+        "elapsed_seconds": float(time.time() - started),
+    }
+    trained_checkpoint = output / "checkpoint_trained.pt"
+    _atomic_torch_save(
+        trained_checkpoint,
+        {
+            "schema_version": 1,
+            "checkpoint_type": CAMPAIGN_ID,
+            "checkpoint_stage": "post_training_pre_evaluation",
+            "writer_kind": spec.writer_kind,
+            "retention_mode": spec.retention_mode,
+            "model_seed": spec.model_seed,
+            "architecture": config["architecture"],
+            "training_result": training_result,
+            "state_dict": model.state_dict(),
+        },
+    )
+    if spec.training_only:
+        result = {
+            **training_result,
+            "status": "completed",
+            "final_metrics": None,
+            "blank_metrics": None,
+            "dynamic_retention_on_blank_terminal": None,
+        }
+        atomic_json(output / "training_trace.json", trace)
+        atomic_json(output / "rp_trace.json", rp_trace)
+        atomic_json(output / "result.json", result)
+        atomic_json(
+            output / "progress.json",
+            {
+                "schema_version": 1,
+                "status": "completed_evaluation_deferred",
+                "run_id": spec.run_id,
+                "update": spec.updates,
+                "updated_at_utc": _utc_now(),
+            },
+        )
+        atomic_json(
+            output / "COMPLETE",
+            {
+                "schema_version": 1,
+                "run_id": spec.run_id,
+                "evaluation_deferred": True,
+            },
+        )
+        return output
+
     final_metrics = _evaluate(model, bank)
     blank_metrics, blank_terminal = _blank_metrics(
         model,
@@ -452,6 +520,7 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
         "rp_call_count": len(rp_trace),
         "parameters_total": total,
         "parameters_gradient_trainable": trainable,
+        "evaluation_deferred": False,
         "final_metrics": final_metrics,
         "blank_metrics": blank_metrics,
         "dynamic_retention_on_blank_terminal": dynamic_summary,
@@ -512,6 +581,8 @@ def _build_specs(
     bank: Path,
     *,
     smoke: bool,
+    training_only: bool = False,
+    allowed_conditions: set[tuple[str, str]] | None = None,
 ) -> tuple[WorkerSpec, ...]:
     config = _load_config(config_path)
     writers: Sequence[WriterKind] = tuple(config["writers"])
@@ -531,10 +602,12 @@ def _build_specs(
             updates=updates,
             batch_size=batch_size,
             smoke=smoke,
+            training_only=training_only,
         )
         for mode in modes
         for writer in writers
         for seed in seeds
+        if allowed_conditions is None or (str(mode), str(writer)) in allowed_conditions
     )
 
 
@@ -544,12 +617,18 @@ def _result_complete(spec: WorkerSpec) -> bool:
         marker = strict_json_load(Path(spec.output_dir) / "COMPLETE")
     except (OSError, ValueError, TypeError, KeyError):
         return False
+    checkpoint = (
+        Path(spec.output_dir) / "checkpoint_trained.pt"
+        if spec.training_only
+        else Path(spec.output_dir) / "checkpoint_final.pt"
+    )
     return bool(
         result.get("status") == "completed"
         and result.get("run_id") == spec.run_id
         and result.get("updates_completed") == spec.updates
+        and bool(result.get("evaluation_deferred")) == spec.training_only
         and marker.get("run_id") == spec.run_id
-        and (Path(spec.output_dir) / "checkpoint_final.pt").is_file()
+        and checkpoint.is_file()
     )
 
 
@@ -571,7 +650,11 @@ def _summarize(root: Path, specs: Sequence[WorkerSpec]) -> dict[str, Any]:
             "completed_seed_count": len(results),
             "per_seed": results,
         }
-        if results:
+        evaluated = [item for item in results if item.get("final_metrics") is not None]
+        row["evaluation_deferred_count"] = sum(
+            bool(item.get("evaluation_deferred")) for item in results
+        )
+        if evaluated:
             for name, getter in {
                 "task_nmse_db": lambda item: item["final_metrics"]["masked_nmse_db"],
                 "task_mse": lambda item: item["final_metrics"]["masked_mse"],
@@ -580,9 +663,10 @@ def _summarize(root: Path, specs: Sequence[WorkerSpec]) -> dict[str, Any]:
                 "dynamic_lambda_maximum": lambda item: item["dynamic_retention_on_blank_terminal"]["maximum"],
                 "dynamic_lambda_fraction_above_one": lambda item: item["dynamic_retention_on_blank_terminal"]["fraction_above_one"],
             }.items():
-                values = np.asarray([getter(item) for item in results], dtype=np.float64)
+                values = np.asarray([getter(item) for item in evaluated], dtype=np.float64)
                 row[f"median_{name}"] = float(np.median(values))
                 row[f"mean_{name}"] = float(values.mean())
+        if results:
             row["parameters_total"] = int(results[0]["parameters_total"])
             row["parameters_gradient_trainable"] = int(
                 results[0]["parameters_gradient_trainable"]
@@ -605,6 +689,8 @@ def _launch(
     bank: Path,
     gpus: tuple[str, ...],
     smoke: bool,
+    training_only: bool,
+    allowed_conditions: set[tuple[str, str]] | None,
 ) -> int:
     root.mkdir(parents=True, exist_ok=True)
     config = _load_config(config_path)
@@ -629,6 +715,12 @@ def _launch(
         "evaluation_bank_sha256": sha256_file(bank),
         "gpus": list(gpus),
         "smoke": smoke,
+        "training_only": training_only,
+        "allowed_conditions": (
+            None
+            if allowed_conditions is None
+            else sorted(f"{mode}:{writer}" for mode, writer in allowed_conditions)
+        ),
         "scientific_contract": {
             "writers": config["writers"],
             "retention_modes": config["retention_modes"],
@@ -647,7 +739,14 @@ def _launch(
     else:
         atomic_json(identity_path, identity)
 
-    specs = _build_specs(root, config_path, bank, smoke=smoke)
+    specs = _build_specs(
+        root,
+        config_path,
+        bank,
+        smoke=smoke,
+        training_only=training_only,
+        allowed_conditions=allowed_conditions,
+    )
     pending = [spec for spec in specs if not _result_complete(spec)]
     if not pending:
         _summarize(root, specs)
@@ -697,6 +796,8 @@ def _launch(
             ]
             if spec.smoke:
                 command.append("--smoke")
+            if spec.training_only:
+                command.append("--training-only")
             process = subprocess.Popen(
                 command,
                 cwd=repo,
@@ -738,6 +839,22 @@ def _parse_gpus(text: str) -> tuple[str, ...]:
     return values
 
 
+def _parse_conditions(text: str | None) -> set[tuple[str, str]] | None:
+    if text is None or not text.strip():
+        return None
+    conditions: set[tuple[str, str]] = set()
+    for token in text.split(","):
+        parts = tuple(value.strip() for value in token.split(":"))
+        if len(parts) != 2 or parts[0] not in RETENTION_MODES or parts[1] not in WRITER_KINDS:
+            raise ValueError(
+                "--conditions entries must be retention_mode:writer_kind"
+            )
+        conditions.add((parts[0], parts[1]))
+    if not conditions:
+        raise ValueError("--conditions resolved to an empty set")
+    return conditions
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage", choices=("smoke", "main", "worker", "status"), required=True)
@@ -753,6 +870,11 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--training-only", action="store_true")
+    parser.add_argument(
+        "--conditions",
+        help="comma-separated retention_mode:writer_kind subset for launch/status",
+    )
     args = parser.parse_args()
     config_path = Path(args.config).expanduser().resolve(strict=True)
     if args.stage == "worker":
@@ -779,6 +901,7 @@ def main() -> int:
             updates=int(args.updates),
             batch_size=int(args.batch_size),
             smoke=bool(args.smoke),
+            training_only=bool(args.training_only),
         )
         run_worker(spec, args.device)
         return 0
@@ -786,8 +909,16 @@ def main() -> int:
         parser.error("smoke/main/status require --root and --bank")
     root = Path(args.root).expanduser().resolve()
     bank = Path(args.bank).expanduser().resolve(strict=True)
+    allowed_conditions = _parse_conditions(args.conditions)
     if args.stage == "status":
-        specs = _build_specs(root, config_path, bank, smoke=False)
+        specs = _build_specs(
+            root,
+            config_path,
+            bank,
+            smoke=False,
+            training_only=bool(args.training_only),
+            allowed_conditions=allowed_conditions,
+        )
         summary = _summarize(root, specs)
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
@@ -797,6 +928,8 @@ def main() -> int:
         bank=bank,
         gpus=_parse_gpus(args.gpus),
         smoke=args.stage == "smoke",
+        training_only=bool(args.training_only),
+        allowed_conditions=allowed_conditions,
     )
 
 

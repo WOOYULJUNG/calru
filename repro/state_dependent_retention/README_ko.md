@@ -42,3 +42,12 @@ PYTHONPATH=. /home/biadmin/ca_rnn/.conda-calru-p0/bin/python \
   --bank /path/to/main_test.npz \
   --gpus 0,1,2,3,4,5
 ```
+
+학습과 평가를 분리하려면 `--training-only`를 사용한다. 이 모드에서는 5,000번째
+optimizer update 직후 `checkpoint_trained.pt`를 원자적으로 저장하고 task/blank/radial
+평가는 수행하지 않는다. 일부 조건만 실행하려면 예를 들어 다음을 추가한다.
+
+```text
+--training-only \
+--conditions gradient_only:recurrent,hybrid_rp:linear,hybrid_rp:input_nonlinear,hybrid_rp:recurrent
+```
