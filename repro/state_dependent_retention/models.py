@@ -46,6 +46,11 @@ WRITER_KINDS: tuple[WriterKind, ...] = (
 )
 RetentionMode = Literal["gradient_only", "hybrid_rp"]
 RETENTION_MODES: tuple[RetentionMode, ...] = ("gradient_only", "hybrid_rp")
+RetentionParameterization = Literal["exp_tanh", "direct_residual_mlp"]
+RETENTION_PARAMETERIZATIONS: tuple[RetentionParameterization, ...] = (
+    "exp_tanh",
+    "direct_residual_mlp",
+)
 
 
 def _seeded_module(seed: int, factory):
@@ -70,11 +75,16 @@ class StateDependentRetentionRec(PANNonlinearWriterRec):
         writer_seed: int,
         gate_output_weight_std: float = 0.0,
         gate_output_bias: float = 0.0,
+        retention_parameterization: RetentionParameterization = "exp_tanh",
     ) -> None:
         if writer_kind not in WRITER_KINDS:
             raise ValueError(f"unknown writer kind: {writer_kind}")
         if retention_mode not in RETENTION_MODES:
             raise ValueError(f"unknown retention mode: {retention_mode}")
+        if retention_parameterization not in RETENTION_PARAMETERIZATIONS:
+            raise ValueError(
+                f"unknown retention parameterization: {retention_parameterization}"
+            )
         if gate_hidden <= 0:
             raise ValueError("gate_hidden must be positive")
         if not 0.0 < float(max_log_modulation) < math.log(2.0):
@@ -103,6 +113,9 @@ class StateDependentRetentionRec(PANNonlinearWriterRec):
         self.max_log_modulation = float(max_log_modulation)
         self.gate_output_weight_std = float(gate_output_weight_std)
         self.gate_output_bias = float(gate_output_bias)
+        self.retention_parameterization: RetentionParameterization = (
+            retention_parameterization
+        )
 
         with torch.no_grad():
             self.theta.copy_(source.theta)
@@ -165,6 +178,8 @@ class StateDependentRetentionRec(PANNonlinearWriterRec):
         if state.shape[-1] != self.hidden_dim:
             raise ValueError("state width differs from retention width")
         base = self.lam_mag().to(dtype=state.dtype, device=state.device)
+        if self.retention_parameterization == "direct_residual_mlp":
+            return base + self.retention_gate(state)
         log_modulation = self.max_log_modulation * torch.tanh(
             self.retention_gate(state)
         )
@@ -205,6 +220,7 @@ def build_state_dependent_model(
     max_log_modulation: float = 0.05,
     gate_output_weight_std: float = 0.0,
     gate_output_bias: float = 0.0,
+    retention_parameterization: RetentionParameterization = "exp_tanh",
 ) -> V4Model:
     """Build a paired width-52 model whose only mechanism change is writer form."""
 
@@ -231,6 +247,7 @@ def build_state_dependent_model(
         ),
         gate_output_weight_std=gate_output_weight_std,
         gate_output_bias=gate_output_bias,
+        retention_parameterization=retention_parameterization,
     )
     model.core.blocks[0].rec = replacement
     return model

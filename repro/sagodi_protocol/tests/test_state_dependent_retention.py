@@ -49,6 +49,23 @@ def test_dynamic_retention_starts_at_base_and_can_cross_one() -> None:
     assert bool((modulated[:, 0] > 1.0).all())
 
 
+def test_direct_residual_mlp_starts_at_base_and_is_not_amplitude_bounded() -> None:
+    rec = recurrence(
+        build_state_dependent_model(
+            "recurrent",
+            model_seed=3,
+            retention_parameterization="direct_residual_mlp",
+        )
+    )
+    states = torch.randn(6, 52)
+    initial = rec.state_dependent_lambda(states)
+    assert torch.allclose(initial, rec.lam_mag().expand_as(initial))
+    with torch.no_grad():
+        rec.retention_gate[2].bias.fill_(0.2)
+    shifted = rec.state_dependent_lambda(states)
+    assert torch.allclose(shifted, rec.lam_mag().expand_as(shifted) + 0.2)
+
+
 def test_explicit_gate_output_initializations_are_seeded_and_bounded() -> None:
     kwargs = {
         "model_seed": 13,
