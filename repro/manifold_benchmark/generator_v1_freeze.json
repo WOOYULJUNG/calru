@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "generator_version": "manifold-benchmark-generator-v1",
+  "freeze_status": "immutable_after_tag",
+  "tag": "manifold-generator-v1",
+  "task_contract": {
+    "training_horizon": 128,
+    "max_parent_horizon": 2048,
+    "delta_t": 0.1,
+    "gp_grid_spacing": 0.015748031496062992,
+    "gp_length_scale": 1.0,
+    "gp_std": 1.0,
+    "dwell": "global_true_zero_velocity_variable_sparsity",
+    "target_indexing": "initial_memory_is_Phi_q0_and_target_t_is_Phi_q_t_plus_1",
+    "sphere_input": "state_independent_3D_angular_velocity_omega_t",
+    "sphere_update": "Rodrigues_rotation_R_delta_t_omega_t_n_t",
+    "sphere_effective_velocity": "omega_t_cross_n_t"
+  },
+  "fixed_bank_contract": {
+    "trajectories": 1024,
+    "validation": {
+      "split": "validation_id",
+      "sample_seed": 0,
+      "parent_bank_sha256": "eec514da2c8ab18e42622ddbf658a137603465a772fd22311f11fde457313285",
+      "bank_sha256": {
+        "s1": "2d0ef417d3ec398141d08e56f4c617bf15986eaacfaf0902804aec9536be6508",
+        "t2": "0a637b177210320246f841d37a505230fccedb71c1ee0eb9bc817c51aae650dc",
+        "s2": "3c8903804c9ca7ded70061430f6c90356dbba5643e44b92e48b7cf910651273"
+      }
+    },
+    "test": {
+      "split": "test_id",
+      "sample_seed": 1,
+      "parent_bank_sha256": "868ef6680bbb9889317b45e944c4bf4c8ef9ec428bd35c41c9c722162b09e987",
+      "bank_sha256": {
+        "s1": "3410a950292117963b8c68c94b15907fbb9391b34efe738ab2e8d73284fdeed4",
+        "t2": "897d84f5009a2394b2e5c4237caa32191b4dd18ed674e2d439ae78478b62698b",
+        "s2": "c2fcc78627ef6051d8ce13fb9af3e0d7789af9523601c7ea0d9d31efefbaf3bb"
+      }
+    },
+    "validation_test_inputs_bit_identical": false,
+    "validation_test_trajectory_id_overlap": 0
+  },
+  "registered_checks": {
+    "deterministic_replay": true,
+    "q0_q1_indexing_oracle": true,
+    "zero_control_oracle": true,
+    "torus_constraints": true,
+    "sphere_unit_norm": true,
+    "sphere_tangency": true,
+    "independent_Rodrigues_oracle": true,
+    "dimension_nesting": true,
+    "artifact_hash_and_reload": true,
+    "validation_distribution_audit": true,
+    "test_distribution_audit": true,
+    "validation_topology_calibration": true,
+    "test_topology_calibration": true
+  },
+  "validation_artifacts": {
+    "pca_metrics_sha256": "a9257240c3d26d33881656b873216dd3758c8566a8846c7ee7228c2694f653af",
+    "pca_figure_manifest_sha256": "c7a22ef2b9a5c460f611d8af474dd46c515e5ef769457ac879692532d56d4570",
+    "validation_exact_tests_sha256": "0275638cd816db724a1b4d4a6d14d982c2c75f3432da8741c74f9c1c74725d1f",
+    "validation_distribution_audit_sha256": "1a0f2834b51827f6389c322041e4b0ef14e3056a24ac49988c1c18a449064c4a",
+    "validation_topology_calibration_sha256": "e8dae3e4d0fc15e310d0288437cfb32e91c830e02f27510965a1f268e3c33227",
+    "test_exact_tests_sha256": "0275638cd816db724a1b4d4a6d14d982c2c75f3432da8741c74f9c1c74725d1f",
+    "test_distribution_audit_sha256": "a541717dbd5ee3025318aeb0374dbd85b283a6a98550b39401fe21182761ccd0",
+    "test_topology_calibration_sha256": "fd8c3b1178da5a61b8a052802eaa54ab757e0fae0806542cc69482e971af1e15"
+  },
+  "policy": "Any semantic change requires a new generator version and separate experiment lineage."
+}
