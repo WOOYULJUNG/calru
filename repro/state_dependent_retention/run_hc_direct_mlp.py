@@ -1,13 +1,10 @@
-"""Train H-C with a direct residual MLP retention field.
+"""Train H-C with an MLP-parameterized retention field.
 
-This experiment changes only
-
-    lambda(h) = base_lambda + MLP(h)
-
-relative to the registered H-C exp(tanh) experiment.  The MLP output layer is
+Supported configurations replace the registered H-C exp(tanh) field with
+either a direct residual MLP or a power-MLP field.  The MLP output layer is
 zero initialized, so every seed starts from exactly the same base-retention
-map.  The recurrent writer, hybrid RP intervention, task streams, optimizer,
-training horizon, and noise-free contract are unchanged.
+map.  The recurrent writer, hybrid RP intervention, task streams, training
+horizon, and noise-free contract are unchanged.
 """
 
 from __future__ import annotations
@@ -48,7 +45,16 @@ from .run_hc_stability_sweep import (
 
 MODULE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = MODULE_DIR / "hc_direct_mlp.json"
-CAMPAIGN_ID = "hc_direct_residual_mlp_v1"
+EXPERIMENTS = {
+    "hc_direct_residual_mlp_v1": {
+        "retention_parameterization": "direct_residual_mlp",
+        "equation": "lambda(h) = base_lambda + MLP(h)",
+    },
+    "hc_power_tanh_mlp_v1": {
+        "retention_parameterization": "power_tanh_mlp",
+        "equation": "lambda(h) = base_lambda ** (1 + 1.5 * tanh(MLP(h)))",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -62,26 +68,34 @@ class WorkerSpec:
 
     @property
     def run_id(self) -> str:
-        return f"direct_mlp__seed{self.model_seed:02d}"
+        parameterization = _load_config(Path(self.config_path))["fixed_architecture"][
+            "retention_parameterization"
+        ]
+        return f"{parameterization}__seed{self.model_seed:02d}"
 
 
 def _load_config(path: Path) -> dict[str, Any]:
     config = strict_json_load(path)
-    if config.get("campaign_id") != CAMPAIGN_ID:
-        raise ValueError("wrong direct-MLP campaign id")
+    campaign_id = str(config.get("campaign_id"))
+    if campaign_id not in EXPERIMENTS:
+        raise ValueError("unknown MLP-retention campaign id")
+    definition = EXPERIMENTS[campaign_id]
     if config.get("model_seeds") != [0, 1, 2]:
-        raise ValueError("direct-MLP campaign requires seeds 0,1,2")
-    if config.get("fixed_architecture") != {
+        raise ValueError("MLP-retention campaign requires seeds 0,1,2")
+    required_architecture = {
         "writer_kind": "recurrent",
         "retention_mode": "hybrid_rp",
-        "retention_parameterization": "direct_residual_mlp",
+        "retention_parameterization": definition["retention_parameterization"],
         "width": 52,
         "mlp_hidden": 52,
         "mlp_output_weight_init": 0.0,
         "mlp_output_bias_init": 0.0,
-    }:
-        raise ValueError("direct-MLP architecture contract differs")
-    if config.get("training") != {
+    }
+    if definition["retention_parameterization"] == "power_tanh_mlp":
+        required_architecture["exponent_tanh_scale"] = 1.5
+    if config.get("fixed_architecture") != required_architecture:
+        raise ValueError("MLP-retention architecture contract differs")
+    required_training = {
         "optimizer": "Adam",
         "learning_rate": 0.01,
         "betas": [0.9, 0.999],
@@ -92,8 +106,9 @@ def _load_config(path: Path) -> dict[str, Any]:
         "state_noise_std": 0.0,
         "target_noise_std": 0.0,
         "output_dropout": 0.0,
-    }:
-        raise ValueError("direct-MLP training contract differs")
+    }
+    if config.get("training") != required_training:
+        raise ValueError("MLP-retention training contract differs")
     if config.get("retention_plasticity") != {
         "warmup_updates": 1500,
         "eta_lambda": 1000.0,
@@ -102,13 +117,13 @@ def _load_config(path: Path) -> dict[str, Any]:
         "probe_batch_size": 96,
         "blank_ablation_horizon": 500,
     }:
-        raise ValueError("direct-MLP RP contract differs")
+        raise ValueError("MLP-retention RP contract differs")
     if config.get("screen") != {
         "blank_horizon": 2048,
         "progress_interval_updates": 50,
         "validation_interval_updates": 500,
     }:
-        raise ValueError("direct-MLP screen contract differs")
+        raise ValueError("MLP-retention screen contract differs")
     return config
 
 
@@ -155,6 +170,8 @@ def _rp_updates(spec: WorkerSpec, config: Mapping[str, Any]) -> set[int]:
 def run_worker(spec: WorkerSpec, device_text: str) -> Path:
     config_path = Path(spec.config_path).resolve(strict=True)
     config = _load_config(config_path)
+    campaign_id = str(config["campaign_id"])
+    definition = EXPERIMENTS[campaign_id]
     output = Path(spec.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
@@ -169,14 +186,33 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
         gate_hidden=52,
         gate_output_weight_std=0.0,
         gate_output_bias=0.0,
-        retention_parameterization="direct_residual_mlp",
+        retention_parameterization=definition["retention_parameterization"],
+        power_tanh_scale=float(
+            config["fixed_architecture"].get("exponent_tanh_scale", 1.5)
+        ),
     ).to(device)
     _finite_model(model)
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
     training = config["training"]
+    trainable_parameters = [p for p in model.parameters() if p.requires_grad]
+    if "retention_mlp_learning_rate" in training:
+        retention_gate = model.core.blocks[0].rec.retention_gate
+        gate_ids = {id(p) for p in retention_gate.parameters()}
+        parameter_groups = [
+            {
+                "params": [p for p in trainable_parameters if id(p) not in gate_ids],
+                "lr": float(training["learning_rate"]),
+            },
+            {
+                "params": [p for p in trainable_parameters if id(p) in gate_ids],
+                "lr": float(training["retention_mlp_learning_rate"]),
+            },
+        ]
+    else:
+        parameter_groups = trainable_parameters
     optimizer = torch.optim.Adam(
-        [p for p in model.parameters() if p.requires_grad],
+        parameter_groups,
         lr=float(training["learning_rate"]),
         betas=tuple(float(v) for v in training["betas"]),
         eps=float(training["epsilon"]),
@@ -186,11 +222,11 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
     rp_schedule = _rp_updates(spec, config)
     manifest = {
         "schema_version": 1,
-        "campaign_id": CAMPAIGN_ID,
+        "campaign_id": campaign_id,
         "run_id": spec.run_id,
         "model_seed": spec.model_seed,
-        "equation": "lambda(h) = base_lambda + MLP(h)",
-        "retention_parameterization": "direct_residual_mlp",
+        "equation": definition["equation"],
+        "retention_parameterization": definition["retention_parameterization"],
         "writer_kind": "recurrent",
         "retention_mode": "hybrid_rp",
         "training": {**training, "effective_updates": spec.updates},
@@ -269,7 +305,8 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
                 },
             )
             print(
-                f"[direct_mlp seed={spec.model_seed}] {update}/{spec.updates} "
+                f"[{definition['retention_parameterization']} "
+                f"seed={spec.model_seed}] {update}/{spec.updates} "
                 f"loss={row['train_mse']:.6g} rp={len(rp_trace)} "
                 f"elapsed={row['elapsed_seconds']:.1f}s",
                 flush=True,
@@ -281,12 +318,12 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
         output / "checkpoint_trained.pt",
         {
             "schema_version": 1,
-            "checkpoint_type": CAMPAIGN_ID,
+            "checkpoint_type": campaign_id,
             "checkpoint_stage": "post_training_pre_screen",
             "model_seed": spec.model_seed,
             "updates_completed": spec.updates,
             "rp_call_count": len(rp_trace),
-            "retention_parameterization": "direct_residual_mlp",
+            "retention_parameterization": definition["retention_parameterization"],
             "state_dict": model.state_dict(),
         },
     )
@@ -297,7 +334,7 @@ def run_worker(spec: WorkerSpec, device_text: str) -> Path:
     result = {
         "schema_version": 1,
         "status": "completed",
-        "campaign_id": CAMPAIGN_ID,
+        "campaign_id": campaign_id,
         "run_id": spec.run_id,
         "model_seed": spec.model_seed,
         "updates_completed": spec.updates,
@@ -340,10 +377,11 @@ def _result_complete(spec: WorkerSpec) -> bool:
 
 def _specs(root: Path, config_path: Path, bank: Path) -> tuple[WorkerSpec, ...]:
     config = _load_config(config_path)
+    parameterization = config["fixed_architecture"]["retention_parameterization"]
     return tuple(
         WorkerSpec(
             model_seed=int(seed),
-            output_dir=str(root / "runs" / f"direct_mlp__seed{int(seed):02d}"),
+            output_dir=str(root / "runs" / f"{parameterization}__seed{int(seed):02d}"),
             bank=str(bank),
             config_path=str(config_path),
             updates=int(config["training"]["updates"]),
@@ -364,6 +402,9 @@ def _scalar(values: Sequence[float]) -> dict[str, float]:
 
 
 def _summarize(root: Path, specs: Sequence[WorkerSpec]) -> dict[str, Any]:
+    if not specs:
+        raise ValueError("cannot summarize an empty MLP-retention campaign")
+    config = _load_config(Path(specs[0].config_path))
     results = [
         strict_json_load(Path(spec.output_dir) / "result.json")
         for spec in specs
@@ -373,7 +414,7 @@ def _summarize(root: Path, specs: Sequence[WorkerSpec]) -> dict[str, Any]:
     finite = [r for r in results if r["task_evaluation"].get("status") == "finite"]
     summary: dict[str, Any] = {
         "schema_version": 1,
-        "campaign_id": CAMPAIGN_ID,
+        "campaign_id": config["campaign_id"],
         "updated_at_utc": _utc_now(),
         "completed_seed_count": len(results),
         "blank_stable_seed_count": sum(
@@ -395,6 +436,8 @@ def _summarize(root: Path, specs: Sequence[WorkerSpec]) -> dict[str, Any]:
 def _launch(root: Path, config_path: Path, bank: Path, gpus: tuple[str, ...]) -> int:
     root.mkdir(parents=True, exist_ok=True)
     config = _load_config(config_path)
+    campaign_id = str(config["campaign_id"])
+    definition = EXPERIMENTS[campaign_id]
     repo = Path(__file__).resolve().parents[2]
     dirty = subprocess.run(
         ["git", "status", "--porcelain"],
@@ -404,7 +447,7 @@ def _launch(root: Path, config_path: Path, bank: Path, gpus: tuple[str, ...]) ->
         check=True,
     ).stdout.strip()
     if dirty:
-        raise RuntimeError("direct-MLP main run requires a clean committed worktree")
+        raise RuntimeError("MLP-retention main run requires a clean committed worktree")
     inputs = root / "inputs"
     inputs.mkdir(exist_ok=True)
     shutil.copy2(config_path, inputs / "config.json")
@@ -412,7 +455,7 @@ def _launch(root: Path, config_path: Path, bank: Path, gpus: tuple[str, ...]) ->
         root / "campaign_identity.json",
         {
             "schema_version": 1,
-            "campaign_id": CAMPAIGN_ID,
+            "campaign_id": campaign_id,
             "created_at_utc": _utc_now(),
             "git_commit": subprocess.run(
                 ["git", "rev-parse", "HEAD"],
@@ -426,8 +469,18 @@ def _launch(root: Path, config_path: Path, bank: Path, gpus: tuple[str, ...]) ->
             "bank_sha256": sha256_file(bank),
             "physical_gpus": list(gpus),
             "scientific_contract": {
-                "changed_only": "retention_parameterization",
-                "equation": "lambda(h) = base_lambda + MLP(h)",
+                "changed_only": ["retention_parameterization"]
+                + (
+                    ["retention_mlp_learning_rate"]
+                    if "retention_mlp_learning_rate" in config["training"]
+                    else []
+                )
+                + (
+                    ["exponent_tanh_scale"]
+                    if "exponent_tanh_scale" in config["fixed_architecture"]
+                    else []
+                ),
+                "equation": definition["equation"],
                 "paired_task_and_rp_streams": True,
                 "noise": "disabled",
             },
@@ -484,7 +537,9 @@ def _launch(root: Path, config_path: Path, bank: Path, gpus: tuple[str, ...]) ->
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stage", choices=("main", "worker", "status"), required=True)
+    parser.add_argument(
+        "--stage", choices=("pilot", "main", "worker", "status"), required=True
+    )
     parser.add_argument("--root", required=True)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--bank", required=True)
@@ -497,6 +552,18 @@ def main() -> int:
     bank = Path(args.bank).resolve(strict=True)
     config = _load_config(config_path)
     specs = _specs(root, config_path, bank)
+    if args.stage == "pilot":
+        parameterization = config["fixed_architecture"]["retention_parameterization"]
+        spec = WorkerSpec(
+            model_seed=0,
+            output_dir=str(root / "pilot" / f"{parameterization}__seed00"),
+            bank=str(bank),
+            config_path=str(config_path),
+            updates=100,
+            batch_size=int(config["training"]["batch_size"]),
+        )
+        run_worker(spec, args.device)
+        return 0
     if args.stage == "status":
         print(json.dumps(_summarize(root, specs), indent=2, sort_keys=True))
         return 0

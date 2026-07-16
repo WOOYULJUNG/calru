@@ -66,6 +66,31 @@ def test_direct_residual_mlp_starts_at_base_and_is_not_amplitude_bounded() -> No
     assert torch.allclose(shifted, rec.lam_mag().expand_as(shifted) + 0.2)
 
 
+def test_power_tanh_mlp_is_bounded_neutral_and_expansive() -> None:
+    rec = recurrence(
+        build_state_dependent_model(
+            "recurrent",
+            model_seed=3,
+            retention_parameterization="power_tanh_mlp",
+            power_tanh_scale=1.5,
+        )
+    )
+    states = torch.randn(6, 52)
+    initial = rec.state_dependent_lambda(states)
+    assert torch.allclose(initial, rec.lam_mag().expand_as(initial))
+    with torch.no_grad():
+        neutral_bias = torch.atanh(torch.tensor(-1.0 / 1.5))
+        rec.retention_gate[2].bias.fill_(neutral_bias)
+    neutral = rec.state_dependent_lambda(states)
+    assert torch.allclose(neutral, torch.ones_like(neutral))
+    with torch.no_grad():
+        rec.retention_gate[2].bias.fill_(-10.0)
+    expansive = rec.state_dependent_lambda(states)
+    assert bool((expansive > 1.0).all())
+    expected_upper = rec.lam_mag().pow(-0.5).expand_as(expansive)
+    assert bool((expansive <= expected_upper + 1.0e-6).all())
+
+
 def test_explicit_gate_output_initializations_are_seeded_and_bounded() -> None:
     kwargs = {
         "model_seed": 13,

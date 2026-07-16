@@ -46,10 +46,15 @@ WRITER_KINDS: tuple[WriterKind, ...] = (
 )
 RetentionMode = Literal["gradient_only", "hybrid_rp"]
 RETENTION_MODES: tuple[RetentionMode, ...] = ("gradient_only", "hybrid_rp")
-RetentionParameterization = Literal["exp_tanh", "direct_residual_mlp"]
+RetentionParameterization = Literal[
+    "exp_tanh",
+    "direct_residual_mlp",
+    "power_tanh_mlp",
+]
 RETENTION_PARAMETERIZATIONS: tuple[RetentionParameterization, ...] = (
     "exp_tanh",
     "direct_residual_mlp",
+    "power_tanh_mlp",
 )
 
 
@@ -76,6 +81,7 @@ class StateDependentRetentionRec(PANNonlinearWriterRec):
         gate_output_weight_std: float = 0.0,
         gate_output_bias: float = 0.0,
         retention_parameterization: RetentionParameterization = "exp_tanh",
+        power_tanh_scale: float = 1.5,
     ) -> None:
         if writer_kind not in WRITER_KINDS:
             raise ValueError(f"unknown writer kind: {writer_kind}")
@@ -95,6 +101,8 @@ class StateDependentRetentionRec(PANNonlinearWriterRec):
             raise ValueError("gate_output_weight_std must be finite and nonnegative")
         if not math.isfinite(float(gate_output_bias)):
             raise ValueError("gate_output_bias must be finite")
+        if not math.isfinite(float(power_tanh_scale)) or float(power_tanh_scale) <= 1.0:
+            raise ValueError("power_tanh_scale must be finite and greater than one")
 
         super().__init__(
             input_dim=int(source.input_dim),
@@ -116,6 +124,7 @@ class StateDependentRetentionRec(PANNonlinearWriterRec):
         self.retention_parameterization: RetentionParameterization = (
             retention_parameterization
         )
+        self.power_tanh_scale = float(power_tanh_scale)
 
         with torch.no_grad():
             self.theta.copy_(source.theta)
@@ -180,6 +189,11 @@ class StateDependentRetentionRec(PANNonlinearWriterRec):
         base = self.lam_mag().to(dtype=state.dtype, device=state.device)
         if self.retention_parameterization == "direct_residual_mlp":
             return base + self.retention_gate(state)
+        if self.retention_parameterization == "power_tanh_mlp":
+            exponent = 1.0 + self.power_tanh_scale * torch.tanh(
+                self.retention_gate(state)
+            )
+            return torch.exp(exponent * torch.log(base))
         log_modulation = self.max_log_modulation * torch.tanh(
             self.retention_gate(state)
         )
@@ -221,6 +235,7 @@ def build_state_dependent_model(
     gate_output_weight_std: float = 0.0,
     gate_output_bias: float = 0.0,
     retention_parameterization: RetentionParameterization = "exp_tanh",
+    power_tanh_scale: float = 1.5,
 ) -> V4Model:
     """Build a paired width-52 model whose only mechanism change is writer form."""
 
@@ -248,6 +263,7 @@ def build_state_dependent_model(
         gate_output_weight_std=gate_output_weight_std,
         gate_output_bias=gate_output_bias,
         retention_parameterization=retention_parameterization,
+        power_tanh_scale=power_tanh_scale,
     )
     model.core.blocks[0].rec = replacement
     return model
