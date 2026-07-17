@@ -15,7 +15,7 @@
 | `fig_B_blank_curves` | blank horizon에 따라 기억이 어떻게 변하는가? | `blank_metrics.csv` |
 | `fig_C_geometry` | fiber, local rank, PCA PR은 어떤가? | `geometry_metrics.csv` |
 | `fig_D_dynamics` | tangent와 sampled hidden-normal gain은 어떤가? | `dynamics_metrics.csv` |
-| `fig_E_endpoint_pca` | transported hidden atlas의 PCA 모양은 어떤가? | checkpoint-derived NPZ |
+| `fig_E_endpoint_pca` | 1,024점 transported hidden atlas가 PC1–3에서 어떤 3D 구조를 이루는가? | frozen bank와 checkpoint 재계산 |
 | `fig_F_sampled_normal_recovery` | 무작위 hidden-normal kick에서 복귀하는가? | `dynamics_metrics.csv`와 per-run NPZ |
 | `fig_G_topology_radial_recovery` | ring/torus/sphere의 radius 방향으로 복귀하는가? | `topology_radial_metrics.csv`와 per-run JSON |
 

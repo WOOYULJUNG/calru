@@ -97,8 +97,8 @@
       "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
       "source": "figures/fig_A_all_models_task_and_blank.pdf",
       "destination": "paper/figures/topology/model_comparison/fig_A_task_and_blank.pdf",
-      "bytes": 39486,
-      "sha256": "0aa3cc2455337ec32932214bffa738178e2ea192d71ea9e35e8c5d986a5b02ff"
+      "bytes": 39427,
+      "sha256": "73c00c53eb53e092be85edfe5035cb12e282d38c4c278714a336f3fecfbdd831"
     },
     {
       "group": "topology_all_models_v1",
@@ -115,8 +115,8 @@
       "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
       "source": "figures/fig_B_all_models_blank_curves.pdf",
       "destination": "paper/figures/topology/model_comparison/fig_B_blank_curves.pdf",
-      "bytes": 21382,
-      "sha256": "f00f72eea89659ec26dd429cf547b940a08fc711424c0a0a491ff0661671b182"
+      "bytes": 21323,
+      "sha256": "bc5e5c339bf5c3b345b9ce4524a7b9a8dac45f7d760e0682367c2254918f36ba"
     },
     {
       "group": "topology_all_models_v1",
@@ -133,8 +133,8 @@
       "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
       "source": "figures/fig_C_all_models_geometry.pdf",
       "destination": "paper/figures/topology/model_comparison/fig_C_geometry.pdf",
-      "bytes": 39844,
-      "sha256": "d7f8bea008e7ee07722863096a08461b070dc4eb4456ad1002b9a997ec961aa2"
+      "bytes": 39785,
+      "sha256": "73df2eed9ba2c37512ae4ecc242527f0ad0cf5e49c0a51e88a4f1b00ad9428c5"
     },
     {
       "group": "topology_all_models_v1",
@@ -151,8 +151,8 @@
       "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
       "source": "figures/fig_D_all_models_dynamics.pdf",
       "destination": "paper/figures/topology/model_comparison/fig_D_dynamics.pdf",
-      "bytes": 51895,
-      "sha256": "270b98e86e6b68ad09a56b70579096cef4981f8fbead0ba154de0ff6a62034ec"
+      "bytes": 51836,
+      "sha256": "37a186c234c712b8f8f7bea83d83afc2e75d3838396b1eabb2d77a62b80550e8"
     },
     {
       "group": "topology_all_models_v1",
@@ -160,8 +160,8 @@
       "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
       "source": "figures/fig_E_all_models_endpoint_pca.png",
       "destination": "paper/figures/topology/model_comparison/fig_E_endpoint_pca.png",
-      "bytes": 1222026,
-      "sha256": "054018ac490f2485ea57b65dadf4e2e7aec03fcebfac3faaa424beab1a8e0efa"
+      "bytes": 2095602,
+      "sha256": "24da22760a027413047d51cd31219e971226dd2e1ed66cccd6388ba25a521df4"
     },
     {
       "group": "topology_all_models_v1",
@@ -169,8 +169,8 @@
       "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
       "source": "figures/fig_E_all_models_endpoint_pca.pdf",
       "destination": "paper/figures/topology/model_comparison/fig_E_endpoint_pca.pdf",
-      "bytes": 739294,
-      "sha256": "93e66067ee8c58ec4e94179c99b7e418449501bd55359681c7994fd399105d17"
+      "bytes": 1398445,
+      "sha256": "2def3af7114c8d7606f1668b1b5eb0f475c35476c0558036ffb05c79f2006a0b"
     },
     {
       "group": "topology_all_models_v1",
@@ -187,8 +187,8 @@
       "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
       "source": "figures/fig_F_all_models_normal_recovery.pdf",
       "destination": "paper/figures/topology/model_comparison/fig_F_sampled_normal_recovery.pdf",
-      "bytes": 22303,
-      "sha256": "b87af4cb15433c6a8c3f40779124815abd196ba4a4ef8261409b2323554d3177"
+      "bytes": 22244,
+      "sha256": "70891562caaf496aa2aea7b04914ff3425eca0c34564055a23034b3561fcba76"
     },
     {
       "group": "topology_all_models_v1",
@@ -205,8 +205,8 @@
       "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
       "source": "figures/fig_G_all_models_topology_radial_recovery.pdf",
       "destination": "paper/figures/topology/model_comparison/fig_G_topology_radial_recovery.pdf",
-      "bytes": 23861,
-      "sha256": "85d05d99b5e8f0c2b1617143f0a47b7034fead7ea071a5f9dc7cc3b66a614e90"
+      "bytes": 23802,
+      "sha256": "4b52299cd13e1d3d1393f74e1d23dbcfa9e16d17a18acd571bf790b904e7a588"
     },
     {
       "group": "persistent_topology_v1",

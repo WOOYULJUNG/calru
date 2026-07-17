@@ -12,6 +12,17 @@ from typing import Any, Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
+
+from repro.sagodi_protocol.artifacts import strict_json_load
+
+from .topology_analysis_common import (
+    RunRecord,
+    forward_endpoint_states,
+    load_analysis_bank,
+    load_model,
+)
 
 
 MODELS = ("rnn", "gru", "lstm", "calru", "hc")
@@ -399,7 +410,16 @@ def _save(fig: plt.Figure, figures: Path, stem: str) -> list[str]:
     outputs = []
     for suffix in ("png", "pdf"):
         path = figures / f"{stem}.{suffix}"
-        fig.savefig(path, dpi=240, bbox_inches="tight")
+        metadata = (
+            {
+                "Creator": "WOOYULJUNG/calru",
+                "CreationDate": None,
+                "ModDate": None,
+            }
+            if suffix == "pdf"
+            else None
+        )
+        fig.savefig(path, dpi=240, bbox_inches="tight", metadata=metadata)
         outputs.append(path.name)
     plt.close(fig)
     return outputs
@@ -669,13 +689,140 @@ def figure_dynamics(
     return _save(fig, figures, "fig_D_all_models_dynamics")
 
 
+def _record_for_task(task_row: dict[str, str], analysis_root: Path) -> RunRecord:
+    launcher = strict_json_load(analysis_root / "analysis_launcher_manifest.json")
+    run_dir = (
+        Path(launcher["run_root"]).expanduser().resolve(strict=True)
+        / task_row["job_id"]
+    )
+    manifest = strict_json_load(run_dir / "manifest.json")
+    result = strict_json_load(run_dir / "result.json")
+    return RunRecord(
+        run_dir=run_dir,
+        job_id=task_row["job_id"],
+        model_id=str(result["model_id"]),
+        topology=str(result["topology"]),
+        seed=int(result["replicate_seed"]),
+        manifest=manifest,
+        result=result,
+    )
+
+
+def _orient_pca(score: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """Make SVD sign choices deterministic for stable paper figures."""
+
+    oriented = np.array(score, copy=True)
+    for component in range(oriented.shape[1]):
+        loading = right[component]
+        pivot = int(np.argmax(np.abs(loading)))
+        if loading[pivot] < 0:
+            oriented[:, component] *= -1.0
+    return oriented
+
+
+def _full_endpoint_pca(
+    task_row: dict[str, str],
+    analysis_root: Path,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    bank = load_analysis_bank(analysis_root / "banks", task_row["topology"])
+    record = _record_for_task(task_row, analysis_root)
+    model, _ = load_model(record, device)
+    initial = torch.as_tensor(bank["initializer_memory"], device=device)
+    inputs = torch.as_tensor(bank["transport_inputs"], device=device)
+    endpoint_state, _ = forward_endpoint_states(
+        model,
+        inputs,
+        initial,
+        chunk_size=128,
+    )
+    states = endpoint_state.cpu().numpy().astype(np.float64)
+    centered = states - states.mean(axis=0, keepdims=True)
+    _, _, right = np.linalg.svd(centered, full_matrices=False)
+    score = _orient_pca(centered @ right[:3].T, right[:3])
+    latent = bank["transport_endpoint_latent"].astype(np.float64)
+    return score, latent
+
+
+def _sphere_neighbor_edges(latent: np.ndarray, neighbors: int = 3) -> np.ndarray:
+    cosine = np.clip(latent @ latent.T, -1.0, 1.0)
+    np.fill_diagonal(cosine, -np.inf)
+    nearest = np.argpartition(-cosine, kth=neighbors - 1, axis=1)[:, :neighbors]
+    edges = {
+        tuple(sorted((index, int(neighbor))))
+        for index, row in enumerate(nearest)
+        for neighbor in row
+    }
+    return np.asarray(sorted(edges), dtype=np.int64)
+
+
+def _draw_atlas_structure(
+    axis,
+    topology: str,
+    score: np.ndarray,
+    latent: np.ndarray,
+) -> None:
+    line_color = "#3C4858"
+    if topology == "s1":
+        order = np.argsort(latent[:, 0])
+        closed = np.concatenate((order, order[:1]))
+        axis.plot(
+            score[closed, 0],
+            score[closed, 1],
+            score[closed, 2],
+            color=line_color,
+            linewidth=0.65,
+            alpha=0.55,
+        )
+        return
+    if topology == "t2":
+        side = int(round(math.sqrt(score.shape[0])))
+        if side * side != score.shape[0]:
+            raise ValueError("T2 display atlas must be a square grid")
+        grid = score.reshape(side, side, 3)
+        stride = max(1, side // 16)
+        for index in range(0, side, stride):
+            first = np.concatenate((grid[index], grid[index, :1]), axis=0)
+            second = np.concatenate((grid[:, index], grid[:1, index]), axis=0)
+            axis.plot(*first.T, color=line_color, linewidth=0.38, alpha=0.35)
+            axis.plot(*second.T, color=line_color, linewidth=0.38, alpha=0.35)
+        return
+    edges = _sphere_neighbor_edges(latent)
+    segments = score[edges]
+    axis.add_collection3d(
+        Line3DCollection(
+            segments,
+            colors=line_color,
+            linewidths=0.22,
+            alpha=0.20,
+        )
+    )
+
+
+def _equalize_3d(axis, score: np.ndarray) -> None:
+    lower = score.min(axis=0)
+    upper = score.max(axis=0)
+    center = 0.5 * (lower + upper)
+    radius = max(0.5 * float(np.max(upper - lower)), np.finfo(float).eps)
+    axis.set_xlim(center[0] - radius, center[0] + radius)
+    axis.set_ylim(center[1] - radius, center[1] + radius)
+    axis.set_zlim(center[2] - radius, center[2] + radius)
+    axis.set_box_aspect((1, 1, 1))
+
+
 def figure_pca(
     task_rows: list[dict[str, str]],
     baseline: Path,
     selected: Path,
     figures: Path,
+    device: torch.device,
 ) -> list[str]:
-    fig, axes = plt.subplots(3, 5, figsize=(15.0, 8.8))
+    fig, axes = plt.subplots(
+        3,
+        5,
+        figsize=(16.0, 10.0),
+        subplot_kw={"projection": "3d"},
+    )
     for row_index, topology in enumerate(TOPOLOGIES):
         for column, model in enumerate(MODELS):
             axis = axes[row_index, column]
@@ -687,51 +834,69 @@ def figure_pca(
                 and int(row["seed"]) == 10
             )
             root = _analysis_for_row(task_row, baseline, selected)
-            with np.load(
-                root / "geometry" / "runs" / f"{task_row['job_id']}.npz",
-                allow_pickle=False,
-            ) as archive:
-                score = np.array(archive["endpoint_pca_score"], copy=True)
-                latent = np.array(archive["endpoint_latent"], copy=True)
+            score, latent = _full_endpoint_pca(task_row, root, device)
             color = (
                 latent[:, 0]
                 if topology in {"s1", "t2"}
                 else np.arctan2(latent[:, 1], latent[:, 0])
             )
-            axis.scatter(
+            _draw_atlas_structure(axis, topology, score, latent)
+            axis.scatter3D(
                 score[:, 0],
                 score[:, 1],
+                score[:, 2],
                 c=color,
                 cmap="twilight",
-                s=5.5,
-                alpha=0.75,
+                s=3.2,
+                alpha=0.68,
+                depthshade=False,
                 rasterized=True,
             )
             if row_index == 0:
                 axis.set_title(LABELS[model])
             if not _bool(task_row["task_success"]):
-                for spine in axis.spines.values():
-                    spine.set_edgecolor("#B33A3A")
-                    spine.set_linewidth(1.3)
+                axis.text2D(
+                    0.5,
+                    0.99,
+                    "failed task gate",
+                    transform=axis.transAxes,
+                    ha="center",
+                    va="top",
+                    fontsize=7,
+                    color="#B33A3A",
+                )
             if column == 0:
-                axis.set_ylabel(TOPOLOGY_LABELS[topology], fontsize=12)
+                axis.text2D(
+                    -0.12,
+                    0.5,
+                    TOPOLOGY_LABELS[topology],
+                    transform=axis.transAxes,
+                    rotation=90,
+                    ha="center",
+                    va="center",
+                    fontsize=12,
+                )
+            _equalize_3d(axis, score)
+            axis.view_init(elev=22, azim=-55)
             axis.set_xticks([])
             axis.set_yticks([])
-    fig.suptitle("Transported endpoint hidden-state PCA · representative seed 10")
+            axis.set_zticks([])
+            axis.set_xlabel("")
+            axis.set_ylabel("")
+            axis.set_zlabel("")
+            axis.grid(False)
+            for pane in (axis.xaxis.pane, axis.yaxis.pane, axis.zaxis.pane):
+                pane.set_alpha(0.0)
+            axis.set_axis_off()
+    fig.suptitle(
+        "Transported endpoint hidden-state PCA (PC1–PC3) · 1,024-point atlas · seed 10"
+    )
     fig.text(
         0.5,
         0.015,
-        "Color denotes intrinsic position (first torus angle for T²). Shape is diagnostic, not a proof of topology.",
+        "Lines show atlas adjacency (32×32 periodic grid for T²); color denotes intrinsic position. Shape is diagnostic, not a proof of topology.",
         ha="center",
         fontsize=9,
-    )
-    fig.text(
-        0.99,
-        0.015,
-        "red frame = failed task gate",
-        ha="right",
-        fontsize=8,
-        color="#B33A3A",
     )
     fig.tight_layout(rect=(0, 0.04, 1, 0.95))
     return _save(fig, figures, "fig_E_all_models_endpoint_pca")
@@ -889,6 +1054,7 @@ def compare(args: argparse.Namespace) -> None:
         else None
     )
     output = args.output.expanduser().resolve()
+    device = torch.device(args.device)
     figures = output / "figures"
     figures.mkdir(parents=True, exist_ok=True)
 
@@ -939,7 +1105,7 @@ def compare(args: argparse.Namespace) -> None:
         *figure_blank_curves(blank, figures),
         *figure_geometry(seed_rows, figures),
         *figure_dynamics(seed_rows, figures),
-        *figure_pca(task, baseline, selected, figures),
+        *figure_pca(task, baseline, selected, figures, device),
         *figure_recovery(dynamics, baseline, selected, figures),
         *figure_topology_radial_recovery(
             topology_normal,
@@ -985,6 +1151,11 @@ def main() -> None:
         ),
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--device",
+        default="cuda:0" if torch.cuda.is_available() else "cpu",
+        help="Device used to reconstruct the full 1,024-point endpoint atlas.",
+    )
     compare(parser.parse_args())
 
 
