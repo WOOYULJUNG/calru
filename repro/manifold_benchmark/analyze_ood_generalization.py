@@ -282,6 +282,34 @@ def _forward_condition(
     return metrics, arrays
 
 
+def _post_blank_horizons(
+    config: dict[str, Any], condition_id: str
+) -> list[int]:
+    default = [
+        int(value) for value in config.get("post_blank_horizons", [0])
+    ]
+    overrides = config.get("post_blank_horizons_by_condition", {})
+    requested = [
+        int(value) for value in overrides.get(str(condition_id), default)
+    ]
+    if not requested or any(value < 0 for value in requested):
+        raise ValueError("post-blank horizons must be nonempty and non-negative")
+    return sorted(set(requested))
+
+
+def _all_post_blank_horizons(config: dict[str, Any]) -> list[int]:
+    values = {
+        int(value) for value in config.get("post_blank_horizons", [0])
+    }
+    for requested in config.get(
+        "post_blank_horizons_by_condition", {}
+    ).values():
+        values.update(int(value) for value in requested)
+    if not values or any(value < 0 for value in values):
+        raise ValueError("post-blank horizons must be nonempty and non-negative")
+    return sorted(values)
+
+
 def _analyze_target(
     target: Target,
     *,
@@ -306,9 +334,16 @@ def _analyze_target(
             model,
             target.record.topology,
             bank,
-            [int(value) for value in config["post_blank_horizons"]],
+            _post_blank_horizons(config, condition_id),
             device,
         )
+        for horizon in _all_post_blank_horizons(config):
+            metrics.setdefault(
+                f"post_blank_{horizon}_mean_error_radians", None
+            )
+            metrics.setdefault(
+                f"post_blank_{horizon}_median_error_radians", None
+            )
         rows.append(
             {
                 "condition_id": condition_id,
@@ -403,7 +438,7 @@ def _summary(rows: list[dict[str, Any]], config: dict[str, Any]) -> list[dict[st
         "hold_baseline_mean_error_radians",
         *[
             f"post_blank_{horizon}_{stat}_error_radians"
-            for horizon in config["post_blank_horizons"]
+            for horizon in _all_post_blank_horizons(config)
             for stat in ("mean", "median")
         ],
     ]
@@ -614,9 +649,14 @@ def _write_results_report(
     }
     condition_ids = {str(row["id"]) for row in config["conditions"]}
     temporal_v2 = "temporal_x16" in condition_ids
+    calibrated_v3 = "calibration_policy" in config
     elapsed_id = "temporal_x16" if temporal_v2 else "length_h2048"
     path_id = "path_h2048" if temporal_v2 else "length_h2048"
-    report_version = "v2" if temporal_v2 else "v1"
+    report_version = (
+        "calibration v3"
+        if calibrated_v3
+        else ("v2" if temporal_v2 else "v1")
+    )
 
     lines = [
         f"# Topology OOD generalization {report_version} — 결과",
@@ -645,6 +685,22 @@ def _write_results_report(
                 f"{target.record.seed} | {str(target.task_success).lower()} | "
                 f"{kind} |"
             )
+
+    if calibrated_v3:
+        lines.extend(
+            [
+                "",
+                "이 파일은 frozen checkpoint 평가의 실행 기록이다. "
+                "ID-qualified seed만 사용하는 baseline 생존 판정과 최종 "
+                "강도 선택은 `CALIBRATION_RESULTS_ko.md` 및 "
+                "`OOD_CALIBRATION_DECISIONS.json`에서 생성한다.",
+                "",
+            ]
+        )
+        (output / "RESULTS_ko.md").write_text(
+            "\n".join(lines), encoding="utf-8"
+        )
+        return
 
     lines.extend(
         [

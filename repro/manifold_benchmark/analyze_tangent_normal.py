@@ -268,6 +268,45 @@ def main() -> None:
     parser.add_argument("--analysis-root", type=Path, required=True)
     parser.add_argument("--bank-root", type=Path, required=True)
     parser.add_argument("--job-id")
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        help="Analyze only these model ids (for example: rnn gru lstm).",
+    )
+    parser.add_argument(
+        "--anchors",
+        type=int,
+        help="Override quick_dynamics.anchors for a calibrated perturbation run.",
+    )
+    parser.add_argument(
+        "--random-normal-directions",
+        type=int,
+        help="Override quick_dynamics.random_normal_directions.",
+    )
+    parser.add_argument(
+        "--kick-radii-relative",
+        type=float,
+        nargs="+",
+        help="Override quick_dynamics.kick_radii_relative.",
+    )
+    parser.add_argument(
+        "--recovery-horizons",
+        type=int,
+        nargs="+",
+        help="Override quick_dynamics.recovery_horizons.",
+    )
+    parser.add_argument(
+        "--worker-index",
+        type=int,
+        default=0,
+        help="Zero-based deterministic record shard.",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help="Number of deterministic record shards.",
+    )
     parser.add_argument("--aggregate-only", action="store_true")
     parser.add_argument(
         "--config", type=Path, default=Path(__file__).with_name("topology_analysis_v1.json")
@@ -275,6 +314,23 @@ def main() -> None:
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
     config = load_analysis_config(args.config.expanduser().resolve(strict=True))
+    dynamics = config["quick_dynamics"]
+    if args.anchors is not None:
+        dynamics["anchors"] = int(args.anchors)
+    if args.random_normal_directions is not None:
+        dynamics["random_normal_directions"] = int(args.random_normal_directions)
+    if args.kick_radii_relative is not None:
+        dynamics["kick_radii_relative"] = [
+            float(value) for value in args.kick_radii_relative
+        ]
+    if args.recovery_horizons is not None:
+        dynamics["recovery_horizons"] = [
+            int(value) for value in args.recovery_horizons
+        ]
+    if args.num_workers < 1:
+        raise ValueError("--num-workers must be positive")
+    if not 0 <= args.worker_index < args.num_workers:
+        raise ValueError("--worker-index must be in [0, --num-workers)")
     analysis_root = args.analysis_root.expanduser().resolve(strict=True)
     if args.aggregate_only:
         aggregate(analysis_root)
@@ -285,10 +341,24 @@ def main() -> None:
         raise RuntimeError("dynamics analysis requires all completed runs")
     if not bool(config["execution"].get("analyze_structure_for_all_runs", False)):
         records = [record for record in records if success.get(record.job_id, False)]
+    if args.models:
+        requested_models = set(args.models)
+        unknown_models = requested_models.difference(
+            config["expected_training"]["models"]
+        )
+        if unknown_models:
+            raise ValueError(f"unknown --models: {sorted(unknown_models)}")
+        records = [record for record in records if record.model_id in requested_models]
     if args.job_id:
         records = [record for record in records if record.job_id == args.job_id]
         if not records:
             raise ValueError("job is missing or excluded by the analysis contract")
+    elif args.num_workers > 1:
+        records = [
+            record
+            for index, record in enumerate(records)
+            if index % args.num_workers == args.worker_index
+        ]
     for record in records:
         analyze_record(
             record,

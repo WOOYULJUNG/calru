@@ -364,7 +364,7 @@
     },
     {
       "id": "topology_ood_banks_v2",
-      "status": "current_paired_ood_banks",
+      "status": "auxiliary_same_path_temporal_dilation_banks",
       "source_root": "manifold_topology_ood_banks_v2-20260717b",
       "generator": "repro/manifold_benchmark/build_ood_banks.py",
       "files": [
@@ -380,7 +380,7 @@
     },
     {
       "id": "topology_ood_v2",
-      "status": "current_zero_retraining_ood",
+      "status": "auxiliary_same_path_temporal_dilation",
       "source_root": "manifold_topology_ood_v2-20260717",
       "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
       "files": [
@@ -459,6 +459,150 @@
         {
           "source": "figures/fig_O5_combined_and_postblank.pdf",
           "destination": "paper/figures/topology/ood_v2/fig_O5_combined_and_postblank.pdf"
+        }
+      ]
+    },
+    {
+      "id": "topology_ood_banks_v3",
+      "status": "current_calibrated_original_ood_banks",
+      "source_root": "manifold_topology_ood_banks_calibrated_v3-20260717",
+      "generator": "repro/manifold_benchmark/build_ood_banks.py",
+      "files": [
+        {
+          "source": "OOD_BANKS_READY.json",
+          "destination": "paper/evidence/topology/ood_v3/banks_completion.json"
+        },
+        {
+          "source": "ood_banks_manifest.json",
+          "destination": "paper/evidence/topology/ood_v3/banks_manifest.json"
+        }
+      ]
+    },
+    {
+      "id": "topology_ood_v3",
+      "status": "current_calibrated_zero_retraining_ood",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "files": [
+        {
+          "source": "OOD_ANALYSIS_COMPLETED.json",
+          "destination": "paper/evidence/topology/ood_v3/completion.json"
+        },
+        {
+          "source": "CALIBRATION_RESULTS_ko.md",
+          "destination": "paper/evidence/topology/ood_v3/RESULTS_ko.md"
+        },
+        {
+          "source": "OOD_CALIBRATION_DECISIONS.json",
+          "destination": "paper/evidence/topology/ood_v3/calibration_decisions.json"
+        },
+        {
+          "source": "ood_checkpoint_provenance.csv",
+          "destination": "paper/evidence/topology/ood_v3/checkpoint_provenance.csv"
+        },
+        {
+          "source": "ood_seed_metrics.csv",
+          "destination": "paper/evidence/topology/ood_v3/seed_metrics.csv"
+        },
+        {
+          "source": "ood_model_survival.csv",
+          "destination": "paper/evidence/topology/ood_v3/model_survival.csv"
+        },
+        {
+          "source": "ood_condition_survival.csv",
+          "destination": "paper/evidence/topology/ood_v3/condition_survival.csv"
+        },
+        {
+          "source": "figures/fig_C1_length_calibration.png",
+          "destination": "paper/figures/topology/ood_v3/fig_C1_length_calibration.png"
+        },
+        {
+          "source": "figures/fig_C1_length_calibration.pdf",
+          "destination": "paper/figures/topology/ood_v3/fig_C1_length_calibration.pdf"
+        },
+        {
+          "source": "figures/fig_C2_velocity_calibration.png",
+          "destination": "paper/figures/topology/ood_v3/fig_C2_velocity_calibration.png"
+        },
+        {
+          "source": "figures/fig_C2_velocity_calibration.pdf",
+          "destination": "paper/figures/topology/ood_v3/fig_C2_velocity_calibration.pdf"
+        },
+        {
+          "source": "figures/fig_C3_correlation_calibration.png",
+          "destination": "paper/figures/topology/ood_v3/fig_C3_correlation_calibration.png"
+        },
+        {
+          "source": "figures/fig_C3_correlation_calibration.pdf",
+          "destination": "paper/figures/topology/ood_v3/fig_C3_correlation_calibration.pdf"
+        },
+        {
+          "source": "figures/fig_C4_dwell_calibration.png",
+          "destination": "paper/figures/topology/ood_v3/fig_C4_dwell_calibration.png"
+        },
+        {
+          "source": "figures/fig_C4_dwell_calibration.pdf",
+          "destination": "paper/figures/topology/ood_v3/fig_C4_dwell_calibration.pdf"
+        },
+        {
+          "source": "figures/fig_C5_blank_calibration.png",
+          "destination": "paper/figures/topology/ood_v3/fig_C5_blank_calibration.png"
+        },
+        {
+          "source": "figures/fig_C5_blank_calibration.pdf",
+          "destination": "paper/figures/topology/ood_v3/fig_C5_blank_calibration.pdf"
+        }
+      ]
+    },
+    {
+      "id": "topology_perturbation_v1",
+      "status": "current_calibrated_finite_normal_kick",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "files": [
+        {
+          "source": "PERTURBATION_ANALYSIS_COMPLETED.json",
+          "destination": "paper/evidence/topology/perturbation_v1/completion.json"
+        },
+        {
+          "source": "PERTURBATION_CALIBRATION_RESULTS_ko.md",
+          "destination": "paper/evidence/topology/perturbation_v1/RESULTS_ko.md"
+        },
+        {
+          "source": "PERTURBATION_CALIBRATION_DECISIONS.json",
+          "destination": "paper/evidence/topology/perturbation_v1/calibration_decisions.json"
+        },
+        {
+          "source": "perturbation_model_survival.csv",
+          "destination": "paper/evidence/topology/perturbation_v1/model_survival.csv"
+        },
+        {
+          "source": "perturbation_condition_survival.csv",
+          "destination": "paper/evidence/topology/perturbation_v1/condition_survival.csv"
+        },
+        {
+          "source": "baseline/dynamics/dynamics_metrics.csv",
+          "destination": "paper/evidence/topology/perturbation_v1/baseline_seed_metrics.csv"
+        },
+        {
+          "source": "calru/dynamics/dynamics_metrics.csv",
+          "destination": "paper/evidence/topology/perturbation_v1/calru_seed_metrics.csv"
+        },
+        {
+          "source": "figures/fig_C6_normal_kick_strength.png",
+          "destination": "paper/figures/topology/ood_v3/fig_C6_normal_kick_strength.png"
+        },
+        {
+          "source": "figures/fig_C6_normal_kick_strength.pdf",
+          "destination": "paper/figures/topology/ood_v3/fig_C6_normal_kick_strength.pdf"
+        },
+        {
+          "source": "figures/fig_C7_normal_kick_horizon.png",
+          "destination": "paper/figures/topology/ood_v3/fig_C7_normal_kick_horizon.png"
+        },
+        {
+          "source": "figures/fig_C7_normal_kick_horizon.pdf",
+          "destination": "paper/figures/topology/ood_v3/fig_C7_normal_kick_horizon.pdf"
         }
       ]
     }

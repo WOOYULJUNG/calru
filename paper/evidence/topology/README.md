@@ -1,7 +1,8 @@
 # Topology evidence
 
-현재 topology 결과는 `all_models_v1`, `persistence_v2`, `ood_v2`를 논문
-후보 evidence로 취급한다. `persistence_v1`과 `ood_v1`은 이전 pilot
+현재 topology 결과는 `all_models_v1`, `persistence_v2`, `ood_v3`,
+`perturbation_v1`을 논문 후보 evidence로 취급한다. `ood_v2`는 동일 path
+temporal-dilation 보조 진단이고, `persistence_v1`과 `ood_v1`은 이전 pilot
 snapshot으로 보존한다.
 
 ## `all_models_v1`
@@ -47,7 +48,49 @@ error가 가장 작은 checkpoint를 명시적인 task-failed fallback으로 사
 Persistent homology는 global topology 진단이지 normal attraction이나 smooth
 homeomorphism의 단독 증명이 아니다.
 
-## `ood_v2`
+## `ood_v3`
+
+동결된 RNN, GRU, LSTM, CA-LRU checkpoint를 재학습하지 않고 원래 계획한
+length, velocity scale, GP correlation, contiguous dwell, post-trajectory
+blank 축을 중간 강도까지 촘촘히 평가한다. 먼저 frozen ID task gate를 통과한
+seed만 OOD 분모에 포함한다. 각 모델의 seed median이 chance/no-update 기준의
+75% 이상이면 `chance_collapsed`, 아직 chance보다 낫지만 자기 ID error의
+8배를 넘으면 `severely_degraded`로 구분한다.
+
+- [`RESULTS_ko.md`](ood_v3/RESULTS_ko.md): 선택 강도와 동시 실패 경계
+- [`calibration_decisions.json`](ood_v3/calibration_decisions.json):
+  headline 대 stress-only 조건의 기계 판독 결정
+- [`model_survival.csv`](ood_v3/model_survival.csv): 모델별 seed median·range와 상태
+- [`condition_survival.csv`](ood_v3/condition_survival.csv): topology별 모든
+  eligible baseline 동시 실패 여부
+- [`seed_metrics.csv`](ood_v3/seed_metrics.csv): 36 checkpoint × 27 조건의 raw 집계
+- [`banks_manifest.json`](ood_v3/banks_manifest.json): 81개 frozen bank와 pairing audit
+
+공통 headline 최대 강도는 \(T=1536\), velocity \(2\times\), GP correlation
+\(\ell=0.5\times\)–\(4\times\), contiguous blank block 96, post-blank
+\(H=512\)다. \(T=2048\), velocity \(3\)–\(4\times\), all-blank 128,
+post-blank \(H\ge768\)은 적어도 한 topology에서 모든 eligible baseline이
+quality gate를 실패하므로 stress-only다.
+
+## `perturbation_v1`
+
+local task-tangent basis에 직교한 hidden-state 방향으로
+\(\rho=\{0.05,0.10,0.25\}\) kick을 주고 \(H\le2048\) blank recovery를
+측정한다. ID부터 실패한 seed는 제외한다.
+
+- [`RESULTS_ko.md`](perturbation_v1/RESULTS_ko.md): \(\rho=0.25,H=2048\) 비교
+- [`completion.json`](perturbation_v1/completion.json): config·code hash와
+  source analysis ID
+- [`model_survival.csv`](perturbation_v1/model_survival.csv): normal-distance
+  ratio와 same-memory error의 seed 집계
+- [`condition_survival.csv`](perturbation_v1/condition_survival.csv):
+  baseline 동시 실패 판정
+
+시험한 최대 강도에서도 모든 eligible baseline의 동시 실패는 없었다.
+Baseline은 더 강한 geometric contraction을, CA-LRU는 더 작은 same-memory
+error를 보이므로 두 지표를 함께 보고한다.
+
+## `ood_v2` (auxiliary)
 
 동결된 RNN, GRU, LSTM, CA-LRU checkpoint를 재학습하지 않고 동일한 frozen
 parent에서 만든 21개 paired 조건으로 평가한다. Primary temporal OOD는 ID의

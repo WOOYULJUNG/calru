@@ -1,0 +1,10 @@
+topology,kick_radius_relative,decision_horizon,eligible_baseline_models,eligible_baseline_count,failed_baseline_models,failed_baseline_count,universal_baseline_failure,calru_status
+s1,0.05,2048,"rnn,gru,lstm",3,,0,False,survived
+s1,0.1,2048,"rnn,gru,lstm",3,,0,False,survived
+s1,0.25,2048,"rnn,gru,lstm",3,,0,False,survived
+t2,0.05,2048,"gru,lstm",2,,0,False,survived
+t2,0.1,2048,"gru,lstm",2,,0,False,survived
+t2,0.25,2048,"gru,lstm",2,,0,False,survived
+s2,0.05,2048,lstm,1,,0,False,survived
+s2,0.1,2048,lstm,1,,0,False,survived
+s2,0.25,2048,lstm,1,,0,False,survived

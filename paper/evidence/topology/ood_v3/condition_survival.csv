@@ -1,0 +1,109 @@
+topology,condition_id,condition_axis,condition_value,condition_label,eligible_baseline_models,eligible_baseline_count,alive_baseline_count,transition_baseline_count,collapsed_baseline_count,collapsed_baseline_models,chance_collapsed_baseline_count,chance_collapsed_baseline_models,severely_degraded_baseline_count,severely_degraded_baseline_models,universal_baseline_failure,universal_baseline_chance_collapse,calru_status
+s1,id_h128,id,128,ID T=128,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,id_h128,id,128,ID T=128,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,id_h128,id,128,ID T=128,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,length_h192,length,192,T=192,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,length_h192,length,192,T=192,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,length_h192,length,192,T=192,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,length_h256,length,256,T=256,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,length_h256,length,256,T=256,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,length_h256,length,256,T=256,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,length_h384,length,384,T=384,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,length_h384,length,384,T=384,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,length_h384,length,384,T=384,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,length_h512,length,512,T=512,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,length_h512,length,512,T=512,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,length_h512,length,512,T=512,lstm,1,1,0,0,,0,,0,,False,False,transition
+s1,length_h768,length,768,T=768,"rnn,gru,lstm",3,0,3,0,,0,,0,,False,False,alive
+t2,length_h768,length,768,T=768,"gru,lstm",2,0,2,0,,0,,0,,False,False,transition
+s2,length_h768,length,768,T=768,lstm,1,1,0,0,,0,,0,,False,False,severely_degraded
+s1,length_h1024,length,1024,T=1024,"rnn,gru,lstm",3,0,3,0,,0,,0,,False,False,transition
+t2,length_h1024,length,1024,T=1024,"gru,lstm",2,0,2,0,,0,,0,,False,False,transition
+s2,length_h1024,length,1024,T=1024,lstm,1,1,0,0,,0,,0,,False,False,severely_degraded
+s1,length_h1536,length,1536,T=1536,"rnn,gru,lstm",3,0,2,1,rnn,1,rnn,0,,False,False,transition
+t2,length_h1536,length,1536,T=1536,"gru,lstm",2,0,2,0,,0,,0,,False,False,severely_degraded
+s2,length_h1536,length,1536,T=1536,lstm,1,0,1,0,,0,,0,,False,False,chance_collapsed
+s1,length_h2048,length,2048,T=2048,"rnn,gru,lstm",3,0,0,3,"rnn,gru,lstm",1,rnn,2,"gru,lstm",True,False,severely_degraded
+t2,length_h2048,length,2048,T=2048,"gru,lstm",2,0,0,2,"gru,lstm",0,,2,"gru,lstm",True,False,severely_degraded
+s2,length_h2048,length,2048,T=2048,lstm,1,0,1,0,,0,,0,,False,False,chance_collapsed
+s1,velocity_x0p5,velocity,0.5,0.5x,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,velocity_x0p5,velocity,0.5,0.5x,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,velocity_x0p5,velocity,0.5,0.5x,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,velocity_x0p75,velocity,0.75,0.75x,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,velocity_x0p75,velocity,0.75,0.75x,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,velocity_x0p75,velocity,0.75,0.75x,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,velocity_x1p25,velocity,1.25,1.25x,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,velocity_x1p25,velocity,1.25,1.25x,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,velocity_x1p25,velocity,1.25,1.25x,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,velocity_x1p5,velocity,1.5,1.5x,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,velocity_x1p5,velocity,1.5,1.5x,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,velocity_x1p5,velocity,1.5,1.5x,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,velocity_x2,velocity,2.0,2x,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,velocity_x2,velocity,2.0,2x,"gru,lstm",2,1,1,0,,0,,0,,False,False,transition
+s2,velocity_x2,velocity,2.0,2x,lstm,1,0,1,0,,0,,0,,False,False,transition
+s1,velocity_x3,velocity,3.0,3x,"rnn,gru,lstm",3,0,1,2,"gru,lstm",0,,2,"gru,lstm",False,False,severely_degraded
+t2,velocity_x3,velocity,3.0,3x,"gru,lstm",2,0,0,2,"gru,lstm",0,,2,"gru,lstm",True,False,severely_degraded
+s2,velocity_x3,velocity,3.0,3x,lstm,1,0,0,1,lstm,0,,1,lstm,True,False,severely_degraded
+s1,velocity_x4,velocity,4.0,4x,"rnn,gru,lstm",3,0,0,3,"rnn,gru,lstm",0,,3,"rnn,gru,lstm",True,False,severely_degraded
+t2,velocity_x4,velocity,4.0,4x,"gru,lstm",2,0,0,2,"gru,lstm",0,,2,"gru,lstm",True,False,severely_degraded
+s2,velocity_x4,velocity,4.0,4x,lstm,1,0,0,1,lstm,1,lstm,0,,True,True,chance_collapsed
+s1,correlation_x0p5,smoothness,0.5,ell=0.5x,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,correlation_x0p5,smoothness,0.5,ell=0.5x,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,correlation_x0p5,smoothness,0.5,ell=0.5x,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,correlation_x0p75,smoothness,0.75,ell=0.75x,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,correlation_x0p75,smoothness,0.75,ell=0.75x,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,correlation_x0p75,smoothness,0.75,ell=0.75x,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,correlation_x1p5,smoothness,1.5,ell=1.5x,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,correlation_x1p5,smoothness,1.5,ell=1.5x,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,correlation_x1p5,smoothness,1.5,ell=1.5x,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,correlation_x2,smoothness,2.0,ell=2x,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,correlation_x2,smoothness,2.0,ell=2x,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,correlation_x2,smoothness,2.0,ell=2x,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,correlation_x3,smoothness,3.0,ell=3x,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,correlation_x3,smoothness,3.0,ell=3x,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,correlation_x3,smoothness,3.0,ell=3x,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,correlation_x4,smoothness,4.0,ell=4x,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,correlation_x4,smoothness,4.0,ell=4x,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,correlation_x4,smoothness,4.0,ell=4x,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,dwell_block8,dwell,8,blank block 8,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,dwell_block8,dwell,8,blank block 8,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,dwell_block8,dwell,8,blank block 8,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,dwell_block32,dwell,32,blank block 32,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,dwell_block32,dwell,32,blank block 32,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,dwell_block32,dwell,32,blank block 32,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,dwell_block64,dwell,64,blank block 64,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,dwell_block64,dwell,64,blank block 64,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,dwell_block64,dwell,64,blank block 64,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,dwell_block96,dwell,96,blank block 96,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,dwell_block96,dwell,96,blank block 96,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,dwell_block96,dwell,96,blank block 96,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,dwell_block128,dwell,128,all blank 128,"rnn,gru,lstm",3,0,0,3,"rnn,gru,lstm",3,"rnn,gru,lstm",0,,True,True,chance_collapsed
+t2,dwell_block128,dwell,128,all blank 128,"gru,lstm",2,0,0,2,"gru,lstm",2,"gru,lstm",0,,True,True,chance_collapsed
+s2,dwell_block128,dwell,128,all blank 128,lstm,1,0,0,1,lstm,1,lstm,0,,True,True,chance_collapsed
+s1,blank_h0,blank,0,H=0,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,blank_h0,blank,0,H=0,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,blank_h0,blank,0,H=0,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,blank_h128,blank,128,H=128,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,blank_h128,blank,128,H=128,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,blank_h128,blank,128,H=128,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,blank_h256,blank,256,H=256,"rnn,gru,lstm",3,3,0,0,,0,,0,,False,False,alive
+t2,blank_h256,blank,256,H=256,"gru,lstm",2,2,0,0,,0,,0,,False,False,alive
+s2,blank_h256,blank,256,H=256,lstm,1,1,0,0,,0,,0,,False,False,alive
+s1,blank_h512,blank,512,H=512,"rnn,gru,lstm",3,1,2,0,,0,,0,,False,False,alive
+t2,blank_h512,blank,512,H=512,"gru,lstm",2,0,2,0,,0,,0,,False,False,alive
+s2,blank_h512,blank,512,H=512,lstm,1,0,1,0,,0,,0,,False,False,alive
+s1,blank_h768,blank,768,H=768,"rnn,gru,lstm",3,0,3,0,,0,,0,,False,False,alive
+t2,blank_h768,blank,768,H=768,"gru,lstm",2,0,1,1,lstm,0,,1,lstm,False,False,alive
+s2,blank_h768,blank,768,H=768,lstm,1,0,0,1,lstm,0,,1,lstm,True,False,alive
+s1,blank_h1024,blank,1024,H=1024,"rnn,gru,lstm",3,0,1,2,"gru,lstm",0,,2,"gru,lstm",False,False,alive
+t2,blank_h1024,blank,1024,H=1024,"gru,lstm",2,0,0,2,"gru,lstm",0,,2,"gru,lstm",True,False,alive
+s2,blank_h1024,blank,1024,H=1024,lstm,1,0,0,1,lstm,0,,1,lstm,True,False,alive
+s1,blank_h1536,blank,1536,H=1536,"rnn,gru,lstm",3,0,1,2,"gru,lstm",0,,2,"gru,lstm",False,False,alive
+t2,blank_h1536,blank,1536,H=1536,"gru,lstm",2,0,0,2,"gru,lstm",0,,2,"gru,lstm",True,False,alive
+s2,blank_h1536,blank,1536,H=1536,lstm,1,0,0,1,lstm,0,,1,lstm,True,False,alive
+s1,blank_h2048,blank,2048,H=2048,"rnn,gru,lstm",3,0,1,2,"gru,lstm",0,,2,"gru,lstm",False,False,alive
+t2,blank_h2048,blank,2048,H=2048,"gru,lstm",2,0,0,2,"gru,lstm",0,,2,"gru,lstm",True,False,alive
+s2,blank_h2048,blank,2048,H=2048,lstm,1,0,0,1,lstm,0,,1,lstm,True,False,alive
+s1,blank_h4096,blank,4096,H=4096,"rnn,gru,lstm",3,0,0,3,"rnn,gru,lstm",0,,3,"rnn,gru,lstm",True,False,alive
+t2,blank_h4096,blank,4096,H=4096,"gru,lstm",2,0,0,2,"gru,lstm",2,"gru,lstm",0,,True,True,alive
+s2,blank_h4096,blank,4096,H=4096,lstm,1,0,0,1,lstm,1,lstm,0,,True,True,alive

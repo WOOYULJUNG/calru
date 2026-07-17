@@ -909,6 +909,276 @@
       "destination": "paper/figures/topology/ood_v2/fig_O5_combined_and_postblank.pdf",
       "bytes": 31532,
       "sha256": "1cfa36bb3d86e59f29e6d3c14d778a6f4f98b5b71b1b2125cb8f9ee00099cac1"
+    },
+    {
+      "group": "topology_ood_banks_v3",
+      "generator": "repro/manifold_benchmark/build_ood_banks.py",
+      "source_root": "manifold_topology_ood_banks_calibrated_v3-20260717",
+      "source": "OOD_BANKS_READY.json",
+      "destination": "paper/evidence/topology/ood_v3/banks_completion.json",
+      "bytes": 237,
+      "sha256": "ca5e7fd63ebd5351e3f7529d121b5e09f545309a62f041ffdf9624ce316cb472"
+    },
+    {
+      "group": "topology_ood_banks_v3",
+      "generator": "repro/manifold_benchmark/build_ood_banks.py",
+      "source_root": "manifold_topology_ood_banks_calibrated_v3-20260717",
+      "source": "ood_banks_manifest.json",
+      "destination": "paper/evidence/topology/ood_v3/banks_manifest.json",
+      "bytes": 113531,
+      "sha256": "0891059dd0248b7ff642f9d32a60565c3139ddacc90232e34fb778a45f56382e"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "OOD_ANALYSIS_COMPLETED.json",
+      "destination": "paper/evidence/topology/ood_v3/completion.json",
+      "bytes": 1115,
+      "sha256": "9b9e28158c852f8bef4b3fa24a2893f5abdad3a5d2b08a31af4b86f4034091c3"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "CALIBRATION_RESULTS_ko.md",
+      "destination": "paper/evidence/topology/ood_v3/RESULTS_ko.md",
+      "bytes": 2256,
+      "sha256": "3878b7a33530618f163dea449817dbde0c526e989fb6da4e1e1d3ae4712784e7"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "OOD_CALIBRATION_DECISIONS.json",
+      "destination": "paper/evidence/topology/ood_v3/calibration_decisions.json",
+      "bytes": 5109,
+      "sha256": "bccbd034ecfc5a3951a924f4d946811d278c32c42df7b1f92d9d86453aec116e"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "ood_checkpoint_provenance.csv",
+      "destination": "paper/evidence/topology/ood_v3/checkpoint_provenance.csv",
+      "bytes": 10114,
+      "sha256": "f1d0800a24a482cba4d1e7755a1c2048a9138780472250e78b3fbc2999173070"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "ood_seed_metrics.csv",
+      "destination": "paper/evidence/topology/ood_v3/seed_metrics.csv",
+      "bytes": 457992,
+      "sha256": "780140de14ea0b1479e3ecb715449d930e04b67c23cd543c2a8a247409a59743"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "ood_model_survival.csv",
+      "destination": "paper/evidence/topology/ood_v3/model_survival.csv",
+      "bytes": 57359,
+      "sha256": "d2f22f4a08a5ea3b9f36ccc255e3bed910741152c951da517c4525fd22cfa46c"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "ood_condition_survival.csv",
+      "destination": "paper/evidence/topology/ood_v3/condition_survival.csv",
+      "bytes": 9631,
+      "sha256": "bb70546fd69a90fbc6f84a463680a814b4b07a25207c12405f233863f8d6e06f"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "figures/fig_C1_length_calibration.png",
+      "destination": "paper/figures/topology/ood_v3/fig_C1_length_calibration.png",
+      "bytes": 294774,
+      "sha256": "f7a89a28a7fe8c3a5ffd2b5808914fbd2c4caec8d613482030263b6a370dd113"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "figures/fig_C1_length_calibration.pdf",
+      "destination": "paper/figures/topology/ood_v3/fig_C1_length_calibration.pdf",
+      "bytes": 30745,
+      "sha256": "62794c9d2a8efab3c7fb453c3dff00bf84fc534363fae61a55c214f48cad1877"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "figures/fig_C2_velocity_calibration.png",
+      "destination": "paper/figures/topology/ood_v3/fig_C2_velocity_calibration.png",
+      "bytes": 282602,
+      "sha256": "fac74d664bc8015e317a5de4b75d70268ecf5a4e6a53ca644b6b3a24ffaf52c3"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "figures/fig_C2_velocity_calibration.pdf",
+      "destination": "paper/figures/topology/ood_v3/fig_C2_velocity_calibration.pdf",
+      "bytes": 29809,
+      "sha256": "a4e52f3f4e9e46608e837b750f18e9cb21a72d46e46e3fbe6593125f33ce25e5"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "figures/fig_C3_correlation_calibration.png",
+      "destination": "paper/figures/topology/ood_v3/fig_C3_correlation_calibration.png",
+      "bytes": 199421,
+      "sha256": "b5e9f25607aad697d83008771a06c3bae0c3ce2f08d6e69ebd393255b90a8644"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "figures/fig_C3_correlation_calibration.pdf",
+      "destination": "paper/figures/topology/ood_v3/fig_C3_correlation_calibration.pdf",
+      "bytes": 28994,
+      "sha256": "12d37d802e6f8ef16619f00cee8720bb6c6e415e7760a0cedece925d13751fa2"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "figures/fig_C4_dwell_calibration.png",
+      "destination": "paper/figures/topology/ood_v3/fig_C4_dwell_calibration.png",
+      "bytes": 239322,
+      "sha256": "8b1b5bdbe0543668914915fda578b5790b3350473aca8b7aabf8bb6c08cea351"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "figures/fig_C4_dwell_calibration.pdf",
+      "destination": "paper/figures/topology/ood_v3/fig_C4_dwell_calibration.pdf",
+      "bytes": 28621,
+      "sha256": "1ab9a73ff5c91d94e14a5d49d6a3a9bc58b70638e3f9b68c79ba7b127938f71e"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "figures/fig_C5_blank_calibration.png",
+      "destination": "paper/figures/topology/ood_v3/fig_C5_blank_calibration.png",
+      "bytes": 270986,
+      "sha256": "363f7145059be6ee08a00c5ccb17f39bea5c7f4c59a2ab99825c5f584aa0fac4"
+    },
+    {
+      "group": "topology_ood_v3",
+      "generator": "repro/manifold_benchmark/calibrate_ood_strength.py",
+      "source_root": "manifold_topology_ood_calibrated_v3-20260717",
+      "source": "figures/fig_C5_blank_calibration.pdf",
+      "destination": "paper/figures/topology/ood_v3/fig_C5_blank_calibration.pdf",
+      "bytes": 30900,
+      "sha256": "5237898b07b4824a6461306ffefedd8ad5cb69faeefeaa57705fd3ff0a734625"
+    },
+    {
+      "group": "topology_perturbation_v1",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "source": "PERTURBATION_ANALYSIS_COMPLETED.json",
+      "destination": "paper/evidence/topology/perturbation_v1/completion.json",
+      "bytes": 538,
+      "sha256": "479cf1679c12e72e0f78abb202e4ea6011cc3d258523586ef5393586801eafb1"
+    },
+    {
+      "group": "topology_perturbation_v1",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "source": "PERTURBATION_CALIBRATION_RESULTS_ko.md",
+      "destination": "paper/evidence/topology/perturbation_v1/RESULTS_ko.md",
+      "bytes": 1558,
+      "sha256": "da5cfcac3c14e344e9b914d8ca3c65d40b7d5aa55bb09110ccedb2e56d3429a9"
+    },
+    {
+      "group": "topology_perturbation_v1",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "source": "PERTURBATION_CALIBRATION_DECISIONS.json",
+      "destination": "paper/evidence/topology/perturbation_v1/calibration_decisions.json",
+      "bytes": 2786,
+      "sha256": "086a0a7219981b1545ce710afd9f748eab0c4db64b1780e0a39f60b351cc749b"
+    },
+    {
+      "group": "topology_perturbation_v1",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "source": "perturbation_model_survival.csv",
+      "destination": "paper/evidence/topology/perturbation_v1/model_survival.csv",
+      "bytes": 30139,
+      "sha256": "f5941b4234d1999e8b0178a871f674ca2f9aacf35ae079480b195a03ee237868"
+    },
+    {
+      "group": "topology_perturbation_v1",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "source": "perturbation_condition_survival.csv",
+      "destination": "paper/evidence/topology/perturbation_v1/condition_survival.csv",
+      "bytes": 578,
+      "sha256": "c37da934d12078c79ed86800cfad22abc398950f77287cef9f3529124fe5509f"
+    },
+    {
+      "group": "topology_perturbation_v1",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "source": "baseline/dynamics/dynamics_metrics.csv",
+      "destination": "paper/evidence/topology/perturbation_v1/baseline_seed_metrics.csv",
+      "bytes": 5478,
+      "sha256": "a4c77e24405e74f6f2a3e8cacc161df80606648ea7d73a3afedf4db392cf8a34"
+    },
+    {
+      "group": "topology_perturbation_v1",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "source": "calru/dynamics/dynamics_metrics.csv",
+      "destination": "paper/evidence/topology/perturbation_v1/calru_seed_metrics.csv",
+      "bytes": 2267,
+      "sha256": "82f00d8f886dffd60b16459ab32bde39fd24b8314df9227a193511a59f5da8ec"
+    },
+    {
+      "group": "topology_perturbation_v1",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "source": "figures/fig_C6_normal_kick_strength.png",
+      "destination": "paper/figures/topology/ood_v3/fig_C6_normal_kick_strength.png",
+      "bytes": 297546,
+      "sha256": "1b579e49177518f4df4f724a980ec395352e67414807a34baf769e1d007c76b9"
+    },
+    {
+      "group": "topology_perturbation_v1",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "source": "figures/fig_C6_normal_kick_strength.pdf",
+      "destination": "paper/figures/topology/ood_v3/fig_C6_normal_kick_strength.pdf",
+      "bytes": 31458,
+      "sha256": "7d957b8afb262933fc2d5d1d843d249bed506795bbab49d137dae08c691eb992"
+    },
+    {
+      "group": "topology_perturbation_v1",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "source": "figures/fig_C7_normal_kick_horizon.png",
+      "destination": "paper/figures/topology/ood_v3/fig_C7_normal_kick_horizon.png",
+      "bytes": 392157,
+      "sha256": "75123859468a2ad665b8461a0847d7d01e0cc549e309c8d9bfd13268b95003a0"
+    },
+    {
+      "group": "topology_perturbation_v1",
+      "generator": "repro/manifold_benchmark/calibrate_perturbation_strength.py",
+      "source_root": "manifold_topology_perturbation_calibrated_v1-20260717",
+      "source": "figures/fig_C7_normal_kick_horizon.pdf",
+      "destination": "paper/figures/topology/ood_v3/fig_C7_normal_kick_horizon.pdf",
+      "bytes": 33187,
+      "sha256": "4eac95d91e3e832a76251921da207f339afc64dca5a4b85ade9e793234b28adc"
     }
   ]
 }

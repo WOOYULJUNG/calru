@@ -45,21 +45,25 @@
 
 ### OOD와 일반화
 
-현재 경로: [`topology/ood_v2/`](topology/ood_v2/)
+현재 경로: [`topology/ood_v3/`](topology/ood_v3/)
 
 | 파일 | 내용 |
 |---|---|
-| `fig_O1_temporal_generalization` | 동일한 128개 command·endpoint·path를 최대 16배 긴 시간에 배치한 primary temporal OOD |
-| `fig_O2_cumulative_path_stress` | active density를 유지하며 누적 path/winding을 늘린 별도 stress test |
-| `fig_O3_velocity_generalization` | 동일 trajectory primitive를 0.5×–2×로 스케일한 paired velocity OOD |
-| `fig_O4_dwell_generalization` | dense, fixed activity probability, 64-step middle blank 비교 |
-| `fig_O4b_smoothness_generalization` | GP length scale 변화에 대한 control smoothness OOD |
-| `fig_O5_combined_and_postblank` | length×velocity 복합 stress와 이후 512-step blank 기억 |
+| `fig_C1_length_calibration` | nested-prefix length OOD와 baseline 동시 실패 경계 |
+| `fig_C2_velocity_calibration` | paired velocity scale과 \(2\times\) headline 경계 |
+| `fig_C3_correlation_calibration` | GP marginal variance를 고정한 correlation shift |
+| `fig_C4_dwell_calibration` | contiguous zero-velocity block 길이 |
+| `fig_C5_blank_calibration` | post-trajectory blank-memory horizon |
+| `fig_C6_normal_kick_strength` | \(\rho\)별 hidden-normal recovery와 same-memory error |
+| `fig_C7_normal_kick_horizon` | \(\rho=0.25\)에서 \(H\le2048\) 회복 궤적 |
 
-대표선은 task-success seed 우선이며, 성공 seed가 없는 모델×topology는 점선과
-fallback 이름으로 표시한다. 수치와 전체 3-seed 범위는
-[`../evidence/topology/ood_v2/`](../evidence/topology/ood_v2/)에 있다.
-`ood_v1`은 elapsed time과 누적 path를 분리하지 못한 pilot으로만 보존한다.
+선과 범위는 frozen ID task gate를 통과한 seed만 집계한다. 붉은 영역은 해당
+topology의 모든 eligible baseline architecture가 chance-collapse 또는 자기
+ID error 대비 8배 초과 악화 기준을 실패한 강도다. 수치는
+[`../evidence/topology/ood_v3/`](../evidence/topology/ood_v3/)와
+[`../evidence/topology/perturbation_v1/`](../evidence/topology/perturbation_v1/)에
+있다. `ood_v2`는 동일 path temporal-dilation 보조 진단, `ood_v1`은
+elapsed time과 cumulative path가 섞인 archived pilot이다.
 
 ## 재생성·동기화
 
@@ -71,7 +75,11 @@ Generator:
   [`analyze_persistent_topology.py`](../../repro/manifold_benchmark/analyze_persistent_topology.py)
 - OOD bank와 평가:
   [`build_ood_banks.py`](../../repro/manifold_benchmark/build_ood_banks.py),
-  [`analyze_ood_generalization.py`](../../repro/manifold_benchmark/analyze_ood_generalization.py)
+  [`analyze_ood_generalization.py`](../../repro/manifold_benchmark/analyze_ood_generalization.py),
+  [`calibrate_ood_strength.py`](../../repro/manifold_benchmark/calibrate_ood_strength.py)
+- normal-kick calibration:
+  [`analyze_tangent_normal.py`](../../repro/manifold_benchmark/analyze_tangent_normal.py),
+  [`calibrate_perturbation_strength.py`](../../repro/manifold_benchmark/calibrate_perturbation_strength.py)
 
 Frozen experiment에서 논문 디렉터리로 복사할 때는 수동 `cp` 대신 다음을 쓴다.
 

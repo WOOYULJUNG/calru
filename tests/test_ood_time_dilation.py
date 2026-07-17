@@ -4,6 +4,10 @@ from repro.manifold_benchmark.build_ood_banks import (
     _dilation_schedule,
     _time_dilate,
 )
+from repro.manifold_benchmark.analyze_ood_generalization import (
+    _all_post_blank_horizons,
+    _post_blank_horizons,
+)
 from repro.manifold_benchmark.generator import (
     ConditionSpec,
     ParentSpec,
@@ -53,3 +57,15 @@ def test_time_dilation_preserves_commands_path_and_endpoint() -> None:
             np.linalg.norm(dilated.effective_velocity, axis=-1).sum(axis=0),
             np.linalg.norm(source.effective_velocity, axis=-1).sum(axis=0),
         )
+
+
+def test_condition_specific_post_blank_horizons() -> None:
+    config = {
+        "post_blank_horizons": [0, 512],
+        "post_blank_horizons_by_condition": {
+            "id_h128": [0, 128, 1024],
+        },
+    }
+    assert _post_blank_horizons(config, "id_h128") == [0, 128, 1024]
+    assert _post_blank_horizons(config, "length_h256") == [0, 512]
+    assert _all_post_blank_horizons(config) == [0, 128, 512, 1024]
