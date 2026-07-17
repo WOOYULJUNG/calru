@@ -66,6 +66,8 @@ def main() -> None:
     parser.add_argument("--seeds", default="11,12")
     parser.add_argument("--devices", default="cuda:0,cuda:1,cuda:2,cuda:3,cuda:4,cuda:5")
     parser.add_argument("--workers", type=int, default=12)
+    parser.add_argument("--pretrain-updates", type=int, default=5000)
+    parser.add_argument("--final-updates", type=int, default=2000)
     args = parser.parse_args()
     selected = list(
         csv.DictReader(args.selection.expanduser().resolve(strict=True).open())
@@ -96,7 +98,7 @@ def main() -> None:
     pretrain_paths = {}
     pretrain_cells = []
     for index, (row, seed) in enumerate(pairs):
-        cell_id = "final_parent_5k"
+        cell_id = f"final_parent_{args.pretrain_updates}"
         job_id = f"pretrain__split_rnn_rp__{row['topology']}__{cell_id}__seed{seed}"
         checkpoint = pretrain_output / job_id / "checkpoint.pt"
         pretrain_paths[(row["topology"], seed)] = checkpoint
@@ -119,7 +121,7 @@ def main() -> None:
             "--width",
             row["width"],
             "--updates",
-            "5000",
+            str(args.pretrain_updates),
             "--learning-rate",
             row["learning_rate"],
             "--initial-retention",
@@ -166,7 +168,7 @@ def main() -> None:
             "--width",
             row["width"],
             "--updates",
-            "2000",
+            str(args.final_updates),
             "--learning-rate",
             row["learning_rate"],
             "--initial-retention",
@@ -181,7 +183,7 @@ def main() -> None:
             str(pretrain_paths[(row["topology"], seed)]),
             "--load-optimizer",
             "--data-update-offset",
-            "5000",
+            str(args.pretrain_updates),
             "--train-cache",
             str(caches[seed]),
             "--device",

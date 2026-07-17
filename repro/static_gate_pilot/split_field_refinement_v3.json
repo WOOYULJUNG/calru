@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "campaign_id": "static_gate_split_field_refinement_v3",
+  "scientific_question": "Can lower-retention, lower-autonomous-gain split fields learn manifold-normal contraction while matching baseline task performance on S1, T2, and S2?",
+  "model": "split_rnn_rp",
+  "seed": 10,
+  "screen": {
+    "updates": 2000,
+    "common": {
+      "initial_write_gains": [
+        0.2,
+        0.5
+      ],
+      "recurrent_gains": [
+        0.3,
+        0.5,
+        0.7,
+        0.9
+      ]
+    },
+    "by_topology": {
+      "s1": {
+        "widths": [
+          80,
+          96,
+          128
+        ],
+        "learning_rates": [
+          0.001,
+          0.003
+        ],
+        "initial_retentions": [
+          0.65,
+          0.8,
+          0.9
+        ]
+      },
+      "t2": {
+        "widths": [
+          80,
+          96,
+          128
+        ],
+        "learning_rates": [
+          0.001,
+          0.003
+        ],
+        "initial_retentions": [
+          0.65,
+          0.8,
+          0.9
+        ]
+      },
+      "s2": {
+        "widths": [
+          96,
+          128,
+          160
+        ],
+        "learning_rates": [
+          0.0005,
+          0.001,
+          0.003
+        ],
+        "initial_retentions": [
+          0.75,
+          0.9,
+          0.95
+        ]
+      }
+    },
+    "run_count": 504,
+    "rp_enabled": false
+  },
+  "training": {
+    "batch_size": 64,
+    "horizon": 128,
+    "state_noise_std": 0.0,
+    "target_noise_std": 0.0,
+    "output_dropout": 0.0,
+    "data_update_offset": 0,
+    "train_pool_trajectories": 4096
+  },
+  "selection": {
+    "full_pretrain_total_updates": 6000,
+    "task_gate_intrinsic_radians": {
+      "s1": 0.08,
+      "t2": 0.12,
+      "s2": 0.3
+    },
+    "task_ranked_per_topology": 4,
+    "blank_ranked_per_topology": 4,
+    "low_gain_ranked_per_topology": 4,
+    "large_width_ranked_s2": 4
+  },
+  "execution": {
+    "devices": [
+      "cuda:0",
+      "cuda:1",
+      "cuda:2",
+      "cuda:3",
+      "cuda:4",
+      "cuda:5"
+    ],
+    "workers": 24
+  }
+}

@@ -50,6 +50,8 @@ def main() -> None:
     )
     parser.add_argument("--devices", default="cuda:0,cuda:1,cuda:2,cuda:3,cuda:4,cuda:5")
     parser.add_argument("--workers", type=int, default=24)
+    parser.add_argument("--data-update-offset", type=int, default=5000)
+    parser.add_argument("--updates", type=int, default=2000)
     args = parser.parse_args()
     rows = list(
         csv.DictReader(args.candidates.expanduser().resolve(strict=True).open())
@@ -160,7 +162,7 @@ def main() -> None:
             "--width",
             parent["width"],
             "--updates",
-            "2000",
+            str(args.updates),
             "--learning-rate",
             parent["learning_rate"],
             "--initial-retention",
@@ -175,7 +177,7 @@ def main() -> None:
             parent["checkpoint"],
             "--load-optimizer",
             "--data-update-offset",
-            "5000",
+            str(args.data_update_offset),
             "--train-cache",
             str(train_cache),
             "--device",

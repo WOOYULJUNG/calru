@@ -34,12 +34,12 @@ EXPECTED = {
 def _diagram_summary(
     diagrams: list[np.ndarray],
     *,
-    threshold: float,
+    thresholds: dict[str, float],
     expected: dict[str, int],
 ) -> dict:
     counts = {
-        "h1": _strong_feature_count(diagrams[1], threshold),
-        "h2": _strong_feature_count(diagrams[2], threshold),
+        "h1": _strong_feature_count(diagrams[1], thresholds["h1"]),
+        "h2": _strong_feature_count(diagrams[2], thresholds["h2"]),
     }
     return {
         "detected_h1": counts["h1"],
@@ -50,6 +50,39 @@ def _diagram_summary(
         "h1_top_persistences": _persistences(diagrams[1])[:5].tolist(),
         "h2_top_persistences": _persistences(diagrams[2])[:5].tolist(),
     }
+
+
+def _calibrated_threshold(
+    diagram: np.ndarray,
+    *,
+    expected_count: int,
+) -> float:
+    """Choose a dimension-specific threshold from the ideal reference.
+
+    A single threshold shared by H1 and H2 is invalid for a torus: the
+    persistence scale of the two homology dimensions differs, so the H2
+    threshold can count small finite-sampling H1 bars as genuine loops.
+    For a non-zero expected count, place the threshold halfway between the
+    weakest expected bar and the strongest remaining bar.  When no feature is
+    expected, place it just above the largest ideal finite-sampling bar.
+    """
+
+    persistence = _persistences(diagram)
+    if expected_count < 0:
+        raise ValueError("expected_count must be non-negative")
+    if expected_count == 0:
+        return (
+            float(np.nextafter(persistence[0], np.inf))
+            if len(persistence)
+            else float(np.finfo(np.float32).eps)
+        )
+    if len(persistence) < expected_count:
+        raise RuntimeError("ideal reference lacks expected topology")
+    weakest_expected = float(persistence[expected_count - 1])
+    if len(persistence) == expected_count:
+        return 0.5 * weakest_expected
+    strongest_residual = float(persistence[expected_count])
+    return 0.5 * (weakest_expected + strongest_residual)
 
 
 def main() -> None:
@@ -94,17 +127,15 @@ def main() -> None:
         ideal_points, maxdim=2, k=5
     )
     expected = EXPECTED[topology]
-    required = []
-    for dimension in (1, 2):
-        count = expected[f"h{dimension}"]
-        if count:
-            persistence = _persistences(ideal_diagrams[dimension])
-            if len(persistence) < count:
-                raise RuntimeError("ideal reference lacks expected topology")
-            required.append(float(persistence[count - 1]))
-    threshold = 0.5 * min(required)
+    thresholds = {
+        f"h{dimension}": _calibrated_threshold(
+            ideal_diagrams[dimension],
+            expected_count=expected[f"h{dimension}"],
+        )
+        for dimension in (1, 2)
+    }
     ideal_summary = _diagram_summary(
-        ideal_diagrams, threshold=threshold, expected=expected
+        ideal_diagrams, thresholds=thresholds, expected=expected
     )
     if not ideal_summary["signature_match"]:
         raise RuntimeError(f"ideal signature check failed: {ideal_summary}")
@@ -127,7 +158,7 @@ def main() -> None:
         )
         rows[str(horizon)] = {
             **_diagram_summary(
-                diagrams, threshold=threshold, expected=expected
+                diagrams, thresholds=thresholds, expected=expected
             ),
             "knn_scale": scale,
             "zero_knn_fraction": zero_fraction,
@@ -142,7 +173,7 @@ def main() -> None:
         "seed": int(payload["manifest"]["replicate_seed"]),
         "trajectories": int(args.trajectories),
         "landmarks": int(args.landmarks),
-        "strong_bar_threshold": threshold,
+        "strong_bar_thresholds": thresholds,
         "ideal_knn_scale": ideal_scale,
         "ideal_zero_knn_fraction": ideal_zero,
         "ideal": ideal_summary,

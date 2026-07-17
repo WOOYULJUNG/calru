@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import numpy as np
+import pytest
 import torch
 
+from repro.static_gate_pilot.analyze_checkpoint_topology import (
+    _calibrated_threshold,
+    _diagram_summary,
+)
 from repro.static_gate_pilot.cache import (
     build_training_cache,
     cached_training_batch,
@@ -133,3 +139,22 @@ def test_small_training_cache_is_paired_and_reusable(tmp_path) -> None:
     torch.testing.assert_close(first.inputs, repeated.inputs)
     torch.testing.assert_close(first.initial_memory, repeated.initial_memory)
     assert first.inputs.shape == (128, 4, 1)
+
+
+def test_persistence_thresholds_are_calibrated_per_homology_dimension() -> None:
+    # Columns are birth/death, so the persistences are [1.7, 1.6, 0.8]
+    # for H1 and [0.9, 0.1] for H2.  A shared threshold derived from H2
+    # would incorrectly count all three H1 bars for an ideal torus.
+    h1 = np.asarray([[0.0, 1.7], [0.0, 1.6], [0.0, 0.8]])
+    h2 = np.asarray([[0.0, 0.9], [0.0, 0.1]])
+    thresholds = {
+        "h1": _calibrated_threshold(h1, expected_count=2),
+        "h2": _calibrated_threshold(h2, expected_count=1),
+    }
+    summary = _diagram_summary(
+        [np.empty((0, 2)), h1, h2],
+        thresholds=thresholds,
+        expected={"h1": 2, "h2": 1},
+    )
+    assert thresholds == pytest.approx({"h1": 1.2, "h2": 0.5})
+    assert summary["signature_match"] is True
