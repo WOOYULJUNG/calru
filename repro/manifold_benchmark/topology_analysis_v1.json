@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "analysis_id": "manifold_topology_analysis_v1",
+  "expected_training": {
+    "campaign_id": "manifold_topology_transfer_v1",
+    "git_commit": "1f4a80d17724414fa88aa8b9c1077d3d39345420",
+    "run_root_suffix": "1f4a80d",
+    "topology_transfer_config_sha256": "20e160c0c4e79923e7afa5d8f5ada96a71516547c102736aee04f5e191ec164c",
+    "models": ["rnn", "gru", "lstm", "hc"],
+    "topologies": ["s1", "t2", "s2"],
+    "seeds": [10, 11, 12],
+    "expected_runs": 36,
+    "primary_checkpoint": "final_update_5000",
+    "validation_best_is_secondary_only": true
+  },
+  "frozen_banks": {
+    "validation_root": "/home/biadmin/ca_rnn/experiments/manifold_benchmark_generator_v1_rodrigues-20260716",
+    "test_root": "/home/biadmin/ca_rnn/experiments/manifold_benchmark_generator_v1_rodrigues-test-20260716",
+    "validation_sha256": {
+      "s1": "2d0ef417d3ec398141d08e56f4c617bf15986eaacfaf0902804aec9536be6508",
+      "t2": "0a637b177210320246f841d37a505230fccedb71c1ee0eb9bc817c51aae650dc",
+      "s2": "3c8903804c9ca7ded70061430f6c90356dbba5643e44b92e48b7c12edcf59a58"
+    },
+    "test_sha256": {
+      "s1": "3410a950292117963b8c68c94b15907fbb9391b34efe738ab2e8d73284fdeed4",
+      "t2": "897d84f5009a2394b2e5c4237caa32191b4dd18ed674e2d439ae78478b62698b",
+      "s2": "c2fcc78627ef6051d8ce13fb9af3e0d7789af9523601c7ea0d9d31efefbaf3bb"
+    }
+  },
+  "eligibility": {
+    "validation_nmse_db_strictly_below": -20.0,
+    "validation_intrinsic_below_hold": true,
+    "finite_required": true,
+    "unit_of_replication": "trained_model_seed",
+    "report": ["all_seed_points", "mean", "median", "range", "paired_seed_difference", "success_seed_count"]
+  },
+  "task_transfer": {
+    "test_trajectories": 1024,
+    "normalized_geodesic_range": [0.0, 1.0],
+    "trial_percentiles": [90, 95, 99]
+  },
+  "blank_memory": {
+    "test_trajectories": 256,
+    "horizons": [0, 16, 128, 512, 2048, 4096],
+    "batch_chunk": 128
+  },
+  "analysis_banks": {
+    "atlas_points": 1024,
+    "transport_horizon": 128,
+    "closed_path_count": 4,
+    "closed_half_horizon": 32,
+    "command_std": 1.0,
+    "command_smoothing": 0.85,
+    "seed": 2026071601
+  },
+  "quick_geometry": {
+    "atlas_points": 256,
+    "knn_k": 10,
+    "tangent_finite_difference": 0.001,
+    "rank_relative_threshold": 0.001
+  },
+  "quick_dynamics": {
+    "anchors": 128,
+    "random_normal_directions": 8,
+    "one_step_state_epsilon_relative": 0.0001,
+    "finite_horizons": [16, 128],
+    "kick_radii_relative": [0.05, 0.10],
+    "recovery_horizons": [0, 1, 16, 128, 512],
+    "nearest_manifold_points": 1024,
+    "seed": 2026071602
+  },
+  "hc_retention": {
+    "task_trajectories": 256,
+    "blank_horizons": [0, 16, 128, 512],
+    "near_one_threshold": 0.99,
+    "rp_snapshot_limitation": "only_initial_reconstruction_and_final_checkpoint_are_available"
+  },
+  "execution": {
+    "device_default": "cuda:0",
+    "analysis_after_all_training_jobs_complete": true,
+    "failed_runs_remain_in_denominator": true,
+    "analysis_test_bank_access_only_after_all_training_completion": true,
+    "training_v1_known_test_access_limitation": "frozen runner evaluated test after each individual final checkpoint without using it for selection"
+  }
+}
