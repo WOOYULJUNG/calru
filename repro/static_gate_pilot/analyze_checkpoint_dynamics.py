@@ -84,7 +84,8 @@ def _local_tangent_bases(
         else:
             delta = _wrapped(coordinates - coordinates[index])
             distances = torch.linalg.vector_norm(delta, dim=-1)
-        neighbor_indices = torch.argsort(distances)[1 : neighbors + 1]
+        distances[index] = float("inf")
+        neighbor_indices = torch.argsort(distances)[:neighbors]
         local = states[neighbor_indices] - states[index]
         left, _, _ = torch.linalg.svd(local.T, full_matrices=False)
         bases.append(left[:, :tangent_dimension])
