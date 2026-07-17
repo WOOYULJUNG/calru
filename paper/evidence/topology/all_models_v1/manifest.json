@@ -22,6 +22,34 @@
   "hc_topology_normal_analysis": null,
   "fairness_note": "RNN/GRU/LSTM are ring-selected zero-retuning baselines; CA-LRU and H-C are topology-specific validation-selected models.",
   "task_and_structure_failures_included": true,
+  "display_atlas": {
+    "seed": 10,
+    "points": 1024,
+    "blank_horizons": [
+      0,
+      128,
+      512,
+      2048
+    ],
+    "pca_evolution_alignment": "per-horizon centering, one joint PCA and common axis limits within each model-topology row",
+    "cache_files": [
+      "display_atlas/seed10__rnn__s1.npz",
+      "display_atlas/seed10__gru__s1.npz",
+      "display_atlas/seed10__lstm__s1.npz",
+      "display_atlas/seed10__calru__s1.npz",
+      "display_atlas/seed10__hc__s1.npz",
+      "display_atlas/seed10__rnn__t2.npz",
+      "display_atlas/seed10__gru__t2.npz",
+      "display_atlas/seed10__lstm__t2.npz",
+      "display_atlas/seed10__calru__t2.npz",
+      "display_atlas/seed10__hc__t2.npz",
+      "display_atlas/seed10__rnn__s2.npz",
+      "display_atlas/seed10__gru__s2.npz",
+      "display_atlas/seed10__lstm__s2.npz",
+      "display_atlas/seed10__calru__s2.npz",
+      "display_atlas/seed10__hc__s2.npz"
+    ]
+  },
   "figures": [
     "fig_A_all_models_task_and_blank.png",
     "fig_A_all_models_task_and_blank.pdf",
@@ -33,6 +61,12 @@
     "fig_D_all_models_dynamics.pdf",
     "fig_E_all_models_endpoint_pca.png",
     "fig_E_all_models_endpoint_pca.pdf",
+    "fig_H_all_models_s1_pca_evolution.png",
+    "fig_H_all_models_s1_pca_evolution.pdf",
+    "fig_H_all_models_t2_pca_evolution.png",
+    "fig_H_all_models_t2_pca_evolution.pdf",
+    "fig_H_all_models_s2_pca_evolution.png",
+    "fig_H_all_models_s2_pca_evolution.pdf",
     "fig_F_all_models_normal_recovery.png",
     "fig_F_all_models_normal_recovery.pdf",
     "fig_G_all_models_topology_radial_recovery.png",

@@ -19,6 +19,8 @@ from repro.sagodi_protocol.artifacts import strict_json_load
 
 from .topology_analysis_common import (
     RunRecord,
+    atomic_npz,
+    blank_snapshots,
     forward_endpoint_states,
     load_analysis_bank,
     load_model,
@@ -720,13 +722,64 @@ def _orient_pca(score: np.ndarray, right: np.ndarray) -> np.ndarray:
     return oriented
 
 
-def _full_endpoint_pca(
+def _display_atlas_provenance(
     task_row: dict[str, str],
     analysis_root: Path,
-    device: torch.device,
-) -> tuple[np.ndarray, np.ndarray]:
-    bank = load_analysis_bank(analysis_root / "banks", task_row["topology"])
+) -> tuple[RunRecord, str, str]:
     record = _record_for_task(task_row, analysis_root)
+    completion = strict_json_load(record.run_dir / "COMPLETED.json")
+    checkpoint_sha256 = str(completion["artifacts"]["checkpoint.pt"])
+    bank_manifest = strict_json_load(
+        analysis_root / "banks" / "analysis_banks_manifest.json"
+    )
+    bank_sha256 = str(bank_manifest["banks"][task_row["topology"]]["sha256"])
+    return record, checkpoint_sha256, bank_sha256
+
+
+def _cached_display_atlas(
+    task_row: dict[str, str],
+    analysis_root: Path,
+    output: Path,
+    device: torch.device,
+    horizons: tuple[int, ...],
+) -> dict[str, Any]:
+    record, checkpoint_sha256, bank_sha256 = _display_atlas_provenance(
+        task_row, analysis_root
+    )
+    cache_path = (
+        output
+        / "display_atlas"
+        / f"seed10__{task_row['model']}__{task_row['topology']}.npz"
+    )
+    if cache_path.is_file():
+        with np.load(cache_path, allow_pickle=False) as archive:
+            cached_horizons = tuple(
+                int(value) for value in np.asarray(archive["horizons"]).tolist()
+            )
+            cache_matches = (
+                int(np.asarray(archive["schema_version"]).item()) == 1
+                and str(np.asarray(archive["job_id"]).item()) == task_row["job_id"]
+                and str(np.asarray(archive["checkpoint_sha256"]).item())
+                == checkpoint_sha256
+                and str(np.asarray(archive["bank_sha256"]).item()) == bank_sha256
+                and cached_horizons == horizons
+            )
+            if cache_matches:
+                return {
+                    "task_row": task_row,
+                    "latent": np.array(archive["latent"], copy=True),
+                    "states": {
+                        horizon: np.array(
+                            archive[f"state_h{horizon}"], copy=True
+                        ).astype(np.float64)
+                        for horizon in horizons
+                    },
+                    "cache_path": cache_path,
+                    "checkpoint_sha256": checkpoint_sha256,
+                    "bank_sha256": bank_sha256,
+                }
+
+    bank = load_analysis_bank(analysis_root / "banks", task_row["topology"])
     model, _ = load_model(record, device)
     initial = torch.as_tensor(bank["initializer_memory"], device=device)
     inputs = torch.as_tensor(bank["transport_inputs"], device=device)
@@ -736,12 +789,89 @@ def _full_endpoint_pca(
         initial,
         chunk_size=128,
     )
-    states = endpoint_state.cpu().numpy().astype(np.float64)
+    snapshots = blank_snapshots(model, endpoint_state, horizons)
+    states = {
+        horizon: snapshots[horizon].detach().cpu().numpy().astype(np.float64)
+        for horizon in horizons
+    }
+    latent = bank["transport_endpoint_latent"].astype(np.float64)
+    atomic_npz(
+        cache_path,
+        schema_version=np.asarray(1, dtype=np.int64),
+        job_id=np.asarray(task_row["job_id"]),
+        checkpoint_sha256=np.asarray(checkpoint_sha256),
+        bank_sha256=np.asarray(bank_sha256),
+        horizons=np.asarray(horizons, dtype=np.int64),
+        latent=latent.astype(np.float32),
+        **{
+            f"state_h{horizon}": states[horizon].astype(np.float32)
+            for horizon in horizons
+        },
+    )
+    return {
+        "task_row": task_row,
+        "latent": latent,
+        "states": states,
+        "cache_path": cache_path,
+        "checkpoint_sha256": checkpoint_sha256,
+        "bank_sha256": bank_sha256,
+    }
+
+
+def _build_display_atlases(
+    task_rows: list[dict[str, str]],
+    baseline: Path,
+    selected: Path,
+    output: Path,
+    device: torch.device,
+    horizons: tuple[int, ...],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    atlases: dict[tuple[str, str], dict[str, Any]] = {}
+    for topology in TOPOLOGIES:
+        for model in MODELS:
+            task_row = next(
+                row
+                for row in task_rows
+                if row["topology"] == topology
+                and row["model"] == model
+                and int(row["seed"]) == 10
+            )
+            root = _analysis_for_row(task_row, baseline, selected)
+            atlases[(topology, model)] = _cached_display_atlas(
+                task_row,
+                root,
+                output,
+                device,
+                horizons,
+            )
+    return atlases
+
+
+def _single_snapshot_pca(states: np.ndarray) -> np.ndarray:
     centered = states - states.mean(axis=0, keepdims=True)
     _, _, right = np.linalg.svd(centered, full_matrices=False)
-    score = _orient_pca(centered @ right[:3].T, right[:3])
-    latent = bank["transport_endpoint_latent"].astype(np.float64)
-    return score, latent
+    return _orient_pca(centered @ right[:3].T, right[:3])
+
+
+def _joint_snapshot_pca(
+    states: dict[int, np.ndarray],
+    horizons: tuple[int, ...],
+) -> dict[int, np.ndarray]:
+    # Topology is translation invariant. Per-horizon centering removes bulk
+    # hidden-state drift while retaining contraction, expansion and folding.
+    centered = {
+        horizon: states[horizon]
+        - states[horizon].mean(axis=0, keepdims=True)
+        for horizon in horizons
+    }
+    combined = np.concatenate([centered[horizon] for horizon in horizons], axis=0)
+    _, _, right = np.linalg.svd(combined, full_matrices=False)
+    combined_score = _orient_pca(combined @ right[:3].T, right[:3])
+    count = states[horizons[0]].shape[0]
+    return {
+        horizon: combined_score[index * count : (index + 1) * count]
+        for index, horizon in enumerate(horizons)
+    }
 
 
 def _sphere_neighbor_edges(latent: np.ndarray, neighbors: int = 3) -> np.ndarray:
@@ -811,11 +941,8 @@ def _equalize_3d(axis, score: np.ndarray) -> None:
 
 
 def figure_pca(
-    task_rows: list[dict[str, str]],
-    baseline: Path,
-    selected: Path,
+    atlases: dict[tuple[str, str], dict[str, Any]],
     figures: Path,
-    device: torch.device,
 ) -> list[str]:
     fig, axes = plt.subplots(
         3,
@@ -826,15 +953,10 @@ def figure_pca(
     for row_index, topology in enumerate(TOPOLOGIES):
         for column, model in enumerate(MODELS):
             axis = axes[row_index, column]
-            task_row = next(
-                row
-                for row in task_rows
-                if row["topology"] == topology
-                and row["model"] == model
-                and int(row["seed"]) == 10
-            )
-            root = _analysis_for_row(task_row, baseline, selected)
-            score, latent = _full_endpoint_pca(task_row, root, device)
+            atlas = atlases[(topology, model)]
+            task_row = atlas["task_row"]
+            latent = atlas["latent"]
+            score = _single_snapshot_pca(atlas["states"][0])
             color = (
                 latent[:, 0]
                 if topology in {"s1", "t2"}
@@ -900,6 +1022,104 @@ def figure_pca(
     )
     fig.tight_layout(rect=(0, 0.04, 1, 0.95))
     return _save(fig, figures, "fig_E_all_models_endpoint_pca")
+
+
+def figure_pca_evolution(
+    atlases: dict[tuple[str, str], dict[str, Any]],
+    figures: Path,
+    horizons: tuple[int, ...],
+) -> list[str]:
+    generated: list[str] = []
+    for topology in TOPOLOGIES:
+        fig, axes = plt.subplots(
+            len(MODELS),
+            len(horizons),
+            figsize=(13.2, 14.8),
+            subplot_kw={"projection": "3d"},
+        )
+        for row_index, model in enumerate(MODELS):
+            atlas = atlases[(topology, model)]
+            task_row = atlas["task_row"]
+            latent = atlas["latent"]
+            scores = _joint_snapshot_pca(atlas["states"], horizons)
+            all_scores = np.concatenate(
+                [scores[horizon] for horizon in horizons], axis=0
+            )
+            color = (
+                latent[:, 0]
+                if topology in {"s1", "t2"}
+                else np.arctan2(latent[:, 1], latent[:, 0])
+            )
+            for column, horizon in enumerate(horizons):
+                axis = axes[row_index, column]
+                score = scores[horizon]
+                _draw_atlas_structure(axis, topology, score, latent)
+                axis.scatter3D(
+                    score[:, 0],
+                    score[:, 1],
+                    score[:, 2],
+                    c=color,
+                    cmap="twilight",
+                    s=3.0,
+                    alpha=0.66,
+                    depthshade=False,
+                    rasterized=True,
+                )
+                if row_index == 0:
+                    axis.set_title(f"blank H={horizon}")
+                if column == 0:
+                    label_color = (
+                        "#111111"
+                        if _bool(task_row["task_success"])
+                        else "#B33A3A"
+                    )
+                    axis.text2D(
+                        -0.13,
+                        0.5,
+                        LABELS[model],
+                        transform=axis.transAxes,
+                        rotation=90,
+                        ha="center",
+                        va="center",
+                        fontsize=11,
+                        color=label_color,
+                    )
+                    if not _bool(task_row["task_success"]):
+                        axis.text2D(
+                            -0.13,
+                            0.07,
+                            "failed task gate",
+                            transform=axis.transAxes,
+                            rotation=90,
+                            ha="center",
+                            va="center",
+                            fontsize=6.5,
+                            color="#B33A3A",
+                        )
+                _equalize_3d(axis, all_scores)
+                axis.view_init(elev=22, azim=-55)
+                axis.set_axis_off()
+        fig.suptitle(
+            f"{TOPOLOGY_LABELS[topology]} hidden-atlas evolution in joint PC1–PC3"
+            " · 1,024 points · seed 10"
+        )
+        fig.text(
+            0.5,
+            0.012,
+            "One joint PCA and common axis limits per model row; each horizon is centered to remove bulk translation. "
+            "Lines track the same intrinsic neighbors through blank dynamics.",
+            ha="center",
+            fontsize=8.5,
+        )
+        fig.tight_layout(rect=(0.025, 0.035, 1, 0.965))
+        generated.extend(
+            _save(
+                fig,
+                figures,
+                f"fig_H_all_models_{topology}_pca_evolution",
+            )
+        )
+    return generated
 
 
 def figure_recovery(
@@ -1100,12 +1320,22 @@ def compare(args: argparse.Namespace) -> None:
     _write_csv(output / "seed_level_comparison.csv", seed_rows)
     _write_csv(output / "model_topology_summary.csv", group_rows)
 
+    display_horizons = (0, 128, 512, 2048)
+    display_atlases = _build_display_atlases(
+        task,
+        baseline,
+        selected,
+        output,
+        device,
+        display_horizons,
+    )
     generated = [
         *figure_overview(seed_rows, figures),
         *figure_blank_curves(blank, figures),
         *figure_geometry(seed_rows, figures),
         *figure_dynamics(seed_rows, figures),
-        *figure_pca(task, baseline, selected, figures, device),
+        *figure_pca(display_atlases, figures),
+        *figure_pca_evolution(display_atlases, figures, display_horizons),
         *figure_recovery(dynamics, baseline, selected, figures),
         *figure_topology_radial_recovery(
             topology_normal,
@@ -1130,6 +1360,19 @@ def compare(args: argparse.Namespace) -> None:
             "CA-LRU and H-C are topology-specific validation-selected models."
         ),
         "task_and_structure_failures_included": True,
+        "display_atlas": {
+            "seed": 10,
+            "points": 1024,
+            "blank_horizons": list(display_horizons),
+            "pca_evolution_alignment": (
+                "per-horizon centering, one joint PCA and common axis limits "
+                "within each model-topology row"
+            ),
+            "cache_files": [
+                str(atlas["cache_path"].relative_to(output))
+                for atlas in display_atlases.values()
+            ],
+        },
         "figures": generated,
     }
     (output / "comparison_manifest.json").write_text(

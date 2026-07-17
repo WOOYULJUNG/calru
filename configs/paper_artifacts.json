@@ -99,6 +99,30 @@
         {
           "source": "figures/fig_G_all_models_topology_radial_recovery.pdf",
           "destination": "paper/figures/topology/model_comparison/fig_G_topology_radial_recovery.pdf"
+        },
+        {
+          "source": "figures/fig_H_all_models_s1_pca_evolution.png",
+          "destination": "paper/figures/topology/model_comparison/fig_H1_s1_pca_evolution.png"
+        },
+        {
+          "source": "figures/fig_H_all_models_s1_pca_evolution.pdf",
+          "destination": "paper/figures/topology/model_comparison/fig_H1_s1_pca_evolution.pdf"
+        },
+        {
+          "source": "figures/fig_H_all_models_t2_pca_evolution.png",
+          "destination": "paper/figures/topology/model_comparison/fig_H2_t2_pca_evolution.png"
+        },
+        {
+          "source": "figures/fig_H_all_models_t2_pca_evolution.pdf",
+          "destination": "paper/figures/topology/model_comparison/fig_H2_t2_pca_evolution.pdf"
+        },
+        {
+          "source": "figures/fig_H_all_models_s2_pca_evolution.png",
+          "destination": "paper/figures/topology/model_comparison/fig_H3_s2_pca_evolution.png"
+        },
+        {
+          "source": "figures/fig_H_all_models_s2_pca_evolution.pdf",
+          "destination": "paper/figures/topology/model_comparison/fig_H3_s2_pca_evolution.pdf"
         }
       ]
     },

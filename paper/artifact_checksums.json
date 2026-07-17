@@ -16,8 +16,8 @@
       "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
       "source": "comparison_manifest.json",
       "destination": "paper/evidence/topology/all_models_v1/manifest.json",
-      "bytes": 1267,
-      "sha256": "d2411e96119d415d5af41ef796cf0ec74a26945c92099886109ac60fc79ec4ee"
+      "bytes": 2474,
+      "sha256": "9792955f11739cc25c909f2b342faeacadeb12142d46fab63575fee1366c15e0"
     },
     {
       "group": "topology_all_models_v1",
@@ -207,6 +207,60 @@
       "destination": "paper/figures/topology/model_comparison/fig_G_topology_radial_recovery.pdf",
       "bytes": 23802,
       "sha256": "4b52299cd13e1d3d1393f74e1d23dbcfa9e16d17a18acd571bf790b904e7a588"
+    },
+    {
+      "group": "topology_all_models_v1",
+      "generator": "repro/manifold_benchmark/compare_all_topology_models.py",
+      "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
+      "source": "figures/fig_H_all_models_s1_pca_evolution.png",
+      "destination": "paper/figures/topology/model_comparison/fig_H1_s1_pca_evolution.png",
+      "bytes": 342831,
+      "sha256": "c578f306c9086334b2e39402c55ccd2e06cddf2ac92246ff19e80e6ca2f9b35b"
+    },
+    {
+      "group": "topology_all_models_v1",
+      "generator": "repro/manifold_benchmark/compare_all_topology_models.py",
+      "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
+      "source": "figures/fig_H_all_models_s1_pca_evolution.pdf",
+      "destination": "paper/figures/topology/model_comparison/fig_H1_s1_pca_evolution.pdf",
+      "bytes": 218539,
+      "sha256": "fc34e47b746e422aa53e6575a9ae4e0611242fe2c457b34684d952a301dc4ba5"
+    },
+    {
+      "group": "topology_all_models_v1",
+      "generator": "repro/manifold_benchmark/compare_all_topology_models.py",
+      "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
+      "source": "figures/fig_H_all_models_t2_pca_evolution.png",
+      "destination": "paper/figures/topology/model_comparison/fig_H2_t2_pca_evolution.png",
+      "bytes": 2821993,
+      "sha256": "a0bb931cfa3de34d4dc08dd3254cbd94ebd9f17d3ce719dc1b04339b8938e4f3"
+    },
+    {
+      "group": "topology_all_models_v1",
+      "generator": "repro/manifold_benchmark/compare_all_topology_models.py",
+      "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
+      "source": "figures/fig_H_all_models_t2_pca_evolution.pdf",
+      "destination": "paper/figures/topology/model_comparison/fig_H2_t2_pca_evolution.pdf",
+      "bytes": 2007111,
+      "sha256": "4f9dd377dd1d58bf9cecc814c2a04e75811c9cd4bec46ec75224458a15b93b75"
+    },
+    {
+      "group": "topology_all_models_v1",
+      "generator": "repro/manifold_benchmark/compare_all_topology_models.py",
+      "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
+      "source": "figures/fig_H_all_models_s2_pca_evolution.png",
+      "destination": "paper/figures/topology/model_comparison/fig_H3_s2_pca_evolution.png",
+      "bytes": 2290406,
+      "sha256": "0fcecd83bbcfdf660207a2f7c075234532a265aa79558ebb8603fc9356134910"
+    },
+    {
+      "group": "topology_all_models_v1",
+      "generator": "repro/manifold_benchmark/compare_all_topology_models.py",
+      "source_root": "manifold_topology_hparam_v1-c6dc758/comparison_all_models_v1",
+      "source": "figures/fig_H_all_models_s2_pca_evolution.pdf",
+      "destination": "paper/figures/topology/model_comparison/fig_H3_s2_pca_evolution.pdf",
+      "bytes": 1988153,
+      "sha256": "876f19ec814f828bfb68b942019ebe67ca9962bb98845198784f12d5fcae98ad"
     },
     {
       "group": "persistent_topology_v1",
