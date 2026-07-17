@@ -15,7 +15,7 @@ from repro.sagodi_protocol.artifacts import atomic_json
 MODELS = ("calru", "hc")
 TOPOLOGIES = ("s1", "t2", "s2")
 COLORS = {"calru": "#2A9D8F", "hc": "#8E5EA2"}
-LABELS = {"calru": "CA-LRU + RP", "hc": "H-C + RP"}
+LABELS = {"calru": "CA-LRU", "hc": "H-C"}
 TOPOLOGY_LABELS = {"s1": r"$S^1$", "t2": r"$T^2$", "s2": r"$S^2$"}
 
 
@@ -65,7 +65,7 @@ def figure_task(analysis: Path, figures: Path) -> list[str]:
         axis.set_title(TOPOLOGY_LABELS[topology])
         axis.grid(axis="y", alpha=0.22)
     axes[0].set_ylabel("Test normalized geodesic error")
-    fig.suptitle("Selected topology-specific models (paired seeds)")
+    fig.suptitle("Selected topology-specific models with RP (paired seeds)")
     return _save(fig, figures, "fig_A_selected_test_task")
 
 
@@ -110,7 +110,7 @@ def figure_blank(analysis: Path, figures: Path) -> list[str]:
         axis.grid(alpha=0.22)
     axes[0].set_ylabel("Normalized memory error")
     axes[-1].legend(frameon=False, fontsize=8)
-    fig.suptitle("Long blank-input memory")
+    fig.suptitle("Long blank-input memory (both models use RP)")
     return _save(fig, figures, "fig_B_selected_blank_memory")
 
 
