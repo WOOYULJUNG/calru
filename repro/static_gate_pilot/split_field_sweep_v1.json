@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "campaign_id": "static_gate_split_field_sweep_v1",
+  "scientific_question": "Does separating autonomous geometry fh from the centered input writer fx improve task learning before RP is activated?",
+  "models": [
+    "untied_rnn_rp",
+    "split_rnn_rp"
+  ],
+  "topologies": [
+    "s1",
+    "t2"
+  ],
+  "seed": 10,
+  "width": 52,
+  "screen": {
+    "updates": 1500,
+    "learning_rates": [
+      0.001,
+      0.003,
+      0.01
+    ],
+    "initial_retentions": [
+      0.9,
+      0.95,
+      0.98
+    ],
+    "initial_write_gain": 1.0,
+    "recurrent_gain": 0.9,
+    "rp_enabled": false,
+    "run_count": 36
+  },
+  "training": {
+    "batch_size": 64,
+    "horizon": 128,
+    "state_noise_std": 0.0,
+    "target_noise_std": 0.0,
+    "output_dropout": 0.0,
+    "data_update_offset": 0,
+    "train_pool_trajectories": 4096
+  },
+  "selection": {
+    "split": "validation",
+    "test_bank_access": false,
+    "task_gate_intrinsic_radians": {
+      "s1": 0.2,
+      "t2": 0.3
+    },
+    "finalists_per_model_topology": 2,
+    "ranking_after_task_gate": "blank512_intrinsic_radians"
+  },
+  "execution": {
+    "devices": [
+      "cuda:0",
+      "cuda:1",
+      "cuda:2",
+      "cuda:3",
+      "cuda:4",
+      "cuda:5"
+    ],
+    "workers": 24
+  }
+}

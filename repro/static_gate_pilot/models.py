@@ -6,9 +6,13 @@ implements two equations from the static-gate side-pilot note:
 ``static_gru``
     h' = Lambda h + (I - Lambda) tanh(Wx x + Wh (r * h) + b)
 
-``untied_rnn``
+``untied_rnn`` (shared-field control)
     h' = Lambda h + (I - Lambda) f0(h)
          + Gamma [fx(h, x) - f0(h)]
+
+``split_rnn``
+    h' = Lambda h + (I - Lambda) fh(h)
+         + Gamma [fx(h, x) - fx(h, 0)]
 
 Each equation has a gradient-trained retention control and an RP-only
 retention variant.  RP variants keep ``theta`` out of task-gradient learning.
@@ -31,8 +35,10 @@ MODEL_IDS = (
     "static_gru_rp",
     "untied_rnn_grad",
     "untied_rnn_rp",
+    "split_rnn_grad",
+    "split_rnn_rp",
 )
-CellKind = Literal["static_gru", "untied_rnn"]
+CellKind = Literal["static_gru", "untied_rnn", "split_rnn"]
 
 
 def _logit(probability: float) -> float:
@@ -58,6 +64,7 @@ class StaticGateMemory(nn.Module):
         width: int = 52,
         initial_retention: float = 0.95,
         initial_write_gain: float = 1.0,
+        recurrent_gain: float = 0.9,
     ) -> None:
         super().__init__()
         if model_id not in MODEL_IDS:
@@ -65,15 +72,23 @@ class StaticGateMemory(nn.Module):
         input_dim, initial_memory_dim, output_dim = topology_dimensions(topology)
         self.model_id = str(model_id)
         self.topology = str(topology)
-        self.cell_kind: CellKind = (
-            "static_gru" if model_id.startswith("static_gru") else "untied_rnn"
-        )
+        if model_id.startswith("static_gru"):
+            self.cell_kind: CellKind = "static_gru"
+        elif model_id.startswith("split_rnn"):
+            self.cell_kind = "split_rnn"
+        else:
+            self.cell_kind = "untied_rnn"
         self.rp_enabled = model_id.endswith("_rp")
         self.width = int(width)
         self.input_dim = int(input_dim)
         self.initial_memory_dim = int(initial_memory_dim)
         self.output_dim = int(output_dim)
         self.state_size = self.width
+        self.initial_retention = float(initial_retention)
+        self.initial_write_gain = float(initial_write_gain)
+        self.recurrent_gain = float(recurrent_gain)
+        if self.recurrent_gain <= 0.0:
+            raise ValueError("recurrent gain must be positive")
 
         self.initial_encoder = nn.Linear(self.initial_memory_dim, self.width, bias=False)
         self.decoder = nn.Linear(self.width, self.output_dim)
@@ -88,6 +103,7 @@ class StaticGateMemory(nn.Module):
             self.candidate_input = nn.Linear(self.input_dim, self.width, bias=False)
             self.candidate_hidden = nn.Linear(self.width, self.width, bias=True)
             self.autonomous_hidden = None
+            self.writer_hidden = None
             self.input_write = None
             self.raw_gamma = None
         else:
@@ -96,6 +112,11 @@ class StaticGateMemory(nn.Module):
             self.candidate_input = None
             self.candidate_hidden = None
             self.autonomous_hidden = nn.Linear(self.width, self.width, bias=True)
+            self.writer_hidden = (
+                nn.Linear(self.width, self.width, bias=True)
+                if self.cell_kind == "split_rnn"
+                else None
+            )
             self.input_write = nn.Linear(self.input_dim, self.width, bias=False)
             self.raw_gamma = nn.Parameter(
                 torch.full((self.width,), _inverse_softplus(initial_write_gain))
@@ -117,15 +138,26 @@ class StaticGateMemory(nn.Module):
             assert self.candidate_hidden is not None
             nn.init.xavier_uniform_(self.reset_input.weight)
             nn.init.zeros_(self.reset_input.bias)
-            nn.init.orthogonal_(self.reset_hidden.weight, gain=0.9)
+            nn.init.orthogonal_(
+                self.reset_hidden.weight, gain=self.recurrent_gain
+            )
             nn.init.xavier_uniform_(self.candidate_input.weight)
-            nn.init.orthogonal_(self.candidate_hidden.weight, gain=0.9)
+            nn.init.orthogonal_(
+                self.candidate_hidden.weight, gain=self.recurrent_gain
+            )
             nn.init.zeros_(self.candidate_hidden.bias)
         else:
             assert self.autonomous_hidden is not None
             assert self.input_write is not None
-            nn.init.orthogonal_(self.autonomous_hidden.weight, gain=0.9)
+            nn.init.orthogonal_(
+                self.autonomous_hidden.weight, gain=self.recurrent_gain
+            )
             nn.init.zeros_(self.autonomous_hidden.bias)
+            if self.writer_hidden is not None:
+                nn.init.orthogonal_(
+                    self.writer_hidden.weight, gain=self.recurrent_gain
+                )
+                nn.init.zeros_(self.writer_hidden.bias)
             nn.init.xavier_uniform_(self.input_write.weight)
 
     def retention(self) -> torch.Tensor:
@@ -175,13 +207,19 @@ class StaticGateMemory(nn.Module):
         assert self.input_write is not None
         gamma = self.write_gain()
         assert gamma is not None
-        recurrent_drive = self.autonomous_hidden(state)
-        autonomous = torch.tanh(recurrent_drive)
-        conditioned = torch.tanh(recurrent_drive + self.input_write(inputs))
+        autonomous_drive = self.autonomous_hidden(state)
+        autonomous = torch.tanh(autonomous_drive)
+        writer_drive = (
+            autonomous_drive
+            if self.writer_hidden is None
+            else self.writer_hidden(state)
+        )
+        writer_zero = torch.tanh(writer_drive)
+        writer_conditioned = torch.tanh(writer_drive + self.input_write(inputs))
         return (
             retention * state
             + (1.0 - retention) * autonomous
-            + gamma * (conditioned - autonomous)
+            + gamma * (writer_conditioned - writer_zero)
         )
 
     def decode(self, state: torch.Tensor) -> torch.Tensor:
@@ -218,9 +256,13 @@ class StaticGateMemory(nn.Module):
             "schema_version": 1,
             "model_id": self.model_id,
             "cell_kind": self.cell_kind,
+            "autonomous_writer_field_sharing": self.cell_kind == "untied_rnn",
             "retention_training": "gate_intervention_rp" if self.rp_enabled else "gradient",
             "topology": self.topology,
             "width": self.width,
+            "initial_retention": self.initial_retention,
+            "initial_write_gain": self.initial_write_gain,
+            "recurrent_gain": self.recurrent_gain,
             "input_dim": self.input_dim,
             "initial_memory_dim": self.initial_memory_dim,
             "output_dim": self.output_dim,

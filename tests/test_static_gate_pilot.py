@@ -45,6 +45,20 @@ def test_untied_input_write_vanishes_exactly_at_zero_input() -> None:
     torch.testing.assert_close(model.step(zero, state), expected)
 
 
+def test_split_field_uses_separate_autonomous_and_centered_writer() -> None:
+    model = StaticGateMemory(
+        model_id="split_rnn_grad", topology="s1", width=8
+    )
+    assert model.autonomous_hidden is not None
+    assert model.writer_hidden is not None
+    state = torch.randn(4, 8)
+    zero = torch.zeros(4, 1)
+    retention = model.retention()
+    autonomous = torch.tanh(model.autonomous_hidden(state))
+    expected = retention * state + (1.0 - retention) * autonomous
+    torch.testing.assert_close(model.step(zero, state), expected)
+
+
 def test_retention_override_targets_each_batch_row() -> None:
     model = StaticGateMemory(
         model_id="static_gru_grad", topology="s1", width=4
@@ -74,6 +88,26 @@ def test_gate_intervention_rp_updates_frozen_theta() -> None:
     assert not torch.equal(before, model.theta)
     assert torch.isfinite(model.theta).all()
     assert "normalized_damage_mean" in summary
+
+
+def test_positive_only_rp_never_decreases_theta() -> None:
+    torch.manual_seed(2)
+    model = StaticGateMemory(
+        model_id="split_rnn_rp", topology="s1", width=6
+    )
+    before = model.theta.detach().clone()
+    gate_intervention_rp(
+        model,
+        _Probe(),
+        blank_horizon=3,
+        lambda_fast=0.5,
+        eta_lambda=1.0,
+        damage_epsilon=0.0,
+        update_rule="positive_only",
+        max_theta_step=0.05,
+    )
+    assert torch.all(model.theta >= before)
+    assert torch.all(model.theta - before <= 0.050001)
 
 
 def test_small_training_cache_is_paired_and_reusable(tmp_path) -> None:

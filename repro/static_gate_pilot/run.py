@@ -113,16 +113,14 @@ def _blank_roll(
 
 
 @torch.no_grad()
-def gate_intervention_rp(
+def gate_intervention_damage(
     model: StaticGateMemory,
     probe,
     *,
     blank_horizon: int,
     lambda_fast: float,
-    eta_lambda: float,
-    damage_epsilon: float,
-) -> dict[str, float]:
-    """Update RP-only theta using one batched intervention per coordinate."""
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Measure one batched counterfactual gate intervention per coordinate."""
 
     if not model.rp_enabled:
         raise ValueError("gate-intervention RP requires an RP model")
@@ -165,17 +163,52 @@ def gate_intervention_rp(
     )
     normalized_damage = (damaged_error - clean_error) / target_power
     _finite(normalized_damage, "gate-intervention damage")
-    model.theta.add_(
-        float(eta_lambda) * (normalized_damage - float(damage_epsilon))
-    )
-    model.clamp_theta_()
-    return {
+    return normalized_damage, {
         "clean_component_mse": float(clean_error.cpu()),
         "normalized_damage_mean": float(normalized_damage.mean().cpu()),
         "normalized_damage_max": float(normalized_damage.max().cpu()),
         "normalized_damage_positive_fraction": float(
             (normalized_damage > 0.0).float().mean().cpu()
         ),
+    }
+
+
+@torch.no_grad()
+def gate_intervention_rp(
+    model: StaticGateMemory,
+    probe,
+    *,
+    blank_horizon: int,
+    lambda_fast: float,
+    eta_lambda: float,
+    damage_epsilon: float,
+    update_rule: str = "signed",
+    max_theta_step: float | None = None,
+) -> dict[str, float]:
+    """Update RP-only theta from counterfactual gate damage."""
+
+    normalized_damage, summary = gate_intervention_damage(
+        model,
+        probe,
+        blank_horizon=blank_horizon,
+        lambda_fast=lambda_fast,
+    )
+    signal = normalized_damage - float(damage_epsilon)
+    if update_rule == "positive_only":
+        signal = signal.clamp_min(0.0)
+    elif update_rule != "signed":
+        raise ValueError(f"unknown RP update rule {update_rule!r}")
+    theta_step = float(eta_lambda) * signal
+    if max_theta_step is not None:
+        theta_step = theta_step.clamp(
+            min=-float(max_theta_step), max=float(max_theta_step)
+        )
+    model.theta.add_(theta_step)
+    model.clamp_theta_()
+    return {
+        **summary,
+        "theta_step_mean": float(theta_step.mean().cpu()),
+        "theta_step_abs_max": float(theta_step.abs().max().cpu()),
         "lambda_mean_after": float(model.retention().mean().cpu()),
         "lambda_max_after": float(model.retention().max().cpu()),
     }
@@ -296,15 +329,27 @@ def run(args: argparse.Namespace) -> Path:
         topology=args.topology,
         width=args.width,
         initial_retention=args.initial_retention,
+        initial_write_gain=args.initial_write_gain,
+        recurrent_gain=args.recurrent_gain,
     ).to(device)
     optimizer = torch.optim.Adam(
         [parameter for parameter in model.parameters() if parameter.requires_grad],
         lr=float(args.learning_rate),
     )
+    parent_checkpoint: dict[str, Any] | None = None
+    if args.load_checkpoint is not None:
+        checkpoint_path = args.load_checkpoint.expanduser().resolve(strict=True)
+        parent_checkpoint = torch.load(
+            checkpoint_path, map_location=device, weights_only=False
+        )
+        model.load_state_dict(parent_checkpoint["model_state_dict"], strict=True)
+        if args.load_optimizer:
+            optimizer.load_state_dict(parent_checkpoint["optimizer_state_dict"])
     output = Path(args.output).expanduser().resolve()
+    cell_id = args.cell_id or f"lr{args.learning_rate:g}"
     job_id = (
         f"{args.phase}__{args.model}__{args.topology}"
-        f"__lr{args.learning_rate:g}__seed{args.seed}"
+        f"__{cell_id}__seed{args.seed}"
     ).replace(".", "p")
     run_dir = output / job_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -327,13 +372,16 @@ def run(args: argparse.Namespace) -> Path:
         "horizon": int(args.horizon),
         "learning_rate": float(args.learning_rate),
         "initial_retention": float(args.initial_retention),
+        "initial_write_gain": float(args.initial_write_gain),
+        "recurrent_gain": float(args.recurrent_gain),
+        "data_update_offset": int(args.data_update_offset),
         "state_noise_std": 0.0,
         "target_noise_std": 0.0,
         "output_dropout": 0.0,
         "initial_memory_convention": "q0_hidden_initialization_only",
         "first_prediction_target": "apply_u0_then_compare_to_q1",
         "gate_intervention_rp": {
-            "enabled": bool(model.rp_enabled),
+            "enabled": bool(model.rp_enabled and not args.disable_rp),
             "warmup_updates": int(args.rp_warmup),
             "interval_updates": int(args.rp_interval),
             "probe_batch_size": int(args.rp_probe_batch_size),
@@ -341,9 +389,21 @@ def run(args: argparse.Namespace) -> Path:
             "lambda_fast": float(args.rp_lambda_fast),
             "eta_lambda": float(args.rp_eta_lambda),
             "damage_epsilon": float(args.rp_damage_epsilon),
+            "update_rule": str(args.rp_update_rule),
+            "max_theta_step": (
+                None
+                if args.rp_max_theta_step is None
+                else float(args.rp_max_theta_step)
+            ),
         },
         "selection_split": "validation",
         "test_bank_accessed": False,
+        "parent_checkpoint": (
+            None
+            if args.load_checkpoint is None
+            else str(args.load_checkpoint.expanduser().resolve())
+        ),
+        "parent_optimizer_loaded": bool(args.load_optimizer),
         "training_data": (
             {
                 "mode": "shared_memory_mapped_train_pool",
@@ -374,11 +434,12 @@ def run(args: argparse.Namespace) -> Path:
         {"update": 0, "train_component_mse": None, "validation": initial}
     ]
     rp_trace: list[dict[str, Any]] = []
+    rp_active = bool(model.rp_enabled and not args.disable_rp)
     if args.train_cache is None:
         probe = generated_batch(
             args.topology,
             replicate_seed=int(args.seed),
-            update=0,
+            update=int(args.data_update_offset),
             batch_size=int(args.rp_probe_batch_size),
             horizon=int(args.horizon),
             device=device,
@@ -389,7 +450,7 @@ def run(args: argparse.Namespace) -> Path:
             args.train_cache,
             topology=args.topology,
             replicate_seed=int(args.seed),
-            update=0,
+            update=int(args.data_update_offset),
             batch_size=int(args.rp_probe_batch_size),
             device=device,
         )
@@ -401,7 +462,7 @@ def run(args: argparse.Namespace) -> Path:
             batch = generated_batch(
                 args.topology,
                 replicate_seed=int(args.seed),
-                update=update,
+                update=int(args.data_update_offset) + update,
                 batch_size=int(args.batch_size),
                 horizon=int(args.horizon),
                 device=device,
@@ -412,7 +473,7 @@ def run(args: argparse.Namespace) -> Path:
                 args.train_cache,
                 topology=args.topology,
                 replicate_seed=int(args.seed),
-                update=update,
+                update=int(args.data_update_offset) + update,
                 batch_size=int(args.batch_size),
                 device=device,
             )
@@ -433,7 +494,7 @@ def run(args: argparse.Namespace) -> Path:
         last_loss = float(loss.detach().cpu())
 
         if (
-            model.rp_enabled
+            rp_active
             and update >= int(args.rp_warmup)
             and update % int(args.rp_interval) == 0
         ):
@@ -444,6 +505,8 @@ def run(args: argparse.Namespace) -> Path:
                 lambda_fast=float(args.rp_lambda_fast),
                 eta_lambda=float(args.rp_eta_lambda),
                 damage_epsilon=float(args.rp_damage_epsilon),
+                update_rule=str(args.rp_update_rule),
+                max_theta_step=args.rp_max_theta_step,
             )
             rp_trace.append({"update": update, **summary})
 
@@ -497,6 +560,8 @@ def run(args: argparse.Namespace) -> Path:
             model, validation
         ),
         "rp_calls": len(rp_trace),
+        "rp_active": rp_active,
+        "parent_checkpoint_loaded": parent_checkpoint is not None,
         "finite": True,
         "test_bank_accessed": False,
     }
@@ -533,7 +598,10 @@ def run(args: argparse.Namespace) -> Path:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=("smoke", "short"), required=True)
+    parser.add_argument(
+        "--phase", choices=("smoke", "short", "pretrain", "rp"), required=True
+    )
+    parser.add_argument("--cell-id")
     parser.add_argument("--model", choices=MODEL_IDS, required=True)
     parser.add_argument("--topology", choices=("s1", "t2"), required=True)
     parser.add_argument("--seed", type=int, default=10)
@@ -543,6 +611,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--horizon", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=0.003)
     parser.add_argument("--initial-retention", type=float, default=0.95)
+    parser.add_argument("--initial-write-gain", type=float, default=1.0)
+    parser.add_argument("--recurrent-gain", type=float, default=0.9)
+    parser.add_argument("--data-update-offset", type=int, default=0)
     parser.add_argument("--validation-trajectories", type=int, default=64)
     parser.add_argument("--report-interval", type=int, default=100)
     parser.add_argument("--rp-warmup", type=int, default=150)
@@ -552,6 +623,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rp-lambda-fast", type=float, default=0.5)
     parser.add_argument("--rp-eta-lambda", type=float, default=100.0)
     parser.add_argument("--rp-damage-epsilon", type=float, default=3e-5)
+    parser.add_argument(
+        "--rp-update-rule",
+        choices=("signed", "positive_only"),
+        default="signed",
+    )
+    parser.add_argument("--rp-max-theta-step", type=float)
     parser.add_argument(
         "--device", default="cuda:0" if torch.cuda.is_available() else "cpu"
     )
@@ -567,6 +644,9 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="shared train-only memory-mapped pool; avoids per-update generation",
     )
+    parser.add_argument("--disable-rp", action="store_true")
+    parser.add_argument("--load-checkpoint", type=Path)
+    parser.add_argument("--load-optimizer", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
