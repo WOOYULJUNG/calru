@@ -5,6 +5,29 @@
 대규모 실험 작업공간 전체를 옮긴 것이 아니라, 논문 수치의 출처를 감사하고
 재집계할 수 있도록 필요한 파일만 선별한 패키지다.
 
+## 지금 어디를 보면 되는가
+
+현재 저장소의 기준 브랜치는 `main` 하나다. 논문용 결과를 찾을 때는 원래
+`/home/biadmin/ca_rnn/experiments`를 직접 뒤지지 않고 다음 세 위치부터 본다.
+
+- [`paper/figures/`](paper/figures/): 논문 후보 figure의 주제별 카탈로그
+- [`paper/evidence/topology/`](paper/evidence/topology/): topology 실험의
+  seed-level 수치, 요약표와 provenance
+- [`paper/artifact_checksums.json`](paper/artifact_checksums.json): 각 figure와
+  표가 어느 frozen experiment에서 왔는지와 SHA-256
+
+로컬 frozen experiment에서 이 세 위치를 다시 동기화하거나 검증할 수 있다.
+
+~~~bash
+make artifacts-list
+make artifacts
+make check-artifacts
+~~~
+
+새 실험과 브랜치를 추가하는 규칙은
+[`docs/REPOSITORY_WORKFLOW.md`](docs/REPOSITORY_WORKFLOW.md), 현재 실험의 정확한
+경로와 상태는 [`docs/EXPERIMENT_CATALOG.md`](docs/EXPERIMENT_CATALOG.md)에 있다.
+
 현재 보장하는 재현 범위는 **저장된 raw JSON/CSV에서 9개의 논문 증거표를
 결정적으로 다시 집계하는 것**이다. 학습 코드는 [`repro/`](repro/)에 보존되어
 있지만 원 checkpoint와 trace가 포함되어 있지 않다. 새 P0 confirmatory launcher와
@@ -19,8 +42,10 @@ pipeline은 [`repro/sagodi_protocol/`](repro/sagodi_protocol/)에 격리했다. 
 - 현재 원고는 [`paper/manuscript/sections_01_02.md`](paper/manuscript/sections_01_02.md)의
   Introduction과 Related Work까지만 최신 협업본이다.
 - 완성된 LaTeX 원고, bibliography, 컴파일된 최종 PDF는 이 저장소에 없다.
-- 이전 작업 기록에 언급된 최종 FIG-1–FIG-5 파일도 현재 snapshot에서 찾지
-  못했다. [`paper/figures/README.md`](paper/figures/README.md)에 이 상태를 기록했다.
+- 현재 topology 비교와 persistent-topology figure는
+  [`paper/figures/topology/`](paper/figures/topology/)에 정리되어 있다.
+  초기 작업 기록의 teaser·architecture·OOD 등 FIG-1–FIG-5 원본은 아직
+  복구되지 않았다.
 - [`paper/archive/`](paper/archive/)의 초안에는 현재 감사 결과와 충돌하는 수치와
   과장된 문장이 있으므로 최신 원고나 수치의 근거로 사용하면 안 된다.
 - 코드와 데이터의 공개 라이선스는 아직 확정되지 않았다. `LICENSE`가 추가되기
@@ -155,8 +180,10 @@ paper/
   notes/                 수식·방법론·데이터 감사본
   evidence/
     raw/                 불변 입력 snapshot
-    tables/              재생성 가능한 CSV
-  figures/               최종 figure를 위한 자리와 규칙
+    tables/              legacy raw에서 재생성하는 CSV
+    topology/            현재 topology 결과와 source-level 표
+  figures/
+    topology/            model comparison과 persistence figure
 repro/
   legacy_code/           실험 당시 파일명 그대로의 코드 snapshot
   experimental_v2/       격리된 P0 학습·fixed test·동역학 분석

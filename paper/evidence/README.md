@@ -8,6 +8,8 @@
 
 - [`raw/`](raw/): legacy 실험에서 가져온 불변 JSON/CSV snapshot
 - [`tables/`](tables/): raw snapshot을 평균과 표본 표준편차로 집계한 9개 CSV
+- [`topology/`](topology/): 45-checkpoint topology 비교와 persistent-topology
+  분석의 frozen export
 - [`hc_local_grid_v2/`](hc_local_grid_v2/): 최종 H-C 후보를 고른 24-run 개발
   sweep과 checkpoint-only CA 분석 snapshot
 - [`DATA_DICTIONARY.md`](DATA_DICTIONARY.md): metric, task, column의 정확한 뜻
@@ -21,6 +23,10 @@
 Raw 파일은 수동 편집하지 않는다. 잘못된 source record가 발견되면 기존 snapshot을
 조용히 고치는 대신 정정 이유, 교체 파일과 checksum을 provenance에 추가한 새
 snapshot으로 다룬다.
+
+`topology/`도 수동으로 복사하지 않는다. 루트에서 `make artifacts`로
+`configs/paper_artifacts.json`에 고정된 source만 동기화하고,
+`make check-artifacts`로 source와 committed export의 SHA-256 일치를 검사한다.
 
 ## 집계 재현
 

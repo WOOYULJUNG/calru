@@ -9,13 +9,17 @@
 1. [`evidence/raw/`](evidence/raw/)와 집계 코드가 수치의 1차 근거다.
 2. [`evidence/tables/`](evidence/tables/)는 raw snapshot에서 재생성한 논문용
    요약표다.
-3. [`notes/methods_equations_data_ko.md`](notes/methods_equations_data_ko.md)는
+3. [`evidence/topology/`](evidence/topology/)는 현재 topology benchmark의
+   45-checkpoint 비교와 persistent-homology 결과다.
+4. [`figures/`](figures/)는 evidence와 generator가 연결된 논문 후보 figure
+   카탈로그다.
+5. [`notes/methods_equations_data_ko.md`](notes/methods_equations_data_ko.md)는
    수식, 실험 방법, 수치 주장과 한계를 코드에 대조한 감사본이다.
-4. [`notes/additional_experiments_ko.md`](notes/additional_experiments_ko.md)는
+6. [`notes/additional_experiments_ko.md`](notes/additional_experiments_ko.md)는
    최신 living draft의 주장에 필요한 추가 실험과 실행 우선순위를 정리한다.
-5. [`manuscript/sections_01_02.md`](manuscript/sections_01_02.md)는 현재 최신인
+7. [`manuscript/sections_01_02.md`](manuscript/sections_01_02.md)는 현재 최신인
    Introduction과 Related Work 조각이다.
-6. [`archive/`](archive/)는 역사 보존용이며 현재 주장이나 수치의 근거가 아니다.
+8. [`archive/`](archive/)는 역사 보존용이며 현재 주장이나 수치의 근거가 아니다.
 
 ## 현재 빠진 논문 자산
 
@@ -23,7 +27,10 @@
 - 최종 Abstract
 - LaTeX source와 bibliography
 - 컴파일된 최종 PDF
-- 최종 FIG-1–FIG-5 및 그 생성 스크립트
+- 초기 teaser·architecture·OOD·retention FIG-1–FIG-5의 원본 source
+
+현재 topology figure는 빠진 자산이 아니며
+[`figures/topology/`](figures/topology/)에서 바로 볼 수 있다.
 
 과거 작업 기록에 이러한 파일이 있었다는 언급은 남아 있지만, 이 repository를
 만든 시점의 접근 가능한 snapshot에서는 확인되지 않았다. 존재하지 않는 파일을

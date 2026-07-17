@@ -121,12 +121,12 @@ topology는 capability와 한계를 함께 보여주는 확장 실험으로 두�
 - 동결 설정:
   `repro/manifold_benchmark/topology_persistence_v1.json`
 - seed-level table:
-  `paper/evidence/tables/persistent_topology_seed_metrics.csv`
+  `paper/evidence/topology/persistence_v1/seed_metrics.csv`
 - summary:
-  `paper/evidence/tables/persistent_topology_summary.csv`
+  `paper/evidence/topology/persistence_v1/summary.csv`
 - threshold sensitivity:
-  `paper/evidence/tables/persistent_topology_threshold_sensitivity_*.csv`
+  `paper/evidence/topology/persistence_v1/threshold_sensitivity_*.csv`
 - ideal reference:
-  `paper/evidence/tables/persistent_topology_reference.json`
+  `paper/evidence/topology/persistence_v1/reference.json`
 - figure:
-  `paper/figures/fig_topology_*.{pdf,png}`
+  `paper/figures/topology/persistence/*.{pdf,png}`

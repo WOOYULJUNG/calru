@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "models": [
+    "rnn",
+    "gru",
+    "lstm",
+    "calru",
+    "hc"
+  ],
+  "topologies": [
+    "s1",
+    "t2",
+    "s2"
+  ],
+  "seeds": [
+    10,
+    11,
+    12
+  ],
+  "baseline_analysis": "/home/biadmin/ca_rnn/experiments/manifold_topology_transfer_v1-pilot-1f4a80d/analysis_all_v2",
+  "selected_analysis": "/home/biadmin/ca_rnn/experiments/manifold_topology_hparam_v1-c6dc758/analysis_final_v1",
+  "hc_topology_normal_analysis": null,
+  "fairness_note": "RNN/GRU/LSTM are ring-selected zero-retuning baselines; CA-LRU and H-C are topology-specific validation-selected models.",
+  "task_and_structure_failures_included": true,
+  "figures": [
+    "fig_A_all_models_task_and_blank.png",
+    "fig_A_all_models_task_and_blank.pdf",
+    "fig_B_all_models_blank_curves.png",
+    "fig_B_all_models_blank_curves.pdf",
+    "fig_C_all_models_geometry.png",
+    "fig_C_all_models_geometry.pdf",
+    "fig_D_all_models_dynamics.png",
+    "fig_D_all_models_dynamics.pdf",
+    "fig_E_all_models_endpoint_pca.png",
+    "fig_E_all_models_endpoint_pca.pdf",
+    "fig_F_all_models_normal_recovery.png",
+    "fig_F_all_models_normal_recovery.pdf",
+    "fig_G_all_models_topology_radial_recovery.png",
+    "fig_G_all_models_topology_radial_recovery.pdf"
+  ]
+}

@@ -120,8 +120,69 @@ def _combined_rows(
     ]
 
 
-def _analysis_for_row(row: dict[str, str], baseline: Path, selected: Path) -> Path:
-    return baseline if row["source_analysis"] == "baseline_all_v2" else selected
+def _analysis_for_row(
+    row: dict[str, str],
+    baseline: Path,
+    selected: Path,
+    hc_topology_normal: Path | None = None,
+) -> Path:
+    if row["source_analysis"] == "baseline_all_v2":
+        return baseline
+    if row["source_analysis"] == "hc_finalists_v1":
+        if hc_topology_normal is None:
+            raise RuntimeError("H-C topology-normal analysis root was not provided")
+        return hc_topology_normal
+    return selected
+
+
+def _combined_topology_normal_rows(
+    baseline: Path,
+    selected: Path,
+    task_rows: list[dict[str, str]],
+    hc_topology_normal: Path | None,
+) -> list[dict[str, str]]:
+    rows = [
+        *_decorate(
+            _read_csv(
+                baseline / "topology_normal" / "topology_normal_metrics.csv"
+            ),
+            allowed_models=BASELINE_MODELS,
+            source="baseline_all_v2",
+        ),
+        *_decorate(
+            _read_csv(
+                selected / "topology_normal" / "topology_normal_metrics.csv"
+            ),
+            allowed_models=("calru",),
+            source="selected_hparam_v1",
+        ),
+    ]
+    if hc_topology_normal is None:
+        rows.extend(
+            _decorate(
+                _read_csv(
+                    selected / "topology_normal" / "topology_normal_metrics.csv"
+                ),
+                allowed_models=("hc",),
+                source="selected_hparam_v1",
+            )
+        )
+        return rows
+
+    selected_hc_jobs = {
+        row["job_id"] for row in task_rows if row["model"] == "hc"
+    }
+    hc_rows = _decorate(
+        _read_csv(
+            hc_topology_normal
+            / "topology_normal"
+            / "topology_normal_metrics.csv"
+        ),
+        allowed_models=("hc",),
+        source="hc_finalists_v1",
+    )
+    rows.extend(row for row in hc_rows if row["job_id"] in selected_hc_jobs)
+    return rows
 
 
 def _geometry_extras(
@@ -191,6 +252,7 @@ def _seed_summary(
     blank: list[dict[str, str]],
     geometry: list[dict[str, str]],
     dynamics: list[dict[str, str]],
+    topology_normal: list[dict[str, str]],
     geometry_extras: list[dict[str, Any]],
     dynamics_extras: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -203,6 +265,10 @@ def _seed_summary(
     }
     dynamics_map = {
         (row["model"], row["topology"], int(row["seed"])): row for row in dynamics
+    }
+    topology_normal_map = {
+        (row["model"], row["topology"], int(row["seed"])): row
+        for row in topology_normal
     }
     geometry_extra_map = {
         (row["model"], row["topology"], int(row["seed"])): row
@@ -222,6 +288,7 @@ def _seed_summary(
         blank_row = blank_map[(*key, 4096)]
         geometry_row = geometry_map[key]
         dynamics_row = dynamics_map[key]
+        topology_normal_row = topology_normal_map[key]
         geometry_extra = geometry_extra_map[key]
         dynamics_extra = dynamics_extra_map[key]
         normalized_error = _number(task_row["test_mean_error"])
@@ -255,6 +322,15 @@ def _seed_summary(
                 "one_step_normal_gain": _number(
                     dynamics_row["one_step_sampled_normal_gain_mean"]
                 ),
+                "topology_radial_hidden_q512": _number(
+                    topology_normal_row["hidden_recovery_q512_median"]
+                ),
+                "topology_radial_output_q512": _number(
+                    topology_normal_row["output_radial_recovery_q512_median"]
+                ),
+                "topology_radial_same_memory_error512": _number(
+                    topology_normal_row["same_memory_error512_mean"]
+                ),
                 **{
                     name: dynamics_extra[name]
                     for name in (
@@ -286,6 +362,9 @@ def _group_summary(seed_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "finite128_normal_gain_mean",
         "recovery_q512_median",
         "same_memory_error512_mean",
+        "topology_radial_hidden_q512",
+        "topology_radial_output_q512",
+        "topology_radial_same_memory_error512",
     )
     output = []
     for topology in TOPOLOGIES:
@@ -726,9 +805,89 @@ def figure_recovery(
     return _save(fig, figures, "fig_F_all_models_normal_recovery")
 
 
+def figure_topology_radial_recovery(
+    topology_normal_rows: list[dict[str, str]],
+    baseline: Path,
+    selected: Path,
+    hc_topology_normal: Path | None,
+    figures: Path,
+) -> list[str]:
+    """Plot the topology-defined radius diagnostic separately from random normals."""
+
+    fig, axes = plt.subplots(2, 3, figsize=(14.0, 7.2), sharex=True)
+    for column, topology in enumerate(TOPOLOGIES):
+        for model in MODELS:
+            output_curves = []
+            memory_curves = []
+            horizons = None
+            group = [
+                row
+                for row in topology_normal_rows
+                if row["topology"] == topology and row["model"] == model
+            ]
+            for row in group:
+                root = _analysis_for_row(
+                    row, baseline, selected, hc_topology_normal
+                )
+                payload = json.loads(
+                    (
+                        root
+                        / "topology_normal"
+                        / "runs"
+                        / f"{row['job_id']}.json"
+                    ).read_text(encoding="utf-8")
+                )
+                horizons = np.asarray(payload["recovery_horizons"], dtype=int)
+                output_curves.append(
+                    np.asarray(payload["output_radial_recovery_q_median"], dtype=float)
+                )
+                memory_curves.append(
+                    np.asarray(payload["same_memory_error_mean"], dtype=float)
+                )
+            if horizons is None:
+                continue
+            output_median = np.nanmedian(np.stack(output_curves), axis=0)
+            memory_median = np.nanmedian(np.stack(memory_curves), axis=0)
+            axes[0, column].plot(
+                horizons,
+                np.maximum(output_median, np.finfo(float).tiny),
+                color=COLORS[model],
+                linewidth=2.0,
+                label=LABELS[model],
+            )
+            axes[1, column].plot(
+                horizons,
+                np.maximum(memory_median, np.finfo(float).tiny),
+                color=COLORS[model],
+                linewidth=2.0,
+            )
+        axes[0, column].axhline(1.0, color="#777777", linestyle=":", linewidth=0.9)
+        axes[0, column].set_title(TOPOLOGY_LABELS[topology])
+        axes[0, column].set_xscale("symlog", linthresh=1)
+        axes[0, column].set_yscale("log")
+        axes[1, column].set_xscale("symlog", linthresh=1)
+        axes[1, column].set_yscale("log")
+        axes[1, column].set_xlabel("Recovery horizon")
+        axes[0, column].grid(alpha=0.22)
+        axes[1, column].grid(alpha=0.22)
+    axes[0, 0].set_ylabel("Output-radius recovery ratio Q")
+    axes[1, 0].set_ylabel("Same-memory error")
+    axes[0, -1].legend(frameon=False, fontsize=8)
+    fig.suptitle(
+        "Topology-defined 5%-scale radial kick · medians across three seeds"
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    return _save(fig, figures, "fig_G_all_models_topology_radial_recovery")
+
+
 def compare(args: argparse.Namespace) -> None:
     baseline = args.baseline_analysis.expanduser().resolve(strict=True)
     selected = args.selected_analysis.expanduser().resolve(strict=True)
+    hc_topology_normal = (
+        args.hc_topology_normal_analysis.expanduser().resolve(strict=True)
+        if args.hc_topology_normal_analysis is not None
+        else None
+    )
     output = args.output.expanduser().resolve()
     figures = output / "figures"
     figures.mkdir(parents=True, exist_ok=True)
@@ -737,10 +896,19 @@ def compare(args: argparse.Namespace) -> None:
     blank = _combined_rows(baseline, selected, "blank/blank_metrics.csv")
     geometry = _combined_rows(baseline, selected, "geometry/geometry_metrics.csv")
     dynamics = _combined_rows(baseline, selected, "dynamics/dynamics_metrics.csv")
-    if len(task) != 45 or len(geometry) != 45 or len(dynamics) != 45:
+    topology_normal = _combined_topology_normal_rows(
+        baseline, selected, task, hc_topology_normal
+    )
+    if (
+        len(task) != 45
+        or len(geometry) != 45
+        or len(dynamics) != 45
+        or len(topology_normal) != 45
+    ):
         raise RuntimeError(
-            "expected 45 task/geometry/dynamics rows "
-            f"but found {len(task)}/{len(geometry)}/{len(dynamics)}"
+            "expected 45 task/geometry/dynamics/topology-normal rows "
+            f"but found {len(task)}/{len(geometry)}/{len(dynamics)}/"
+            f"{len(topology_normal)}"
         )
     if len(blank) != 270:
         raise RuntimeError(f"expected 270 blank rows but found {len(blank)}")
@@ -752,6 +920,7 @@ def compare(args: argparse.Namespace) -> None:
         blank,
         geometry,
         dynamics,
+        topology_normal,
         geometry_extra,
         dynamics_extra,
     )
@@ -761,6 +930,7 @@ def compare(args: argparse.Namespace) -> None:
     _write_csv(output / "blank_metrics_all_models.csv", blank)
     _write_csv(output / "geometry_metrics_all_models.csv", geometry)
     _write_csv(output / "dynamics_metrics_all_models.csv", dynamics)
+    _write_csv(output / "topology_radial_metrics_all_models.csv", topology_normal)
     _write_csv(output / "seed_level_comparison.csv", seed_rows)
     _write_csv(output / "model_topology_summary.csv", group_rows)
 
@@ -771,6 +941,13 @@ def compare(args: argparse.Namespace) -> None:
         *figure_dynamics(seed_rows, figures),
         *figure_pca(task, baseline, selected, figures),
         *figure_recovery(dynamics, baseline, selected, figures),
+        *figure_topology_radial_recovery(
+            topology_normal,
+            baseline,
+            selected,
+            hc_topology_normal,
+            figures,
+        ),
     ]
     manifest = {
         "schema_version": 1,
@@ -779,6 +956,9 @@ def compare(args: argparse.Namespace) -> None:
         "seeds": list(SEEDS),
         "baseline_analysis": str(baseline),
         "selected_analysis": str(selected),
+        "hc_topology_normal_analysis": (
+            str(hc_topology_normal) if hc_topology_normal is not None else None
+        ),
         "fairness_note": (
             "RNN/GRU/LSTM are ring-selected zero-retuning baselines; "
             "CA-LRU and H-C are topology-specific validation-selected models."
@@ -796,6 +976,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-analysis", type=Path, required=True)
     parser.add_argument("--selected-analysis", type=Path, required=True)
+    parser.add_argument(
+        "--hc-topology-normal-analysis",
+        type=Path,
+        help=(
+            "Optional H-C finalist analysis root when selected-analysis contains "
+            "the chosen H-C task/geometry rows but not topology-normal rows."
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     compare(parser.parse_args())
 
