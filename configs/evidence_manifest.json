@@ -21,7 +21,8 @@
     "sample_standard_deviation_ddof": 1,
     "single_observation_standard_deviation": 0.0,
     "missing_metric_policy": "require_on_every_seed_or_error",
-    "path_order": "lexicographic_posix_relative_path"
+    "path_order": "lexicographic_posix_relative_path",
+    "float_serialization_significant_digits": 12
   },
   "evidence_tiers": {
     "primary": "Three-seed evidence used to support a main empirical claim.",

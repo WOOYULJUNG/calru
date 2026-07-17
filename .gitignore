@@ -30,6 +30,7 @@ Thumbs.db
 *.swp
 
 # Experiment outputs: committed evidence lives under paper/evidence/ instead
+experiments/
 logs/
 logs_*/
 outputs/

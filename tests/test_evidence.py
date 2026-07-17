@@ -19,6 +19,7 @@ if str(SRC) not in sys.path:
 from calru_paper.evidence import (  # noqa: E402
     DEFAULT_SOURCE_ROOT,
     EvidenceError,
+    EvidenceTable,
     MetricSpec,
     RunSpec,
     TABLE_ORDER,
@@ -27,6 +28,7 @@ from calru_paper.evidence import (  # noqa: E402
     check_reproducibility,
     load_config,
     load_json_runs,
+    render_csv,
     sample_sd,
     write_tables_atomic,
 )
@@ -90,6 +92,13 @@ def _find_row(table, **identity):
 def test_sample_sd_uses_ddof_one():
     assert sample_sd([1.0, 2.0, 3.0]) == pytest.approx(1.0)
     assert sample_sd([7.0]) == 0.0
+
+
+def test_csv_float_rendering_masks_python_minor_roundoff() -> None:
+    left = EvidenceTable("toy.csv", ("value",), ({"value": 0.025113673856752484},))
+    right = EvidenceTable("toy.csv", ("value",), ({"value": 0.025113673856752488},))
+    assert render_csv(left) == render_csv(right)
+    assert render_csv(left) == b"value\n0.0251136738568\n"
 
 
 @pytest.mark.parametrize(

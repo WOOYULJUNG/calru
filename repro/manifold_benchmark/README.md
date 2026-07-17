@@ -1,5 +1,12 @@
 # Manifold benchmark generator v1
 
+> **현재 실행 경로.** 논문 중심 비교는 RNN/GRU/LSTM/CA-LRU이며 H-C는
+> historical comparison에만 남아 있다. OOD는
+> `topology_ood_calibrated_v3.json`, perturbation strength는
+> `topology_perturbation_calibrated_v1.json`을 사용한다. 전체 상태와 진입점은
+> [`docs/PROJECT_STATUS.md`](../../docs/PROJECT_STATUS.md)와
+> [`docs/CODE_MAP.md`](../../docs/CODE_MAP.md)가 기준이다.
+
 This package is separate from the frozen Ságodi source-reproduction task and
 the legacy Exp88 data.  It generates the new topology/dimension benchmark with
 one explicit indexing contract:
@@ -153,3 +160,24 @@ feature in the ideal topology. Sensitivity results at 0.5, 0.65 and 0.8 of
 that ideal feature are emitted beside the primary seed-level and grouped
 tables. Run artifacts are restartable and bound to the SHA-256 of the frozen
 analysis configuration.
+
+## Calibrated zero-retraining OOD v3
+
+`topology_ood_calibrated_v3.json` restores the original length, velocity,
+GP-correlation, contiguous-dwell and post-trajectory blank axes. Only
+checkpoints passing the frozen ID task gate enter OOD survival statistics.
+`calibrate_ood_strength.py` separates chance/no-update collapse from severe
+degradation relative to the model's own ID error and marks conditions where
+every eligible baseline fails.
+
+The frozen exploratory headline maxima are `T=1536`, velocity `2x`, contiguous
+dwell 96 and post-blank `H=512`. Stronger registered conditions remain
+stress-only instead of being deleted.
+
+## Finite hidden-normal perturbation v1
+
+`analyze_tangent_normal.py` supports model filtering, deterministic worker
+shards and CLI overrides for kick radius and recovery horizon.
+`topology_perturbation_calibrated_v1.json` evaluates relative radii
+`0.05, 0.10, 0.25` through blank horizon 2048. The paired report always keeps
+nearest-manifold distance and same-memory error separate.

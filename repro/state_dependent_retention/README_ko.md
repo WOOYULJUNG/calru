@@ -1,5 +1,10 @@
 # State-dependent retention writer comparison
 
+> **상태: archived exploratory.** H-C는 현재 논문 중심 모델에서 제외되었다.
+> 아래 내용은 탐색 과정과 failure mode의 provenance이며 새 headline 실험의
+> 기본 recipe가 아니다. 현재 기준은
+> [`docs/PROJECT_STATUS.md`](../../docs/PROJECT_STATUS.md)를 따른다.
+
 이 exploratory campaign은 동일한 state-dependent diagonal retention을 세 writer와
 결합한다.
 

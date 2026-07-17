@@ -64,6 +64,8 @@ REQUIRED_METRIC_GROUPS = (
     "discrete_flipflop",
 )
 
+CSV_FLOAT_SIGNIFICANT_DIGITS = 12
+
 BASELINE_SPECS = {
     "rnn": ("RNN", "tanh", "RNN"),
     "gru": ("GRU", "", "GRU"),
@@ -217,6 +219,15 @@ def load_config(manifest_path: Optional[Path] = None) -> EvidenceConfig:
         )
 
     seeds = _parse_expected_seeds(manifest.get("expected_seed_ids"))
+    aggregation = manifest.get("aggregation")
+    if not isinstance(aggregation, dict):
+        raise EvidenceError("manifest aggregation must be an object")
+    digits = aggregation.get("float_serialization_significant_digits")
+    if digits != CSV_FLOAT_SIGNIFICANT_DIGITS:
+        raise EvidenceError(
+            "manifest float_serialization_significant_digits must be "
+            f"{CSV_FLOAT_SIGNIFICANT_DIGITS}, got {digits!r}"
+        )
 
     raw_selected = manifest.get("selected_epsilon_by_task")
     if not isinstance(raw_selected, dict):
@@ -996,6 +1007,16 @@ def build_all_tables(
     return tables
 
 
+def _canonical_csv_value(value: object) -> object:
+    """Serialize floats identically across supported Python minor versions."""
+
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise EvidenceError(f"cannot render non-finite CSV value: {value!r}")
+        return format(value, f".{CSV_FLOAT_SIGNIFICANT_DIGITS}g")
+    return value
+
+
 def render_csv(table: EvidenceTable) -> bytes:
     """Render one table with deterministic UTF-8 and Unix newlines."""
 
@@ -1007,7 +1028,13 @@ def render_csv(table: EvidenceTable) -> bytes:
         lineterminator="\n",
     )
     writer.writeheader()
-    writer.writerows(table.rows)
+    writer.writerows(
+        {
+            field: _canonical_csv_value(row[field])
+            for field in table.fieldnames
+        }
+        for row in table.rows
+    )
     return stream.getvalue().encode("utf-8")
 
 

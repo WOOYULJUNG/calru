@@ -36,12 +36,14 @@ aggregate table은 canonical paper-facing 이름을 사용한다. 두 이름의 
 1. `configs/evidence_manifest.json`이 기대 seed와 task별 선택 epsilon을 정의한다.
 2. `src/calru_paper/evidence.py`가 repo-relative glob으로 raw record를 읽는다.
 3. 각 metric을 float로 변환해 seed 산술평균과 표본 표준편차를 계산한다.
-4. identity, seed IDs와 `source_pattern`을 함께 `tables/*.csv`에 쓴다.
+4. identity, seed IDs와 `source_pattern`을 함께 `tables/*.csv`에 쓰며 float는
+   12 significant digits로 canonical serialization한다.
 5. 재현성 검사는 임시 출력과 committed tables의 schema와 값을 비교한다.
 
 Raw metric을 다시 계산하거나 보간하지 않으며, aggregate 단계에서 model ranking이나
-통계적 유의성을 새로 추론하지 않는다. Table을 원고에 옮길 때 반올림하더라도
-committed CSV의 full-precision 값을 근거로 남긴다.
+통계적 유의성을 새로 추론하지 않는다. 12자리 직렬화는 Python minor version의
+\(10^{-16}\) 수준 구현 차이를 제거하기 위한 출력 계약이며 논문 표시 정밀도보다
+충분히 높다.
 
 ## Model lineage
 

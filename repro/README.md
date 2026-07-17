@@ -1,43 +1,61 @@
-# Experiment reproduction
+# Experiment code
 
-이 폴더는 논문 수치를 만든 실험 코드의 스냅샷을 보존한다. 논문에서 사용할 표준 이름은 **CA-LRU**이지만, 기존 checkpoint·JSON 파일과의 호환성을 유지하기 위해 실험 코드 내부의 `PAN`, `CAMN`, `AM-LRU` 식별자는 그대로 두었다. 이 구분은 [`docs/LEGACY_NAME_MAP.md`](../docs/LEGACY_NAME_MAP.md)에 기록한다.
+이 디렉터리는 수명주기가 다른 실험 코드를 함께 보존한다. 새 실험의 진입점을
+파일명이나 version 숫자로 추측하지 말고 [`docs/CODE_MAP.md`](../docs/CODE_MAP.md)를
+먼저 확인한다.
 
-## 범위
+## 상태별 디렉터리
 
-- `legacy_code/`: main manifold, writer/update ablation, RP control, retention scaling, discrete control, ring transport 및 Jacobian 분석에 필요한 Python/shell 스냅샷
-- `requirements-experiment.txt`: 기존 실험에서 확인된 핵심 패키지 버전
+| 디렉터리 | 상태 | 역할 |
+|---|---|---|
+| [`manifold_benchmark/`](manifold_benchmark/) | current | \(S^1,T^2,S^2\), topology, OOD, perturbation |
+| [`sagodi_protocol/`](sagodi_protocol/) | current/supporting | ring baseline, CA-LRU factorial, Ságodi evaluation |
+| [`state_dependent_retention/`](state_dependent_retention/) | archived exploratory | H-C writer와 retention sweep |
+| [`experimental_v2/`](experimental_v2/) | archived scaffold | 초기 P0 fixed-bank pipeline |
+| [`legacy_code/`](legacy_code/) | provenance only | 최초 Exp71–Exp89 코드 snapshot |
 
-원본 discrete launcher의 로컬 절대경로·특정 conda interpreter·기존 K-way
-seed 0 가정은 public artifact import 과정에서 제거했다.
-`legacy_code/run_e8_discrete_full.sh`는 script 위치에서 실행하고, `PYTHON`
-환경변수를 사용하며, K-way와 flip-flop 모두 seed 0/1/2를 돌린다.
-
-체크포인트와 trace는 용량 및 저작자 식별 가능성 때문에 이 폴더에 복사하지 않았다. 따라서 현재 저장소는 저장된 raw metric에서 논문 표를 **완전히 재집계**할 수 있지만, 초기 checkpoint까지 포함한 모든 학습 run을 byte-for-byte 재현한다고 주장하지 않는다.
+현재 논문 모델은 CA-LRU다. H-C는 탐색 과정과 failure mode를 보존하기 위해
+남기지만 새 headline 실험의 기본 비교군으로 사용하지 않는다.
 
 ## 환경
 
-기존 run에서 확인된 환경은 Python 3.10.20, PyTorch 2.4.0+cu121, NumPy 1.26.4, Matplotlib 3.5.3이다. CUDA 및 GPU 종류, cuDNN 버전, deterministic algorithm 설정은 최종 artifact metadata에 추가해야 한다.
+Lightweight evidence 재집계에는 루트 package만 설치한다.
+
+~~~bash
+python -m pip install -e ".[dev]"
+~~~
+
+GPU 분석 환경의 확인된 핵심 버전은 Python 3.10, PyTorch 2.4.0+cu121,
+NumPy 1.26.4, Matplotlib 3.5.3이다.
 
 ~~~bash
 python -m venv .venv-experiment
 source .venv-experiment/bin/activate
 python -m pip install -r repro/requirements-experiment.txt
-cd repro/legacy_code
 ~~~
 
-## 대표 명령
+Persistent homology만 필요하면 다음 optional dependency를 추가한다.
 
 ~~~bash
-python run_exp88_manifold_main.py --seeds 0,1,2
-python run_exp88_surface_main.py --seeds 0,1,2
-python run_exp88_writer_sweep.py --seeds 0,1,2 --include-surface
-python run_exp88_shuffle_matched.py --seeds 0,1,2
-python run_e7_line_dim_rnw.py --seeds 0,1,2
-bash run_e8_discrete_full.sh 5
+python -m pip install -e ".[topology-analysis]"
 ~~~
 
-Discrete launcher에 사용할 interpreter는 필요하면
-`PYTHON=/path/to/python bash run_e8_discrete_full.sh 0`처럼 지정한다. 인자는
-`CUDA_VISIBLE_DEVICES`에 넘길 GPU index이며 기본값은 0이다.
+## 실행 원칙
 
-실행 전에 launcher의 GPU 지정, output overwrite 옵션, output/checkpoint/trace 경로를 반드시 확인한다. 표에 쓸 결과는 바로 덮어쓰지 말고 새 artifact 디렉터리에 생성한 뒤 기존 수치와 비교한다.
+1. code와 config를 먼저 commit한다.
+2. output은 `experiments/<descriptive-id>`의 새 디렉터리에 쓴다.
+3. checkpoint, config, code, bank SHA-256와 seed를 receipt에 저장한다.
+4. tuning/validation과 final test bank를 분리한다.
+5. failed seed를 삭제하거나 성공 seed로 교체하지 않는다.
+6. 논문 export는 `configs/paper_artifacts.json`에 등록한 뒤 `make artifacts`로
+   동기화한다.
+
+원 checkpoint와 trace는 용량과 익명성 때문에 Git에 포함하지 않는다. GitHub의
+CSV/JSON/figure는 frozen experiment의 작은 export이며, 전체 training run의
+byte-for-byte 복제물이 아니다.
+
+## Legacy 이름
+
+논문 표준 이름은 CA-LRU지만 기존 checkpoint와 raw JSON에는 PAN, CAMN, AM-LRU가
+남아 있다. mapping은 [`docs/LEGACY_NAME_MAP.md`](../docs/LEGACY_NAME_MAP.md)를
+따르며 raw provenance 밖에서 legacy 이름을 새 모델명처럼 사용하지 않는다.

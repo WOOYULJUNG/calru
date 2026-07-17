@@ -9,8 +9,8 @@
 1. [`evidence/raw/`](evidence/raw/)와 집계 코드가 수치의 1차 근거다.
 2. [`evidence/tables/`](evidence/tables/)는 raw snapshot에서 재생성한 논문용
    요약표다.
-3. [`evidence/topology/`](evidence/topology/)는 현재 topology benchmark의
-   45-checkpoint 비교와 persistent-homology 결과다.
+3. [`evidence/topology/`](evidence/topology/)는 현재 topology benchmark,
+   calibrated OOD v3, finite perturbation, persistent-homology 결과다.
 4. [`figures/`](figures/)는 evidence와 generator가 연결된 논문 후보 figure
    카탈로그다.
 5. [`notes/methods_equations_data_ko.md`](notes/methods_equations_data_ko.md)는
@@ -20,6 +20,10 @@
 7. [`manuscript/sections_01_02.md`](manuscript/sections_01_02.md)는 현재 최신인
    Introduction과 Related Work 조각이다.
 8. [`archive/`](archive/)는 역사 보존용이며 현재 주장이나 수치의 근거가 아니다.
+
+모델과 evidence의 현재/보조/보관 분류는
+[`docs/PROJECT_STATUS.md`](../docs/PROJECT_STATUS.md)가 기준이다. 특히 H-C는
+archived exploratory이며 현재 논문 중심 모델은 CA-LRU다.
 
 ## 현재 빠진 논문 자산
 

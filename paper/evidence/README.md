@@ -8,9 +8,9 @@
 
 - [`raw/`](raw/): legacy 실험에서 가져온 불변 JSON/CSV snapshot
 - [`tables/`](tables/): raw snapshot을 평균과 표본 표준편차로 집계한 9개 CSV
-- [`topology/`](topology/): 45-checkpoint topology 비교와 persistent-topology
-  분석의 frozen export
-- [`hc_local_grid_v2/`](hc_local_grid_v2/): 최종 H-C 후보를 고른 24-run 개발
+- [`topology/`](topology/): topology, persistent topology, calibrated OOD와
+  perturbation의 frozen export
+- [`hc_local_grid_v2/`](hc_local_grid_v2/): archived H-C 24-run development
   sweep과 checkpoint-only CA 분석 snapshot
 - [`DATA_DICTIONARY.md`](DATA_DICTIONARY.md): metric, task, column의 정확한 뜻
 - [`PROVENANCE.md`](PROVENANCE.md): legacy source, 변환 과정, evidence tier와 한계
@@ -54,7 +54,9 @@ make check-provenance
 집계의 source of truth는 `configs/evidence_manifest.json`,
 `src/calru_paper/evidence.py`, 그리고 `raw/`다. 기본 규칙은 seed 0/1/2의
 산술평균과 표본 표준편차(`statistics.stdev`, `ddof=1`)다. 필수 aggregate row가
-세 seed를 모두 포함하지 않으면 검증은 실패해야 한다.
+세 seed를 모두 포함하지 않으면 검증은 실패해야 한다. Python minor version별
+`statistics.stdev`의 마지막 비트 차이가 checksum을 바꾸지 않도록 CSV float는
+12 significant digits로 canonical serialization한다.
 
 ## 생성되는 표
 
@@ -82,8 +84,8 @@ make check-provenance
 final-scaffold causal ablation으로 바꾸지는 않는다. Smoke/pilot과 집계가 불일치한
 과거 결과는 이 bundle에 claim-bearing table로 import하지 않았다.
 
-`hc_local_grid_v2/`는 seeds 0–2를 사용해 architecture hyperparameter를 선택한
-development/diagnostic evidence다. 이 snapshot의 1위 조건을 독립 confirmatory
+`hc_local_grid_v2/`는 seeds 0–2를 사용한 archived development/diagnostic
+evidence다. 이 snapshot의 1위 조건을 현재 논문 모델이나 독립 confirmatory
 결과처럼 취급하거나 trajectory를 독립 replicate로 세면 안 된다.
 
 ## 집계와 전체 학습은 다르다

@@ -1,5 +1,9 @@
 # Experimental v2: P0 confirmatory training
 
+> **상태: archived scaffold.** 현재 topology/OOD 실행 경로는
+> [`repro/manifold_benchmark/`](../manifold_benchmark/)다. 이 디렉터리는 초기
+> P0 설계와 provenance를 보존하지만 새 실험의 기본 launcher가 아니다.
+
 이 디렉터리는 기존 Exp88 결과와 체크포인트를 건드리지 않고 추가 P0 실험을
 실행하기 위한 격리된 launcher다. 공유 model builder에는 opt-in `RG-LRU-full`과
 `GRU-full`만 추가했으며, 기존 variant와 historical default sweep은 그대로 유지한다.
