@@ -86,8 +86,10 @@ def main() -> None:
     seeds = [int(value.strip()) for value in args.seeds.split(",") if value.strip()]
     output = args.output.expanduser().resolve()
     pretrain_output = output / "pretrain"
+    control_output = output / "control"
     rp_output = output / "rp"
     pretrain_output.mkdir(parents=True, exist_ok=True)
+    control_output.mkdir(parents=True, exist_ok=True)
     rp_output.mkdir(parents=True, exist_ok=True)
     devices = [value.strip() for value in args.devices.split(",") if value.strip()]
     caches = {
@@ -151,6 +153,58 @@ def main() -> None:
         pretrain_cells.append((command, job_id, device))
     pretrain_records = _run_stage(
         pretrain_cells, workers=min(args.workers, max(1, len(pretrain_cells)))
+    )
+
+    control_cells: list[tuple[list[str], str, str]] = []
+    for index, (row, seed) in enumerate(selected_seed_pairs):
+        model, topology = row["model"], row["topology"]
+        cell_id = "selected_control_no_rp"
+        job_id = f"rp__{model}__{topology}__{cell_id}__seed{seed}"
+        if (control_output / job_id / "COMPLETED.json").is_file():
+            continue
+        device = devices[index % len(devices)]
+        command = [
+            sys.executable,
+            "-m",
+            "repro.static_gate_pilot.run",
+            "--phase",
+            "rp",
+            "--cell-id",
+            cell_id,
+            "--model",
+            model,
+            "--topology",
+            topology,
+            "--seed",
+            str(seed),
+            "--updates",
+            "2000",
+            "--learning-rate",
+            row["learning_rate"],
+            "--initial-retention",
+            row["initial_retention"],
+            "--initial-write-gain",
+            row["initial_write_gain"],
+            "--recurrent-gain",
+            row["recurrent_gain"],
+            "--report-interval",
+            "100",
+            "--disable-rp",
+            "--load-checkpoint",
+            str(pretrain_paths[(model, topology, seed)]),
+            "--load-optimizer",
+            "--data-update-offset",
+            "5000",
+            "--train-cache",
+            str(caches[seed]),
+            "--device",
+            device,
+            "--output",
+            str(control_output),
+        ]
+        control_cells.append((command, job_id, device))
+    control_records = _run_stage(
+        control_cells, workers=min(args.workers, max(1, len(control_cells)))
     )
 
     rp_cells: list[tuple[list[str], str, str]] = []
@@ -231,6 +285,7 @@ def main() -> None:
                 "seeds": seeds,
                 "selection": str(args.selection.expanduser().resolve()),
                 "pretrain_records": pretrain_records,
+                "control_records": control_records,
                 "rp_records": rp_records,
             },
             indent=2,

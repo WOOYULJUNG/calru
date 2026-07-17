@@ -33,6 +33,7 @@ def main() -> None:
     }
     root = args.root.expanduser().resolve(strict=True)
     rows: list[dict[str, Any]] = []
+    controls: dict[tuple[str, str, int], dict[str, Any]] = {}
     for result_path in sorted(root.glob("rp__*/result.json")):
         result = json.loads(result_path.read_text())
         manifest = json.loads((result_path.parent / "manifest.json").read_text())
@@ -40,6 +41,14 @@ def main() -> None:
         parent = parent_lookup[key]
         final = result["final_validation"]
         blank2048 = result["blank_validation"]["2048"]["intrinsic_mean_radians"]
+        if not bool(result["rp_active"]):
+            controls[key] = {
+                "job_id": result["job_id"],
+                "id_intrinsic_rad": float(final["intrinsic_mean_radians"]),
+                "blank2048_rad": float(blank2048),
+                "checkpoint": str(result_path.parent / "checkpoint.pt"),
+            }
+            continue
         rows.append(
             {
                 "job_id": result["job_id"],
@@ -75,8 +84,26 @@ def main() -> None:
                 "recurrent_gain": parent["recurrent_gain"],
             }
         )
-    if len(rows) != 32:
-        raise ValueError(f"expected 32 RP results, found {len(rows)}")
+    if len(rows) != 32 or len(controls) != 4:
+        raise ValueError(
+            f"expected 32 RP results and 4 controls, found {len(rows)} and "
+            f"{len(controls)}"
+        )
+    for row in rows:
+        key = (row["model"], row["topology"], int(row["seed"]))
+        control = controls[key]
+        row.update(
+            {
+                "control_job_id": control["job_id"],
+                "control_id_rad": control["id_intrinsic_rad"],
+                "control_blank2048_rad": control["blank2048_rad"],
+                "id_ratio_to_control": float(row["id_intrinsic_rad"])
+                / max(float(control["id_intrinsic_rad"]), 1e-12),
+                "blank2048_ratio_to_control": float(row["blank2048_rad"])
+                / max(float(control["blank2048_rad"]), 1e-12),
+                "control_checkpoint": control["checkpoint"],
+            }
+        )
     with (root / "rp_summary.csv").open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -97,17 +124,17 @@ def main() -> None:
             row
             for row in group
             if float(row["id_intrinsic_rad"]) < absolute_gates[topology]
-            and float(row["id_ratio_to_parent"]) <= 1.5
+            and float(row["id_ratio_to_control"]) <= 1.5
         ]
         if passing:
             best = min(
                 passing,
                 key=lambda row: (
-                    float(row["blank2048_ratio_to_parent"]),
+                    float(row["blank2048_ratio_to_control"]),
                     float(row["id_intrinsic_rad"]),
                 ),
             )
-            use_rp = float(best["blank2048_ratio_to_parent"]) < 1.0
+            use_rp = float(best["blank2048_ratio_to_control"]) < 1.0
         else:
             best = min(group, key=lambda row: float(row["id_intrinsic_rad"]))
             use_rp = False
@@ -115,8 +142,8 @@ def main() -> None:
             {
                 **best,
                 "task_gate_passed": bool(passing),
-                "rp_improves_parent_blank2048": (
-                    float(best["blank2048_ratio_to_parent"]) < 1.0
+                "rp_improves_control_blank2048": (
+                    float(best["blank2048_ratio_to_control"]) < 1.0
                 ),
                 "recommended_use_rp": use_rp,
             }
