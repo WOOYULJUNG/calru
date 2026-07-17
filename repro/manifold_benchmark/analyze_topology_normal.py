@@ -287,7 +287,8 @@ def main() -> None:
     )
     if missing:
         raise RuntimeError("topology-normal analysis requires all completed runs")
-    records = [record for record in records if success.get(record.job_id, False)]
+    if not bool(config["execution"].get("analyze_structure_for_all_runs", False)):
+        records = [record for record in records if success.get(record.job_id, False)]
     if args.job_id:
         records = [record for record in records if record.job_id == args.job_id]
         if not records:
