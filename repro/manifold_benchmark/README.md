@@ -200,3 +200,35 @@ shards and CLI overrides for kick radius and recovery horizon.
 `topology_perturbation_calibrated_v1.json` evaluates relative radii
 `0.05, 0.10, 0.25` through blank horizon 2048. The paired report always keeps
 nearest-manifold distance and same-memory error separate.
+
+## Slow-subspace versus manifold attraction
+
+`analyze_subspace_attraction.py` is the stricter no-training diagnostic for
+distinguishing generic slow coordinates from manifold-specific attraction.
+`topology_subspace_attraction_v1.json` freezes:
+
+- the empirical global subspace as the directions with 16-step Jacobian
+  response gain at least 0.9;
+- CA-LRU's separate explicit subspace as the coordinates with
+  `lambda >= 0.99`;
+- local tangent, within-subspace normal and outside-subspace normal kicks at
+  1%, 5% and 10% of atlas scale;
+- time-evolved clean references `M_H = F_0^H(M_0)` through blank horizon 4096;
+- raw stationarity, best global scaling, pairwise distortion, carrier norm and
+  direction, and decoded same-memory error.
+
+The current representative-checkpoint run uses the success-first seed map from
+`comparison_manifest.json`; model-topology pairs with no successful seed remain
+visible as explicit failed-task fallbacks. It opens no test bank and performs
+no training.
+
+```bash
+PYTHONPATH=. python -m repro.manifold_benchmark.analyze_subspace_attraction \
+  --baseline-run-root /path/to/manifold_topology_transfer_v1-pilot \
+  --baseline-analysis-root /path/to/baseline/analysis_all_v2 \
+  --calru-run-root /path/to/manifold_topology_hparam_v1 \
+  --calru-analysis-root /path/to/calru/analysis_final_v1 \
+  --comparison-root /path/to/comparison_all_models_v1 \
+  --output /path/to/manifold_subspace_attraction_v1 \
+  --device cuda:0
+```

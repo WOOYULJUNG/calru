@@ -24,6 +24,7 @@ normal-kick 분석의 현재 경로다.
 | OOD strength decision | `calibrate_ood_strength.py` | `topology_ood_calibrated_v3.json` |
 | finite normal kick | `analyze_tangent_normal.py` | analysis config + CLI overrides |
 | perturbation decision | `calibrate_perturbation_strength.py` | `topology_perturbation_calibrated_v1.json` |
+| slow-subspace/manifold split | `analyze_subspace_attraction.py` | `topology_subspace_attraction_v1.json` |
 
 `topology_ood_v1.json`과 `topology_ood_v2.json`은 호환성과 provenance 때문에
 남아 있지만 새 primary OOD는 v3를 사용한다.

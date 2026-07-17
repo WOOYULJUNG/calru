@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "analysis_id": "manifold_topology_subspace_attraction_v1",
+  "models": ["rnn", "gru", "lstm", "calru"],
+  "topologies": ["s1", "t2", "s2"],
+  "representative_seed_policy": "lowest validation_error among task_success=true seeds; if none succeed, lowest-validation-error checkpoint is an explicit failed-task fallback",
+  "empirical_slow_subspace": {
+    "definition": "top eigenspace of mean_h J_16(h)^T J_16(h) over clean atlas anchors",
+    "jacobian_horizon": 16,
+    "jacobian_anchors": 16,
+    "minimum_finite_response_gain": 0.9,
+    "rank_rule": "retain every eigen-direction whose sqrt eigenvalue is at least 0.9; expanding directions are retained rather than misclassified as contracting normals"
+  },
+  "explicit_calru_subspace": {
+    "lambda_threshold": 0.99
+  },
+  "finite_kicks": {
+    "anchors": 24,
+    "outside_directions": 4,
+    "signed_directions": true,
+    "radii_relative_to_atlas_scale": [0.01, 0.05, 0.1],
+    "primary_radius_relative": 0.05,
+    "horizons": [0, 128, 512, 1024, 2048, 4096],
+    "distance_reference": "time-evolved clean atlas M_H = F_0^H(M_0)",
+    "same_memory_reference": "corresponding clean anchor under the same blank horizon"
+  },
+  "state_geometry": {
+    "horizons": [0, 128, 512, 1024, 2048, 4096],
+    "global_scaling_about_origin": true,
+    "pairwise_distortion": "log(distance_H / distance_0), with the global median removed before dispersion"
+  }
+}
