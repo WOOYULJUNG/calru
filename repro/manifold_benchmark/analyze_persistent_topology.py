@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from importlib.metadata import version as package_version
@@ -53,6 +54,77 @@ class Target:
     record: RunRecord
     geometry_root: Path
     selection_regime: str
+
+
+def _read_task_index(targets: list[Target]) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    for root in sorted({target.geometry_root for target in targets}):
+        candidates = (
+            root / "task" / "task_metrics.csv",
+            root / "task_metrics.csv",
+            root / "finalist_seed_metrics.csv",
+        )
+        path = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if path is None:
+            raise FileNotFoundError(
+                f"no task metrics table found under analysis root {root}"
+            )
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                success = row.get("task_success", row.get("task_gate"))
+                validation_error = row.get(
+                    "validation_error",
+                    row.get("validation_task_intrinsic_radians"),
+                )
+                if success is None or validation_error is None:
+                    raise RuntimeError(
+                        f"{path} lacks task-success or validation-error fields"
+                    )
+                index[row["job_id"]] = {
+                    "task_success": str(success).lower() == "true",
+                    "validation_error": float(validation_error),
+                }
+    missing = sorted(
+        target.record.job_id
+        for target in targets
+        if target.record.job_id not in index
+    )
+    if missing:
+        raise RuntimeError(f"missing task metrics for persistent targets: {missing}")
+    return index
+
+
+def _representatives(
+    targets: list[Target],
+    task_index: dict[str, dict[str, Any]],
+) -> dict[tuple[str, str], Target]:
+    """Prefer successful seeds, then choose the best available failed seed."""
+
+    selected: dict[tuple[str, str], Target] = {}
+    for topology in TOPOLOGIES:
+        for model in MODELS:
+            all_candidates = [
+                target
+                for target in targets
+                if target.record.topology == topology
+                and target.record.model_id == model
+            ]
+            if not all_candidates:
+                raise RuntimeError(f"no checkpoints for {topology}/{model}")
+            successful = [
+                target
+                for target in all_candidates
+                if bool(task_index[target.record.job_id]["task_success"])
+            ]
+            candidates = successful if successful else all_candidates
+            selected[(model, topology)] = min(
+                candidates,
+                key=lambda target: (
+                    float(task_index[target.record.job_id]["validation_error"]),
+                    int(target.record.seed),
+                ),
+            )
+    return selected
 
 
 def _optional_ripser():
@@ -661,10 +733,89 @@ def _plot_signature_heatmap(
     colorbar = figure.colorbar(rendered, cax=color_axis)
     colorbar.set_label("Fraction of 3 seeds matching signature")
     figure.suptitle(
-        "Persistent-homology signature under blank-input dynamics\n"
+        "All-seed robustness (secondary): persistent-homology signature\n"
         "Cell text: median detected persistent $H_1/H_2$ bars"
     )
-    _save_figure(figure, output, "fig_topology_signature_heatmap")
+    _save_figure(figure, output, "fig_topology_signature_all_seeds")
+
+
+def _plot_representative_heatmap(
+    rows: list[dict[str, Any]],
+    representatives: dict[tuple[str, str], Target],
+    output: Path,
+    horizons: list[int],
+) -> None:
+    figure, axes = plt.subplots(1, 3, figsize=(17.5, 4.8))
+    cmap = plt.get_cmap("RdYlGn").copy()
+    cmap.set_bad("#E5E7EB")
+    rendered = None
+    for axis, topology in zip(axes, TOPOLOGIES):
+        expected_row = next(row for row in rows if row["topology"] == topology)
+        image = np.full((len(MODELS), len(horizons)), np.nan, dtype=float)
+        labels = [["N/A" for _ in horizons] for _ in MODELS]
+        ylabels = []
+        for model_index, model in enumerate(MODELS):
+            target = representatives[(model, topology)]
+            first_row = next(
+                item for item in rows if item["job_id"] == target.record.job_id
+            )
+            successful = bool(first_row["task_success"])
+            ylabels.append(
+                f"{MODEL_LABELS[model]} (s{target.record.seed}"
+                f"{'' if successful else '*'})"
+            )
+            for horizon_index, horizon in enumerate(horizons):
+                row = next(
+                    item
+                    for item in rows
+                    if item["job_id"] == target.record.job_id
+                    and int(item["horizon"]) == horizon
+                )
+                image[model_index, horizon_index] = float(
+                    bool(row["signature_match"])
+                )
+                labels[model_index][horizon_index] = (
+                    f"{int(row['detected_h1'])}/{int(row['detected_h2'])}"
+                )
+        rendered = axis.imshow(
+            np.ma.masked_invalid(image),
+            vmin=0.0,
+            vmax=1.0,
+            cmap=cmap,
+            aspect="auto",
+        )
+        for row_index in range(len(MODELS)):
+            for column_index in range(len(horizons)):
+                axis.text(
+                    column_index,
+                    row_index,
+                    labels[row_index][column_index],
+                    ha="center",
+                    va="center",
+                    fontsize=9,
+                    color="black",
+                )
+        axis.set_xticks(range(len(horizons)), [str(value) for value in horizons])
+        axis.set_yticks(range(len(MODELS)), ylabels)
+        axis.set_xlabel("Blank horizon")
+        axis.set_title(
+            f"{TOPOLOGY_LABELS[topology]} · expected persistent "
+            f"$H_1/H_2$={expected_row['expected_h1']}/{expected_row['expected_h2']}"
+        )
+    axes[0].set_ylabel("Model (selected seed)")
+    figure.subplots_adjust(
+        top=0.78, bottom=0.15, left=0.08, right=0.90, wspace=0.34
+    )
+    if rendered is not None:
+        color_axis = figure.add_axes((0.93, 0.17, 0.012, 0.64))
+        colorbar = figure.colorbar(rendered, cax=color_axis, ticks=[0, 1])
+        colorbar.set_ticklabels(["mismatch", "match"])
+    figure.suptitle(
+        "Primary topology check: representative seed per model\n"
+        "Cell text: detected persistent $H_1/H_2$ bars; "
+        "* marks best-available task-failed fallback"
+    )
+    _save_figure(figure, output, "fig_topology_signature_representatives")
 
 
 def _plot_bottleneck(
@@ -714,16 +865,12 @@ def _plot_bottleneck(
 
 
 def _plot_representative_diagrams(
-    targets: list[Target],
+    representatives: dict[tuple[str, str], Target],
+    task_index: dict[str, dict[str, Any]],
     reference_arrays: dict[str, dict[str, np.ndarray]],
     output: Path,
     horizon: int,
 ) -> None:
-    selected = {
-        (target.record.model_id, target.record.topology): target
-        for target in targets
-        if target.record.seed == 10
-    }
     figure, axes = plt.subplots(
         len(TOPOLOGIES),
         len(MODELS) + 1,
@@ -739,7 +886,7 @@ def _plot_representative_diagrams(
             )
         ]
         for model in MODELS:
-            target = selected[(model, topology)]
+            target = representatives[(model, topology)]
             with np.load(
                 output / "runs" / f"{target.record.job_id}.npz",
                 allow_pickle=False,
@@ -759,6 +906,23 @@ def _plot_representative_diagrams(
         limit = max(finite_values, default=1.0) * 1.05
         for column_index, (h1, h2) in enumerate(sources):
             axis = axes[row_index, column_index]
+            if column_index:
+                model = MODELS[column_index - 1]
+                target = representatives[(model, topology)]
+                successful = bool(
+                    task_index[target.record.job_id]["task_success"]
+                )
+                axis.text(
+                    0.98,
+                    0.03,
+                    f"seed {target.record.seed}"
+                    + ("" if successful else "* · failed fallback"),
+                    transform=axis.transAxes,
+                    ha="right",
+                    va="bottom",
+                    color="#333333" if successful else "#B33A3A",
+                    fontsize=7,
+                )
             for diagram, label, color in (
                 (h1, "$H_1$", "#4477AA"),
                 (h2, "$H_2$", "#CC6677"),
@@ -787,11 +951,14 @@ def _plot_representative_diagrams(
             if row_index == 0 and column_index == len(MODELS):
                 axis.legend(frameon=False, fontsize=8)
     figure.suptitle(
-        f"Persistent diagrams after {horizon} blank steps · representative seed 10"
+        f"Persistent diagrams after {horizon} blank steps · "
+        "model-specific representatives (* = task-failed fallback)"
     )
     figure.tight_layout(rect=(0, 0, 1, 0.95))
     _save_figure(
-        figure, output, f"fig_topology_persistence_diagrams_h{horizon}"
+        figure,
+        output,
+        f"fig_representative_persistence_diagrams_h{horizon}",
     )
 
 
@@ -801,6 +968,8 @@ def analyze(args: argparse.Namespace) -> None:
     output = args.output.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     targets = _collect_targets(args)
+    task_index = _read_task_index(targets)
+    representatives = _representatives(targets, task_index)
 
     bank_root = args.hc_analysis_root.resolve(strict=True) / "banks"
     reference: dict[str, dict[str, Any]] = {}
@@ -860,13 +1029,71 @@ def analyze(args: argparse.Namespace) -> None:
 
     rows = _flatten_runs(output)
     if len(rows) != 45 * len(config["blank_horizons"]):
-        raise RuntimeError(f"expected 180 seed-horizon rows, found {len(rows)}")
+        raise RuntimeError(
+            f"expected {45 * len(config['blank_horizons'])} "
+            f"seed-horizon rows, found {len(rows)}"
+        )
+    for row in rows:
+        task = task_index[row["job_id"]]
+        row["task_success"] = bool(task["task_success"])
+        row["validation_error"] = float(task["validation_error"])
     summary = _summarize(rows)
     sensitivity_rows, sensitivity_summary = _threshold_sensitivity(
         targets, reference, output, config
     )
     write_csv(output / "persistent_topology_seed_metrics.csv", rows)
     write_csv(output / "persistent_topology_summary.csv", summary)
+    representative_selection = []
+    representative_rows = []
+    for topology in TOPOLOGIES:
+        for model in MODELS:
+            candidates = [
+                target
+                for target in targets
+                if target.record.topology == topology
+                and target.record.model_id == model
+                and bool(task_index[target.record.job_id]["task_success"])
+            ]
+            target = representatives[(model, topology)]
+            selected_success = bool(
+                task_index[target.record.job_id]["task_success"]
+            )
+            representative_selection.append(
+                {
+                    "topology": topology,
+                    "model": model,
+                    "model_label": MODEL_LABELS[model],
+                    "task_success_seed_count": len(candidates),
+                    "representative_available": True,
+                    "selected_job_id": target.record.job_id,
+                    "selected_seed": target.record.seed,
+                    "selected_task_success": selected_success,
+                    "selection_kind": (
+                        "best_validation_success"
+                        if selected_success
+                        else "best_available_failed_fallback"
+                    ),
+                    "selected_validation_error": task_index[
+                        target.record.job_id
+                    ]["validation_error"],
+                    "selection_policy": (
+                        "lowest validation_error among task_success=true; "
+                        "if none succeed, lowest-validation-error checkpoint "
+                        "is an explicit failed-task fallback"
+                    ),
+                }
+            )
+            representative_rows.extend(
+                row for row in rows if row["job_id"] == target.record.job_id
+            )
+    write_csv(
+        output / "representative_selection.csv",
+        representative_selection,
+    )
+    write_csv(
+        output / "representative_seed_metrics.csv",
+        representative_rows,
+    )
     write_csv(
         output / "persistent_topology_threshold_sensitivity_seed.csv",
         sensitivity_rows,
@@ -884,13 +1111,14 @@ def analyze(args: argparse.Namespace) -> None:
         },
     )
     horizons = [int(value) for value in config["blank_horizons"]]
+    _plot_representative_heatmap(rows, representatives, output, horizons)
     _plot_signature_heatmap(summary, output, horizons)
     _plot_bottleneck(summary, output, horizons)
     _plot_representative_diagrams(
-        targets, reference_arrays, output, horizons[0]
+        representatives, task_index, reference_arrays, output, horizons[0]
     )
     _plot_representative_diagrams(
-        targets, reference_arrays, output, horizons[-1]
+        representatives, task_index, reference_arrays, output, horizons[-1]
     )
     atomic_json(
         output / "PERSISTENT_TOPOLOGY_COMPLETED.json",
@@ -923,12 +1151,28 @@ def analyze(args: argparse.Namespace) -> None:
             "run_count": len(targets),
             "seed_horizon_row_count": len(rows),
             "summary_row_count": len(summary),
+            "representative_row_count": len(representative_rows),
             "threshold_sensitivity_row_count": len(sensitivity_rows),
+            "representative_seed_policy": (
+                "lowest validation_error among task_success=true seeds; "
+                "if none succeed, lowest-validation-error checkpoint "
+                "is an explicit failed-task fallback"
+            ),
+            "representative_seeds": {
+                topology: {
+                    model: representatives[(model, topology)].record.seed
+                    for model in MODELS
+                }
+                for topology in TOPOLOGIES
+            },
             "figures": [
-                "fig_topology_signature_heatmap.png",
+                "fig_topology_signature_representatives.png",
+                "fig_topology_signature_all_seeds.png",
                 "fig_topology_diagram_distance.png",
-                f"fig_topology_persistence_diagrams_h{horizons[0]}.png",
-                f"fig_topology_persistence_diagrams_h{horizons[-1]}.png",
+                "fig_representative_persistence_diagrams_"
+                f"h{horizons[0]}.png",
+                "fig_representative_persistence_diagrams_"
+                f"h{horizons[-1]}.png",
             ],
         },
     )
@@ -966,7 +1210,9 @@ def main() -> None:
     parser.add_argument(
         "--persistence-config",
         type=Path,
-        default=Path(__file__).with_name("topology_persistence_v1.json"),
+        default=Path(__file__).with_name(
+            "topology_persistence_success_v2.json"
+        ),
     )
     analyze(parser.parse_args())
 

@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "analysis_id": "manifold_topology_persistence_success_v2",
+  "representation": "transported_endpoint_hidden_state",
+  "blank_horizons": [0, 128, 512, 2048, 4096],
+  "geometry_atlas_points": 256,
+  "persistent_homology_landmarks": 128,
+  "landmark_selection": "ideal_output_farthest_point_permutation_fixed_across_models_and_horizons",
+  "distance_metric": "euclidean_in_original_hidden_space",
+  "distance_normalization": "median_fifth_nearest_neighbor_distance",
+  "knn_scale_k": 5,
+  "max_homology_dimension": 2,
+  "coefficient_field": 2,
+  "strong_bar_threshold_fraction_of_weakest_expected_ideal_bar": 0.5,
+  "threshold_sensitivity_fractions": [0.5, 0.65, 0.8],
+  "expected_reduced_betti": {
+    "s1": {"h1": 1, "h2": 0},
+    "t2": {"h1": 2, "h2": 1},
+    "s2": {"h1": 0, "h2": 1}
+  },
+  "comparison_models": ["rnn", "gru", "lstm", "calru", "hc"],
+  "seeds": [10, 11, 12],
+  "primary_display_population": "best-validation task-success seed per model-topology, or best available checkpoint if none succeed",
+  "representative_seed_selection_metric": "validation_error",
+  "failed_seed_fallback": true,
+  "all_seed_results_are_secondary_robustness_analysis": true,
+  "pca_used_for_persistent_homology": false,
+  "selection_note": "Primary topology figures prefer task-success checkpoints. If a model-topology has no successful seed, the lowest-validation-error failed checkpoint is shown with an explicit fallback label. All-seed summaries remain secondary robustness diagnostics."
+}

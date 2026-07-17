@@ -23,29 +23,54 @@
   "fairness_note": "RNN/GRU/LSTM are ring-selected zero-retuning baselines; CA-LRU and H-C are topology-specific validation-selected models.",
   "task_and_structure_failures_included": true,
   "display_atlas": {
-    "seed": 10,
+    "representative_seed_policy": "lowest validation_error among task_success=true seeds; if none succeed, lowest-validation-error checkpoint is shown as an explicit failed-task fallback",
+    "representative_seeds": {
+      "s1": {
+        "rnn": 12,
+        "gru": 12,
+        "lstm": 10,
+        "calru": 10,
+        "hc": 10
+      },
+      "t2": {
+        "rnn": 11,
+        "gru": 12,
+        "lstm": 12,
+        "calru": 10,
+        "hc": 10
+      },
+      "s2": {
+        "rnn": 10,
+        "gru": 10,
+        "lstm": 12,
+        "calru": 10,
+        "hc": 10
+      }
+    },
     "points": 1024,
     "blank_horizons": [
       0,
       128,
       512,
-      2048
+      1024,
+      2048,
+      4096
     ],
-    "pca_evolution_alignment": "per-horizon centering, one joint PCA and common axis limits within each model-topology row",
+    "pca_evolution_alignment": "H=0 fixed center and PC1-PC3 axes, with common axis limits within each model-topology row",
     "cache_files": [
-      "display_atlas/seed10__rnn__s1.npz",
-      "display_atlas/seed10__gru__s1.npz",
+      "display_atlas/seed12__rnn__s1.npz",
+      "display_atlas/seed12__gru__s1.npz",
       "display_atlas/seed10__lstm__s1.npz",
       "display_atlas/seed10__calru__s1.npz",
       "display_atlas/seed10__hc__s1.npz",
-      "display_atlas/seed10__rnn__t2.npz",
-      "display_atlas/seed10__gru__t2.npz",
-      "display_atlas/seed10__lstm__t2.npz",
+      "display_atlas/seed11__rnn__t2.npz",
+      "display_atlas/seed12__gru__t2.npz",
+      "display_atlas/seed12__lstm__t2.npz",
       "display_atlas/seed10__calru__t2.npz",
       "display_atlas/seed10__hc__t2.npz",
       "display_atlas/seed10__rnn__s2.npz",
       "display_atlas/seed10__gru__s2.npz",
-      "display_atlas/seed10__lstm__s2.npz",
+      "display_atlas/seed12__lstm__s2.npz",
       "display_atlas/seed10__calru__s2.npz",
       "display_atlas/seed10__hc__s2.npz"
     ]

@@ -18,9 +18,9 @@
 | `fig_E_endpoint_pca` | 1,024점 transported hidden atlas가 PC1–3에서 어떤 3D 구조를 이루는가? | frozen bank와 checkpoint 재계산 |
 | `fig_F_sampled_normal_recovery` | 무작위 hidden-normal kick에서 복귀하는가? | `dynamics_metrics.csv`와 per-run NPZ |
 | `fig_G_topology_radial_recovery` | ring/torus/sphere의 radius 방향으로 복귀하는가? | `topology_radial_metrics.csv`와 per-run JSON |
-| `fig_H1_s1_pca_evolution` | \(S^1\) hidden atlas가 blank 시간에 따라 수축·분열하는가? | 1,024점 frozen bank와 seed-10 checkpoint |
-| `fig_H2_t2_pca_evolution` | \(T^2\) 주기 격자가 blank 시간에 따라 접히거나 붕괴하는가? | 1,024점 frozen bank와 seed-10 checkpoint |
-| `fig_H3_s2_pca_evolution` | \(S^2\) hidden atlas가 blank 시간에 따라 구면 topology를 유지하는가? | 1,024점 frozen bank와 seed-10 checkpoint |
+| `fig_H1_s1_pca_evolution` | \(S^1\) hidden atlas가 blank 시간에 따라 수축·분열하는가? | 모델별 best-validation task-success seed |
+| `fig_H2_t2_pca_evolution` | \(T^2\) 주기 격자가 blank 시간에 따라 접히거나 붕괴하는가? | 성공 seed 우선; 없으면 best-available 실패 fallback |
+| `fig_H3_s2_pca_evolution` | \(S^2\) hidden atlas가 blank 시간에 따라 구면 topology를 유지하는가? | 성공 seed 우선; 없으면 best-available 실패 fallback |
 
 표 입력은
 [`../evidence/topology/all_models_v1/`](../evidence/topology/all_models_v1/)에
@@ -29,18 +29,35 @@
 
 ### Persistent topology
 
-경로: [`topology/persistence/`](topology/persistence/)
+현재 경로: [`topology/persistence_v2/`](topology/persistence_v2/)
 
 | 파일 | 내용 |
 |---|---|
-| `fig_signature_heatmap` | 모델·topology·blank horizon별 expected \(H_1/H_2\) signature |
+| `fig_signature_representatives` | 성공 우선 모델별 representative의 expected \(H_1/H_2\) signature |
+| `fig_signature_all_seeds` | 실패 seed를 포함한 3-seed robustness 보조 분석 |
 | `fig_diagram_distance` | 이상적 persistence diagram까지 bottleneck distance |
 | `fig_diagrams_h0` | blank 이전 representative persistence diagrams |
-| `fig_diagrams_h2048` | 2,048 blank step 이후 diagrams |
+| `fig_diagrams_h4096` | 4,096 blank step 이후 diagrams |
 
 수치는
-[`../evidence/topology/persistence_v1/`](../evidence/topology/persistence_v1/)에
+[`../evidence/topology/persistence_v2/`](../evidence/topology/persistence_v2/)에
 있다.
+
+### OOD와 일반화
+
+경로: [`topology/ood_v1/`](topology/ood_v1/)
+
+| 파일 | 내용 |
+|---|---|
+| `fig_O1_length_generalization` | \(T=128\)에서 학습한 모델의 \(T\leq2048\) zero-retraining 길이 일반화 |
+| `fig_O2_velocity_generalization` | 동일 trajectory primitive를 0.5×–2×로 스케일한 paired velocity OOD |
+| `fig_O3_dwell_generalization` | dense, fixed activity probability, 64-step middle blank 비교 |
+| `fig_O3b_smoothness_generalization` | GP length scale 변화에 대한 control smoothness OOD |
+| `fig_O4_combined_and_postblank` | length×velocity 복합 stress와 이후 512-step blank 기억 |
+
+대표선은 task-success seed 우선이며, 성공 seed가 없는 모델×topology는 점선과
+별표로 표시한다. 수치와 전체 3-seed 범위는
+[`../evidence/topology/ood_v1/`](../evidence/topology/ood_v1/)에 있다.
 
 ## 재생성·동기화
 
@@ -50,6 +67,9 @@ Generator:
   [`compare_all_topology_models.py`](../../repro/manifold_benchmark/compare_all_topology_models.py)
 - persistent topology:
   [`analyze_persistent_topology.py`](../../repro/manifold_benchmark/analyze_persistent_topology.py)
+- OOD bank와 평가:
+  [`build_ood_banks.py`](../../repro/manifold_benchmark/build_ood_banks.py),
+  [`analyze_ood_generalization.py`](../../repro/manifold_benchmark/analyze_ood_generalization.py)
 
 Frozen experiment에서 논문 디렉터리로 복사할 때는 수동 `cp` 대신 다음을 쓴다.
 
@@ -72,7 +92,11 @@ Figure를 추가할 때 한 artifact group에 다음을 함께 등록한다.
 - concept/measured 구분과 seed 수
 - frozen experiment ID
 
-PCA는 시각적 진단이지 topology의 증명이 아니다. `fig_H*`는 각 모델 행마다
-네 horizon을 함께 맞춘 joint PCA와 공통 축 범위를 사용하며, bulk translation만
-제거하기 위해 horizon별 중심을 뺀다. 실패 seed를 숨기지 않으며,
-AAAI 공개 전 PDF metadata와 절대경로를 다시 검사한다.
+PCA는 시각적 진단이지 topology의 증명이 아니다. `fig_H*`는 1,024개 hidden
+endpoint를 \(H=\{0,128,512,1024,2048,4096\}\)에서 추적한다. 각 모델 행에서
+\(H=0\)의 PCA 중심과 PC1--PC3 축을 모든 horizon에 고정하고 공통 축 범위를
+사용하므로 bulk translation, 수축, 팽창, 분열을 함께 보존한다. 각
+모델×topology에서 task gate를 통과한 seed 중 validation error가 가장 작은
+checkpoint를 사용한다. 성공 seed가 하나도 없으면 validation error가 가장
+작은 checkpoint를 fallback으로 보여주되 빨간색 `failed task gate`로
+표시한다. AAAI 공개 전 PDF metadata와 절대경로를 다시 검사한다.

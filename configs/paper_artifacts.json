@@ -128,7 +128,7 @@
     },
     {
       "id": "persistent_topology_v1",
-      "status": "current_global_topology",
+      "status": "archived_all_seed_h2048",
       "source_root": "persistent_topology_all_models_v1",
       "generator": "repro/manifold_benchmark/analyze_persistent_topology.py",
       "files": [
@@ -187,6 +187,178 @@
         {
           "source": "figures/fig_topology_persistence_diagrams_h2048.pdf",
           "destination": "paper/figures/topology/persistence/fig_diagrams_h2048.pdf"
+        }
+      ]
+    },
+    {
+      "id": "persistent_topology_success_v2",
+      "status": "current_success_first_representative_h4096",
+      "source_root": "manifold_topology_persistence_success_v2-20260717",
+      "generator": "repro/manifold_benchmark/analyze_persistent_topology.py",
+      "files": [
+        {
+          "source": "PERSISTENT_TOPOLOGY_COMPLETED.json",
+          "destination": "paper/evidence/topology/persistence_v2/completion.json"
+        },
+        {
+          "source": "reference_topology_metrics.json",
+          "destination": "paper/evidence/topology/persistence_v2/reference.json"
+        },
+        {
+          "source": "persistent_topology_seed_metrics.csv",
+          "destination": "paper/evidence/topology/persistence_v2/seed_metrics.csv"
+        },
+        {
+          "source": "persistent_topology_summary.csv",
+          "destination": "paper/evidence/topology/persistence_v2/summary.csv"
+        },
+        {
+          "source": "persistent_topology_threshold_sensitivity_seed.csv",
+          "destination": "paper/evidence/topology/persistence_v2/threshold_sensitivity_seed.csv"
+        },
+        {
+          "source": "persistent_topology_threshold_sensitivity_summary.csv",
+          "destination": "paper/evidence/topology/persistence_v2/threshold_sensitivity_summary.csv"
+        },
+        {
+          "source": "representative_selection.csv",
+          "destination": "paper/evidence/topology/persistence_v2/representative_selection.csv"
+        },
+        {
+          "source": "representative_seed_metrics.csv",
+          "destination": "paper/evidence/topology/persistence_v2/representative_metrics.csv"
+        },
+        {
+          "source": "figures/fig_topology_signature_representatives.png",
+          "destination": "paper/figures/topology/persistence_v2/fig_signature_representatives.png"
+        },
+        {
+          "source": "figures/fig_topology_signature_representatives.pdf",
+          "destination": "paper/figures/topology/persistence_v2/fig_signature_representatives.pdf"
+        },
+        {
+          "source": "figures/fig_topology_signature_all_seeds.png",
+          "destination": "paper/figures/topology/persistence_v2/fig_signature_all_seeds.png"
+        },
+        {
+          "source": "figures/fig_topology_signature_all_seeds.pdf",
+          "destination": "paper/figures/topology/persistence_v2/fig_signature_all_seeds.pdf"
+        },
+        {
+          "source": "figures/fig_topology_diagram_distance.png",
+          "destination": "paper/figures/topology/persistence_v2/fig_diagram_distance.png"
+        },
+        {
+          "source": "figures/fig_topology_diagram_distance.pdf",
+          "destination": "paper/figures/topology/persistence_v2/fig_diagram_distance.pdf"
+        },
+        {
+          "source": "figures/fig_representative_persistence_diagrams_h0.png",
+          "destination": "paper/figures/topology/persistence_v2/fig_diagrams_h0.png"
+        },
+        {
+          "source": "figures/fig_representative_persistence_diagrams_h0.pdf",
+          "destination": "paper/figures/topology/persistence_v2/fig_diagrams_h0.pdf"
+        },
+        {
+          "source": "figures/fig_representative_persistence_diagrams_h4096.png",
+          "destination": "paper/figures/topology/persistence_v2/fig_diagrams_h4096.png"
+        },
+        {
+          "source": "figures/fig_representative_persistence_diagrams_h4096.pdf",
+          "destination": "paper/figures/topology/persistence_v2/fig_diagrams_h4096.pdf"
+        }
+      ]
+    },
+    {
+      "id": "topology_ood_banks_v1",
+      "status": "current_paired_ood_banks",
+      "source_root": "manifold_topology_ood_banks_v1-20260717b",
+      "generator": "repro/manifold_benchmark/build_ood_banks.py",
+      "files": [
+        {
+          "source": "OOD_BANKS_READY.json",
+          "destination": "paper/evidence/topology/ood_v1/banks_completion.json"
+        },
+        {
+          "source": "ood_banks_manifest.json",
+          "destination": "paper/evidence/topology/ood_v1/banks_manifest.json"
+        }
+      ]
+    },
+    {
+      "id": "topology_ood_v1",
+      "status": "current_zero_retraining_ood",
+      "source_root": "manifold_topology_ood_v1-20260717",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "files": [
+        {
+          "source": "OOD_ANALYSIS_COMPLETED.json",
+          "destination": "paper/evidence/topology/ood_v1/completion.json"
+        },
+        {
+          "source": "RESULTS_ko.md",
+          "destination": "paper/evidence/topology/ood_v1/RESULTS_ko.md"
+        },
+        {
+          "source": "ood_checkpoint_provenance.csv",
+          "destination": "paper/evidence/topology/ood_v1/checkpoint_provenance.csv"
+        },
+        {
+          "source": "ood_representative_selection.csv",
+          "destination": "paper/evidence/topology/ood_v1/representative_selection.csv"
+        },
+        {
+          "source": "ood_representative_metrics.csv",
+          "destination": "paper/evidence/topology/ood_v1/representative_metrics.csv"
+        },
+        {
+          "source": "ood_seed_metrics.csv",
+          "destination": "paper/evidence/topology/ood_v1/seed_metrics.csv"
+        },
+        {
+          "source": "ood_all_seed_summary.csv",
+          "destination": "paper/evidence/topology/ood_v1/ood_all_seed_summary.csv"
+        },
+        {
+          "source": "figures/fig_O1_length_generalization.png",
+          "destination": "paper/figures/topology/ood_v1/fig_O1_length_generalization.png"
+        },
+        {
+          "source": "figures/fig_O1_length_generalization.pdf",
+          "destination": "paper/figures/topology/ood_v1/fig_O1_length_generalization.pdf"
+        },
+        {
+          "source": "figures/fig_O2_velocity_generalization.png",
+          "destination": "paper/figures/topology/ood_v1/fig_O2_velocity_generalization.png"
+        },
+        {
+          "source": "figures/fig_O2_velocity_generalization.pdf",
+          "destination": "paper/figures/topology/ood_v1/fig_O2_velocity_generalization.pdf"
+        },
+        {
+          "source": "figures/fig_O3_dwell_generalization.png",
+          "destination": "paper/figures/topology/ood_v1/fig_O3_dwell_generalization.png"
+        },
+        {
+          "source": "figures/fig_O3_dwell_generalization.pdf",
+          "destination": "paper/figures/topology/ood_v1/fig_O3_dwell_generalization.pdf"
+        },
+        {
+          "source": "figures/fig_O3b_smoothness_generalization.png",
+          "destination": "paper/figures/topology/ood_v1/fig_O3b_smoothness_generalization.png"
+        },
+        {
+          "source": "figures/fig_O3b_smoothness_generalization.pdf",
+          "destination": "paper/figures/topology/ood_v1/fig_O3b_smoothness_generalization.pdf"
+        },
+        {
+          "source": "figures/fig_O4_combined_and_postblank.png",
+          "destination": "paper/figures/topology/ood_v1/fig_O4_combined_and_postblank.png"
+        },
+        {
+          "source": "figures/fig_O4_combined_and_postblank.pdf",
+          "destination": "paper/figures/topology/ood_v1/fig_O4_combined_and_postblank.pdf"
         }
       ]
     }

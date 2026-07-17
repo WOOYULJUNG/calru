@@ -90,6 +90,29 @@ def _bool(value: Any) -> bool:
     return str(value).lower() == "true"
 
 
+def _representative_checkpoint(
+    task_rows: list[dict[str, str]],
+    topology: str,
+    model: str,
+) -> dict[str, str]:
+    """Prefer task-success seeds, then use the best available failed seed."""
+
+    all_candidates = [
+        row
+        for row in task_rows
+        if row["topology"] == topology
+        and row["model"] == model
+    ]
+    if not all_candidates:
+        raise RuntimeError(f"no checkpoints for {topology}/{model}")
+    successful = [row for row in all_candidates if _bool(row["task_success"])]
+    candidates = successful if successful else all_candidates
+    return min(
+        candidates,
+        key=lambda row: (_number(row["validation_error"]), int(row["seed"])),
+    )
+
+
 def _median(values: Iterable[Any]) -> float:
     finite = [_number(value) for value in values]
     finite = [value for value in finite if np.isfinite(value)]
@@ -749,7 +772,10 @@ def _cached_display_atlas(
     cache_path = (
         output
         / "display_atlas"
-        / f"seed10__{task_row['model']}__{task_row['topology']}.npz"
+        / (
+            f"seed{int(task_row['seed'])}__{task_row['model']}"
+            f"__{task_row['topology']}.npz"
+        )
     )
     if cache_path.is_file():
         with np.load(cache_path, allow_pickle=False) as archive:
@@ -829,12 +855,8 @@ def _build_display_atlases(
     atlases: dict[tuple[str, str], dict[str, Any]] = {}
     for topology in TOPOLOGIES:
         for model in MODELS:
-            task_row = next(
-                row
-                for row in task_rows
-                if row["topology"] == topology
-                and row["model"] == model
-                and int(row["seed"]) == 10
+            task_row = _representative_checkpoint(
+                task_rows, topology, model
             )
             root = _analysis_for_row(task_row, baseline, selected)
             atlases[(topology, model)] = _cached_display_atlas(
@@ -853,24 +875,22 @@ def _single_snapshot_pca(states: np.ndarray) -> np.ndarray:
     return _orient_pca(centered @ right[:3].T, right[:3])
 
 
-def _joint_snapshot_pca(
+def _fixed_initial_snapshot_pca(
     states: dict[int, np.ndarray],
     horizons: tuple[int, ...],
 ) -> dict[int, np.ndarray]:
-    # Topology is translation invariant. Per-horizon centering removes bulk
-    # hidden-state drift while retaining contraction, expansion and folding.
-    centered = {
-        horizon: states[horizon]
-        - states[horizon].mean(axis=0, keepdims=True)
-        for horizon in horizons
-    }
-    combined = np.concatenate([centered[horizon] for horizon in horizons], axis=0)
-    _, _, right = np.linalg.svd(combined, full_matrices=False)
-    combined_score = _orient_pca(combined @ right[:3].T, right[:3])
-    count = states[horizons[0]].shape[0]
+    # Fit the origin and PC axes once at H=0. Keeping both fixed makes bulk
+    # motion, contraction, expansion, folding, and convergence to discrete
+    # states directly comparable across blank-input horizons.
+    initial = states[horizons[0]]
+    center = initial.mean(axis=0, keepdims=True)
+    _, _, right = np.linalg.svd(initial - center, full_matrices=False)
     return {
-        horizon: combined_score[index * count : (index + 1) * count]
-        for index, horizon in enumerate(horizons)
+        horizon: _orient_pca(
+            (states[horizon] - center) @ right[:3].T,
+            right[:3],
+        )
+        for horizon in horizons
     }
 
 
@@ -953,7 +973,33 @@ def figure_pca(
     for row_index, topology in enumerate(TOPOLOGIES):
         for column, model in enumerate(MODELS):
             axis = axes[row_index, column]
-            atlas = atlases[(topology, model)]
+            atlas = atlases.get((topology, model))
+            if atlas is None:
+                axis.text2D(
+                    0.5,
+                    0.5,
+                    "No task-success seed",
+                    transform=axis.transAxes,
+                    ha="center",
+                    va="center",
+                    fontsize=9,
+                    color="#B33A3A",
+                )
+                if row_index == 0:
+                    axis.set_title(LABELS[model])
+                if column == 0:
+                    axis.text2D(
+                        -0.12,
+                        0.5,
+                        TOPOLOGY_LABELS[topology],
+                        transform=axis.transAxes,
+                        rotation=90,
+                        ha="center",
+                        va="center",
+                        fontsize=12,
+                    )
+                axis.set_axis_off()
+                continue
             task_row = atlas["task_row"]
             latent = atlas["latent"]
             score = _single_snapshot_pca(atlas["states"][0])
@@ -976,17 +1022,21 @@ def figure_pca(
             )
             if row_index == 0:
                 axis.set_title(LABELS[model])
+            representative_label = f"seed {int(task_row['seed'])}"
+            representative_color = "#333333"
             if not _bool(task_row["task_success"]):
-                axis.text2D(
-                    0.5,
-                    0.99,
-                    "failed task gate",
-                    transform=axis.transAxes,
-                    ha="center",
-                    va="top",
-                    fontsize=7,
-                    color="#B33A3A",
-                )
+                representative_label += " · best available\nfailed task gate"
+                representative_color = "#B33A3A"
+            axis.text2D(
+                0.5,
+                0.99,
+                representative_label,
+                transform=axis.transAxes,
+                ha="center",
+                va="top",
+                fontsize=7,
+                color=representative_color,
+            )
             if column == 0:
                 axis.text2D(
                     -0.12,
@@ -1011,7 +1061,8 @@ def figure_pca(
                 pane.set_alpha(0.0)
             axis.set_axis_off()
     fig.suptitle(
-        "Transported endpoint hidden-state PCA (PC1–PC3) · 1,024-point atlas · seed 10"
+        "Transported endpoint hidden-state PCA (PC1–PC3) · 1,024-point atlas"
+        " · success-first representative seed per model"
     )
     fig.text(
         0.5,
@@ -1034,14 +1085,30 @@ def figure_pca_evolution(
         fig, axes = plt.subplots(
             len(MODELS),
             len(horizons),
-            figsize=(13.2, 14.8),
+            figsize=(3.25 * len(horizons), 14.8),
             subplot_kw={"projection": "3d"},
         )
         for row_index, model in enumerate(MODELS):
-            atlas = atlases[(topology, model)]
+            atlas = atlases.get((topology, model))
+            if atlas is None:
+                for column, _ in enumerate(horizons):
+                    axis = axes[row_index, column]
+                    axis.set_axis_off()
+                    if column == 0:
+                        axis.text2D(
+                            0.5,
+                            0.5,
+                            f"{LABELS[model]}\nNo task-success seed",
+                            transform=axis.transAxes,
+                            ha="center",
+                            va="center",
+                            fontsize=9,
+                            color="#B33A3A",
+                        )
+                continue
             task_row = atlas["task_row"]
             latent = atlas["latent"]
-            scores = _joint_snapshot_pca(atlas["states"], horizons)
+            scores = _fixed_initial_snapshot_pca(atlas["states"], horizons)
             all_scores = np.concatenate(
                 [scores[horizon] for horizon in horizons], axis=0
             )
@@ -1068,46 +1135,31 @@ def figure_pca_evolution(
                 if row_index == 0:
                     axis.set_title(f"blank H={horizon}")
                 if column == 0:
-                    label_color = (
-                        "#111111"
-                        if _bool(task_row["task_success"])
-                        else "#B33A3A"
-                    )
+                    successful = _bool(task_row["task_success"])
                     axis.text2D(
                         -0.13,
                         0.5,
-                        LABELS[model],
+                        f"{LABELS[model]} · seed {int(task_row['seed'])}"
+                        + ("" if successful else " · fallback"),
                         transform=axis.transAxes,
                         rotation=90,
                         ha="center",
                         va="center",
                         fontsize=11,
-                        color=label_color,
+                        color="#111111" if successful else "#B33A3A",
                     )
-                    if not _bool(task_row["task_success"]):
-                        axis.text2D(
-                            -0.13,
-                            0.07,
-                            "failed task gate",
-                            transform=axis.transAxes,
-                            rotation=90,
-                            ha="center",
-                            va="center",
-                            fontsize=6.5,
-                            color="#B33A3A",
-                        )
                 _equalize_3d(axis, all_scores)
                 axis.view_init(elev=22, azim=-55)
                 axis.set_axis_off()
         fig.suptitle(
-            f"{TOPOLOGY_LABELS[topology]} hidden-atlas evolution in joint PC1–PC3"
-            " · 1,024 points · seed 10"
+            f"{TOPOLOGY_LABELS[topology]} hidden-atlas evolution in fixed H=0 PC1–PC3"
+            " · 1,024 points · model-specific representatives"
         )
         fig.text(
             0.5,
             0.012,
-            "One joint PCA and common axis limits per model row; each horizon is centered to remove bulk translation. "
-            "Lines track the same intrinsic neighbors through blank dynamics.",
+            "The H=0 PCA origin and axes stay fixed at every horizon; common row limits expose translation, contraction, and splitting. "
+            "Lines track the same intrinsic neighbors; red fallback labels mark models with no task-success seed.",
             ha="center",
             fontsize=8.5,
         )
@@ -1320,7 +1372,7 @@ def compare(args: argparse.Namespace) -> None:
     _write_csv(output / "seed_level_comparison.csv", seed_rows)
     _write_csv(output / "model_topology_summary.csv", group_rows)
 
-    display_horizons = (0, 128, 512, 2048)
+    display_horizons = (0, 128, 512, 1024, 2048, 4096)
     display_atlases = _build_display_atlases(
         task,
         baseline,
@@ -1329,6 +1381,17 @@ def compare(args: argparse.Namespace) -> None:
         device,
         display_horizons,
     )
+    representative_seeds = {
+        topology: {
+            model: (
+                int(display_atlases[(topology, model)]["task_row"]["seed"])
+                if (topology, model) in display_atlases
+                else None
+            )
+            for model in MODELS
+        }
+        for topology in TOPOLOGIES
+    }
     generated = [
         *figure_overview(seed_rows, figures),
         *figure_blank_curves(blank, figures),
@@ -1361,11 +1424,16 @@ def compare(args: argparse.Namespace) -> None:
         ),
         "task_and_structure_failures_included": True,
         "display_atlas": {
-            "seed": 10,
+            "representative_seed_policy": (
+                "lowest validation_error among task_success=true seeds; "
+                "if none succeed, lowest-validation-error checkpoint "
+                "is shown as an explicit failed-task fallback"
+            ),
+            "representative_seeds": representative_seeds,
             "points": 1024,
             "blank_horizons": list(display_horizons),
             "pca_evolution_alignment": (
-                "per-horizon centering, one joint PCA and common axis limits "
+                "H=0 fixed center and PC1-PC3 axes, with common axis limits "
                 "within each model-topology row"
             ),
             "cache_files": [
