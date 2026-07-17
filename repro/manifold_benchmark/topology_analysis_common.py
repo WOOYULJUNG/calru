@@ -27,6 +27,8 @@ ANALYSIS_CONFIG = Path(__file__).with_name("topology_analysis_v1.json")
 SUPPORTED_ANALYSIS_IDS = (
     "manifold_topology_analysis_v1",
     "manifold_topology_baseline_all_analysis_v2",
+    "manifold_topology_hc_attractor_finalists_v1",
+    "manifold_topology_hc_attractor_selection_v1",
     "manifold_topology_hparam_analysis_v1",
 )
 MODEL_ORDER = ("rnn", "gru", "lstm", "hc")
