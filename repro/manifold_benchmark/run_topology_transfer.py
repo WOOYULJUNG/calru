@@ -132,7 +132,7 @@ def _normalized_retention_plasticity(
     """Apply the frozen hybrid-RP rule with topology-normalized damage."""
 
     if not model.rp_enabled:
-        raise ValueError("RP is only defined for H-C")
+        raise ValueError("RP is only defined for CA-LRU/H-C search models")
     _, states = model.forward_sequence(
         probe.inputs, initial_memory=probe.initial_memory, return_states=True
     )
@@ -163,7 +163,7 @@ def _normalized_retention_plasticity(
         recurrence.update_theta(normalized_damage - float(damage_epsilon), eta_lambda)
         damages.append(normalized_damage)
     if not damages:
-        raise RuntimeError("H-C exposes no RP recurrence")
+        raise RuntimeError("search model exposes no RP recurrence")
     values = torch.cat(damages)
     _finite_model(model)
     return {

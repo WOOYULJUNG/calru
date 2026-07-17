@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "campaign_id": "manifold_calru_topology_tuning_v2",
+  "scientific_question": "Can validation-only topology-specific tuning stabilize constant-retention CA-LRU, especially on S2, without changing epsilon, width, noise, or the task contract?",
+  "generator_tag": "manifold-generator-v1",
+  "models": {
+    "calru": {
+      "ring_model_id": "ca_lru_n52",
+      "width": 52,
+      "learning_rate": 0.01,
+      "recurrent_weight_decay": 0.0,
+      "gradient_clip_norm": null
+    }
+  },
+  "training": {
+    "optimizer": "Adam",
+    "betas": [0.9, 0.999],
+    "epsilon": 1e-8,
+    "batch_size": 64,
+    "horizon": 128,
+    "updates": 5000,
+    "state_noise_std": 0.0,
+    "target_noise_std": 0.0,
+    "output_dropout": 0.0,
+    "loss": "mean_over_time_batch_and_output_components",
+    "report_interval": 100,
+    "validation_trajectories": 64
+  },
+  "retention_plasticity": {
+    "warmup_updates": 1500,
+    "eta_lambda": 1000.0,
+    "damage_epsilon": 3e-5,
+    "intervention_interval_updates": 50,
+    "probe_batch_size": 96,
+    "blank_ablation_horizon": 500,
+    "topology_normalization": "component_mean_damage_divided_by_target_power_plus_machine_epsilon"
+  },
+  "search": {
+    "selection_split": "validation",
+    "test_bank_access": false,
+    "topologies": ["s1", "t2", "s2"],
+    "smoke": {
+      "seed": 29,
+      "updates": 300
+    },
+    "screen": {
+      "seed": 20,
+      "s1": {
+        "learning_rates": [0.003, 0.01],
+        "eta_lambdas": [300.0, 1000.0],
+        "intervention_intervals": [50, 100],
+        "finalists": 2
+      },
+      "t2": {
+        "learning_rates": [0.003, 0.01],
+        "eta_lambdas": [300.0, 1000.0],
+        "intervention_intervals": [50, 100],
+        "finalists": 2
+      },
+      "s2": {
+        "learning_rates": [0.0003, 0.001, 0.003, 0.01],
+        "eta_lambdas": [300.0, 1000.0, 3000.0],
+        "intervention_intervals": [50, 100],
+        "finalists": 4
+      }
+    },
+    "confirm": {
+      "additional_seeds": [21, 22]
+    },
+    "blank_horizons": [512, 2048, 4096],
+    "task_gate_nmse_db_strictly_below": -20.0,
+    "task_gate_requires_beating_hold": true,
+    "screen_selection_rule": "task_gate_then_finite_H4096_then_min_H4096_intrinsic_error_then_min_task_intrinsic_error_then_grid_order",
+    "final_selection_rule": "max_task_gate_count_then_max_completed_count_then_max_finite_H4096_count_then_min_median_H4096_intrinsic_error_then_min_median_task_intrinsic_error_then_grid_order",
+    "final_checkpoint_only": true,
+    "best_checkpoint_selection": false
+  },
+  "execution": {
+    "devices": [0, 1, 2, 3, 4, 5],
+    "require_clean_git_worktree": true,
+    "attempts_per_job": 2,
+    "individual_failure_policy": "record_and_continue_but_count_as_ineligible",
+    "restart_policy": "resume_progress_or_skip_only_jobs_with_COMPLETED_json",
+    "full_update_runs_are_not_early_stopped": true
+  }
+}

@@ -11,6 +11,7 @@ import argparse
 import copy
 import math
 from pathlib import Path
+import subprocess
 import time
 from typing import Any
 
@@ -49,15 +50,40 @@ from .topology_training import (
 
 
 CONFIG_PATH = Path(__file__).with_name("topology_hparam_v1.json")
+SUPPORTED_CAMPAIGN_MODELS = {
+    "manifold_topology_hparam_v1": SEARCH_MODEL_IDS,
+    "manifold_calru_topology_tuning_v2": ("calru",),
+}
+
+
+def _git_state() -> dict[str, Any]:
+    root = Path(__file__).resolve().parents[2]
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    return {"code_commit": commit, "worktree_dirty": bool(status)}
 
 
 def load_search_config(path: Path | str = CONFIG_PATH) -> dict[str, Any]:
     payload = strict_json_load(Path(path).expanduser().resolve(strict=True))
     if not isinstance(payload, dict) or payload.get("schema_version") != 1:
         raise ValueError("topology hparam config must be a schema-1 object")
-    if payload.get("campaign_id") != "manifold_topology_hparam_v1":
-        raise ValueError("topology hparam campaign id differs")
-    if tuple(payload.get("models", {})) != SEARCH_MODEL_IDS:
+    campaign_id = str(payload.get("campaign_id"))
+    expected_models = SUPPORTED_CAMPAIGN_MODELS.get(campaign_id)
+    if expected_models is None:
+        raise ValueError(f"unsupported topology hparam campaign id: {campaign_id}")
+    if tuple(payload.get("models", {})) != expected_models:
         raise ValueError("topology hparam model order differs")
     if bool(payload["search"]["test_bank_access"]):
         raise ValueError("hyperparameter selection must not access the test bank")
@@ -215,6 +241,7 @@ def run(args: argparse.Namespace) -> Path:
         "config_path": str(Path(args.config).resolve()),
         "config_sha256": sha256_file(args.config),
         "runtime_config_canonical_sha256": canonical_hash(config),
+        **_git_state(),
     }
     atomic_json(manifest_path, manifest)
 
@@ -243,6 +270,8 @@ def run(args: argparse.Namespace) -> Path:
             "runtime_config_canonical_sha256"
         ]:
             raise ValueError("progress checkpoint runtime config differs")
+        if progress.get("code_commit") not in {None, manifest["code_commit"]}:
+            raise ValueError("progress checkpoint code commit differs")
         model.load_state_dict(progress["model_state_dict"], strict=True)
         optimizer.load_state_dict(progress["optimizer_state_dict"])
         trace = list(progress["trace"])
@@ -328,6 +357,7 @@ def run(args: argparse.Namespace) -> Path:
                     "runtime_config_canonical_sha256": manifest[
                         "runtime_config_canonical_sha256"
                     ],
+                    "code_commit": manifest["code_commit"],
                     "update": update,
                     "elapsed_seconds": elapsed_before_resume + time.monotonic() - start,
                     "trace": trace,

@@ -99,6 +99,25 @@ An individual twice-failed cell is recorded in `FAILED.json`; it does not stop
 the remaining GPU queues. Broad and refinement selections are frozen to JSON
 before the next phase begins.
 
+## CA-LRU topology tuning v2
+
+`topology_calru_tuning_v2.json` is the current CA-LRU-only validation search.
+It preserves width 52, RP epsilon `3e-5`, the 1,500-update warmup, and the
+noise-free task contract. S1/T2 receive a small LR/RP-dose neighborhood check;
+S2 receives the wider grid because no v1 CA-LRU seed passed the frozen task
+gate. The campaign comprises 3 smoke jobs, 40 one-seed screening jobs, and 16
+two-seed finalist confirmation jobs. Test banks are never opened.
+
+```bash
+PYTHONPATH=. python -m repro.manifold_benchmark.launch_calru_tuning_v2 \
+  --phase all --devices 0,1,2,3,4,5 \
+  --output /path/to/manifold_calru_topology_tuning_v2
+```
+
+Restarting the same command resumes progress checkpoints and skips verified
+completion receipts. The final validation-only choice is written to
+`selection/FINAL_SELECTION.json`; it is not itself a test result.
+
 ## Frozen topology analysis v1
 
 The exploratory 3-seed analysis contract is in `topology_analysis_v1.json`.

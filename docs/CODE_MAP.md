@@ -15,7 +15,8 @@ normal-kick 분석의 현재 경로다.
 |---|---|---|
 | ID bank | `build_id_banks.py` | `generator_v1_freeze.json` |
 | topology training | `launch_topology_transfer.py` | `topology_transfer_v1.json` |
-| CA-LRU selection | `launch_topology_hparam.py` | `topology_hparam_v1.json` |
+| CA-LRU tuning v2 | `launch_calru_tuning_v2.py` | `topology_calru_tuning_v2.json` |
+| CA-LRU/H-C historical selection | `launch_topology_hparam.py` | `topology_hparam_v1.json` |
 | task/blank/geometry | `aggregate_topology_pilot.py` | `topology_*_analysis_v*.json` |
 | persistent topology | `analyze_persistent_topology.py` | `topology_persistence_success_v2.json` |
 | OOD bank | `build_ood_banks.py` | `topology_ood_calibrated_v3.json` |
