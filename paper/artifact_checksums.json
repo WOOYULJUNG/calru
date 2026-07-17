@@ -720,6 +720,195 @@
       "destination": "paper/figures/topology/ood_v1/fig_O4_combined_and_postblank.pdf",
       "bytes": 31524,
       "sha256": "a3033b91569ad2b9a805c026c36d2b94d2208d1f63d399d49847cda2eaba2f5f"
+    },
+    {
+      "group": "topology_ood_banks_v2",
+      "generator": "repro/manifold_benchmark/build_ood_banks.py",
+      "source_root": "manifold_topology_ood_banks_v2-20260717b",
+      "source": "OOD_BANKS_READY.json",
+      "destination": "paper/evidence/topology/ood_v2/banks_completion.json",
+      "bytes": 226,
+      "sha256": "0b83b9a1b0fd58f5f3c856df522281eb4f5e54a7bb71b4d6fe2f79b486e72749"
+    },
+    {
+      "group": "topology_ood_banks_v2",
+      "generator": "repro/manifold_benchmark/build_ood_banks.py",
+      "source_root": "manifold_topology_ood_banks_v2-20260717b",
+      "source": "ood_banks_manifest.json",
+      "destination": "paper/evidence/topology/ood_v2/banks_manifest.json",
+      "bytes": 92244,
+      "sha256": "a07a01bdf0d4b72c0f24e75ffa2bdd2eba1581cd4eb04ead2de3627c13441927"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "OOD_ANALYSIS_COMPLETED.json",
+      "destination": "paper/evidence/topology/ood_v2/completion.json",
+      "bytes": 1132,
+      "sha256": "9f6fdaabaa76b0a15e6f4f608155dc0b35d862fd48307d3da9aa3ad9f675a2b8"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "RESULTS_ko.md",
+      "destination": "paper/evidence/topology/ood_v2/RESULTS_ko.md",
+      "bytes": 4030,
+      "sha256": "9eecc340e7f9a6a219776e2440a654a2735627f4d32e8ec0a522782ac0b2508f"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "ood_checkpoint_provenance.csv",
+      "destination": "paper/evidence/topology/ood_v2/checkpoint_provenance.csv",
+      "bytes": 10114,
+      "sha256": "f1d0800a24a482cba4d1e7755a1c2048a9138780472250e78b3fbc2999173070"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "ood_representative_selection.csv",
+      "destination": "paper/evidence/topology/ood_v2/representative_selection.csv",
+      "bytes": 1216,
+      "sha256": "4c0748ee2b69c728d756371d1c8344dccf5a4ef2049cc20d965ae2d8a3fbf823"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "ood_representative_metrics.csv",
+      "destination": "paper/evidence/topology/ood_v2/representative_metrics.csv",
+      "bytes": 123791,
+      "sha256": "86dc28f8071b42f04b571c10331987e126d8ed18b8a115f87235d936d9095fbf"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "ood_seed_metrics.csv",
+      "destination": "paper/evidence/topology/ood_v2/seed_metrics.csv",
+      "bytes": 368186,
+      "sha256": "e5f2f78e044063d55cf4b2c534f80938a89aeb44d77e6e34a578d1f2d4e87d92"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "ood_all_seed_summary.csv",
+      "destination": "paper/evidence/topology/ood_v2/ood_all_seed_summary.csv",
+      "bytes": 252513,
+      "sha256": "c881cf3b0de2ddd383a821b0f1e02dec1216fd5b56c7fb93ea9581c227281d5d"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O1_temporal_generalization.png",
+      "destination": "paper/figures/topology/ood_v2/fig_O1_temporal_generalization.png",
+      "bytes": 216038,
+      "sha256": "b1d50feae76f34677eb8f125c63992fca55edd2bcf6e0532d1bea27dacb19bdf"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O1_temporal_generalization.pdf",
+      "destination": "paper/figures/topology/ood_v2/fig_O1_temporal_generalization.pdf",
+      "bytes": 26466,
+      "sha256": "4152ce25f9faff269a5753c5809fe995c7e938f53ebada352bc42a30f3c38ae2"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O2_cumulative_path_stress.png",
+      "destination": "paper/figures/topology/ood_v2/fig_O2_cumulative_path_stress.png",
+      "bytes": 221488,
+      "sha256": "b329836c8ba7355f015a1ea0a2f2a12cac9db480e2bad9f97ebf777ddada6b4d"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O2_cumulative_path_stress.pdf",
+      "destination": "paper/figures/topology/ood_v2/fig_O2_cumulative_path_stress.pdf",
+      "bytes": 27215,
+      "sha256": "76d5ac9362ea030daef872738c7f4726df3c118d1e2f397bc85b9c9dd0a026d8"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O3_velocity_generalization.png",
+      "destination": "paper/figures/topology/ood_v2/fig_O3_velocity_generalization.png",
+      "bytes": 201732,
+      "sha256": "039d2b2206c14a5f356faa6be862261e3cf002736369f4c97b75f9532ea44893"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O3_velocity_generalization.pdf",
+      "destination": "paper/figures/topology/ood_v2/fig_O3_velocity_generalization.pdf",
+      "bytes": 25980,
+      "sha256": "0473cca85cee6290586cfc3361df15966bd9b00fd90098bcf0e04421da7dd151"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O4_dwell_generalization.png",
+      "destination": "paper/figures/topology/ood_v2/fig_O4_dwell_generalization.png",
+      "bytes": 200878,
+      "sha256": "387fbbc961039a7bec301b56da819b5570b85e3decfe0b20e0d7e0bda96b5500"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O4_dwell_generalization.pdf",
+      "destination": "paper/figures/topology/ood_v2/fig_O4_dwell_generalization.pdf",
+      "bytes": 27431,
+      "sha256": "3818918945a58ff50acf8a52935233b9cd3552f8f8ea79a00657d0096e316c3f"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O4b_smoothness_generalization.png",
+      "destination": "paper/figures/topology/ood_v2/fig_O4b_smoothness_generalization.png",
+      "bytes": 142238,
+      "sha256": "d54e5cb82e35234eb28b7515c6444abc796f847c2e3a42eae65ee5a36edba90e"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O4b_smoothness_generalization.pdf",
+      "destination": "paper/figures/topology/ood_v2/fig_O4b_smoothness_generalization.pdf",
+      "bytes": 25009,
+      "sha256": "f03934b63c15dd19d48afe4902d8a34713499a6e48424c402d33efc2b2a1206d"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O5_combined_and_postblank.png",
+      "destination": "paper/figures/topology/ood_v2/fig_O5_combined_and_postblank.png",
+      "bytes": 389288,
+      "sha256": "64e8ee8578278523aa01e18edc9457ddf6dd07efaf716231ae566ce8aa87a1b7"
+    },
+    {
+      "group": "topology_ood_v2",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "source": "figures/fig_O5_combined_and_postblank.pdf",
+      "destination": "paper/figures/topology/ood_v2/fig_O5_combined_and_postblank.pdf",
+      "bytes": 31532,
+      "sha256": "1cfa36bb3d86e59f29e6d3c14d778a6f4f98b5b71b1b2125cb8f9ee00099cac1"
     }
   ]
 }

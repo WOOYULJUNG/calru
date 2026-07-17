@@ -1,0 +1,13 @@
+topology,model,selected_job_id,selected_seed,selected_task_success,selected_validation_error,selection_kind
+s1,rnn,pilot__rnn__s1__seed12,12,True,0.02054002322256565,best_validation_success
+s1,gru,pilot__gru__s1__seed12,12,True,0.0054211486130952835,best_validation_success
+s1,lstm,pilot__lstm__s1__seed10,10,True,0.0044144196435809135,best_validation_success
+s1,calru,broad__calru__s1__lr0p01_eta1000_i50__seed10,10,True,0.0027899411506950855,best_validation_success
+t2,rnn,pilot__rnn__t2__seed11,11,False,0.04420476034283638,best_available_failed_fallback
+t2,gru,pilot__gru__t2__seed12,12,True,0.01263304241001606,best_validation_success
+t2,lstm,pilot__lstm__t2__seed12,12,True,0.010496674105525017,best_validation_success
+t2,calru,broad__calru__t2__lr0p01_eta1000_i50__seed10,10,True,0.004256655462086201,best_validation_success
+s2,rnn,pilot__rnn__s2__seed10,10,False,0.2955823242664337,best_available_failed_fallback
+s2,gru,pilot__gru__s2__seed10,10,False,0.02658451721072197,best_available_failed_fallback
+s2,lstm,pilot__lstm__s2__seed12,12,True,0.012160596437752247,best_validation_success
+s2,calru,broad__calru__s2__lr0p003_eta1000_i50__seed10,10,True,0.02049138955771923,best_validation_success

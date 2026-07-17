@@ -506,16 +506,21 @@ def _plot_axis(
                 linewidth=2,
                 color=COLORS[model],
                 linestyle="-" if target.task_success else "--",
-                label=MODEL_LABELS[model]
-                + ("" if target.task_success else "*"),
+                label=MODEL_LABELS[model],
             )
         axis.set_yscale("log")
         axis.set_xticks(x, [str(row["label"]) for row in conditions], rotation=30)
-        axis.set_title(TOPOLOGY_LABELS[topology])
+        failed = [
+            MODEL_LABELS[model]
+            for model in MODELS
+            if not representatives[(model, topology)].task_success
+        ]
+        subtitle = f"\nfallback: {', '.join(failed)}" if failed else ""
+        axis.set_title(TOPOLOGY_LABELS[topology] + subtitle)
         axis.grid(alpha=0.22)
     axes[0].set_ylabel("Terminal intrinsic error (rad) ↓")
     axes[-1].legend(frameon=False, fontsize=8)
-    figure.suptitle(title + "\n* best-available task-failed fallback")
+    figure.suptitle(title + "\nDashed = best-available task-failed fallback")
     figure.tight_layout(rect=(0, 0, 1, 0.90))
     _save_figure(figure, output, stem)
 
@@ -525,6 +530,8 @@ def _plot_combined(
     representatives: dict[tuple[str, str], Target],
     config: dict[str, Any],
     output: Path,
+    *,
+    stem: str = "fig_O4_combined_and_postblank",
 ) -> None:
     conditions = [config["conditions"][0]] + [
         row for row in config["conditions"] if row["axis"] == "combined"
@@ -559,13 +566,18 @@ def _plot_combined(
                     linewidth=2,
                     color=COLORS[model],
                     linestyle="-" if target.task_success else "--",
-                    label=MODEL_LABELS[model]
-                    + ("" if target.task_success else "*"),
+                    label=MODEL_LABELS[model],
                 )
             axis.set_yscale("log")
             axis.grid(alpha=0.22)
             if row_index == 0:
-                axis.set_title(TOPOLOGY_LABELS[topology])
+                failed = [
+                    MODEL_LABELS[model]
+                    for model in MODELS
+                    if not representatives[(model, topology)].task_success
+                ]
+                subtitle = f"\nfallback: {', '.join(failed)}" if failed else ""
+                axis.set_title(TOPOLOGY_LABELS[topology] + subtitle)
             if row_index == 1:
                 axis.set_xticks(
                     x,
@@ -577,10 +589,10 @@ def _plot_combined(
     axes[0, -1].legend(frameon=False, fontsize=8)
     figure.suptitle(
         "Combined length × velocity stress and post-OOD retention\n"
-        "* best-available task-failed fallback"
+        "Dashed = best-available task-failed fallback"
     )
     figure.tight_layout(rect=(0, 0, 1, 0.93))
-    _save_figure(figure, output, "fig_O4_combined_and_postblank")
+    _save_figure(figure, output, stem)
 
 
 def _write_results_report(
@@ -588,6 +600,7 @@ def _write_results_report(
     rows: list[dict[str, Any]],
     summary: list[dict[str, Any]],
     representatives: dict[tuple[str, str], Target],
+    config: dict[str, Any],
 ) -> None:
     representative_index = {
         (row["topology"], row["model"], row["condition_id"]): row
@@ -599,9 +612,14 @@ def _write_results_report(
         (row["topology"], row["model"], row["condition_id"]): row
         for row in summary
     }
+    condition_ids = {str(row["id"]) for row in config["conditions"]}
+    temporal_v2 = "temporal_x16" in condition_ids
+    elapsed_id = "temporal_x16" if temporal_v2 else "length_h2048"
+    path_id = "path_h2048" if temporal_v2 else "length_h2048"
+    report_version = "v2" if temporal_v2 else "v1"
 
     lines = [
-        "# Topology OOD generalization v1 — 결과",
+        f"# Topology OOD generalization {report_version} — 결과",
         "",
         "이 분석은 학습된 checkpoint를 다시 최적화하지 않고, 동일한 frozen "
         "parent에서 파생한 paired OOD bank로 평가한다. 대표선은 task-success "
@@ -635,22 +653,25 @@ def _write_results_report(
             "",
             "아래 값은 대표 seed의 intrinsic terminal error이며 단위는 radian이다.",
             "",
-            "| Topology | Model | ID T=128 | T=2048 | T=1024, 2× | "
+            "| Topology | Model | ID T=128 | elapsed 16× | path stress T=2048 | "
+            "T=1024, 2× | "
             "ID 후 blank 512 |",
-            "|---|---:|---:|---:|---:|---:|",
+            "|---|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for topology in TOPOLOGIES:
         for model in MODELS:
             id_row = representative_index[(topology, model, "id_h128")]
-            length_row = representative_index[(topology, model, "length_h2048")]
+            elapsed_row = representative_index[(topology, model, elapsed_id)]
+            path_row = representative_index[(topology, model, path_id)]
             combined_row = representative_index[
                 (topology, model, "combined_h1024_x2")
             ]
             lines.append(
                 f"| {topology.upper()} | {MODEL_LABELS[model]} | "
                 f"{float(id_row['terminal_mean_error_radians']):.4f} | "
-                f"{float(length_row['terminal_mean_error_radians']):.4f} | "
+                f"{float(elapsed_row['terminal_mean_error_radians']):.4f} | "
+                f"{float(path_row['terminal_mean_error_radians']):.4f} | "
                 f"{float(combined_row['terminal_mean_error_radians']):.4f} | "
                 f"{float(id_row['post_blank_512_mean_error_radians']):.4f} |"
             )
@@ -675,22 +696,53 @@ def _write_results_report(
             f"{baseline_blank:.4f} rad보다 {baseline_blank / ca_blank:.2f}배 "
             "낮다."
         )
+        if temporal_v2:
+            ca_elapsed = float(
+                summary_index[
+                    (topology, "calru", elapsed_id)
+                ]["terminal_mean_error_radians_median"]
+            )
+            baseline_elapsed = min(
+                float(
+                    summary_index[
+                        (topology, model, elapsed_id)
+                    ]["terminal_mean_error_radians_median"]
+                )
+                for model in ("rnn", "gru", "lstm")
+            )
+            lines.append(
+                f"- {topology.upper()}: 동일 command path를 16배 긴 시간에 "
+                f"배치했을 때 CA-LRU median은 {ca_elapsed:.4f} rad, 최선 "
+                f"baseline median은 {baseline_elapsed:.4f} rad이다 "
+                f"(baseline/CA-LRU={baseline_elapsed / ca_elapsed:.2f})."
+            )
 
+    lines.extend(["", "## 해석", ""])
+    if temporal_v2:
+        lines.extend(
+            [
+                "- Primary temporal OOD는 ID의 128개 command와 최종 endpoint를 "
+                "그대로 보존하고 command 사이에 exact blank만 삽입한다. 따라서 "
+                "elapsed time 효과를 누적 이동량과 분리한다.",
+                "- `path` 축은 같은 active-density로 horizon을 늘려 누적 "
+                "이동량과 winding을 함께 키우는 stress test다. 전 모델이 "
+                "극단 구간에서 무너질 수 있으며 temporal OOD headline으로 "
+                "해석하지 않는다.",
+                "- `combined` 축은 length와 velocity를 동시에 키운 supplementary "
+                "failure-limit 분석이다.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "- 이 v1 pilot의 length 축은 elapsed time과 cumulative path를 "
+                "동시에 키운다. 순수 temporal OOD로 해석하지 않는다.",
+                "- blank retention, dwell, smoothness 결과는 독립 축으로만 "
+                "해석한다.",
+            ]
+        )
     lines.extend(
         [
-            "",
-            "## 해석",
-            "",
-            "- CA-LRU의 가장 일관된 이점은 입력 종료 뒤 기억 유지다. 이 결과는 "
-            "세 topology의 3-seed median에서 모두 유지된다.",
-            "- 계속 입력을 적분하는 transport 일반화는 topology 의존적이다. "
-            "CA-LRU는 T2 길이 OOD에서 강하지만, S1의 매우 긴 horizon과 S2의 "
-            "transport에서는 GRU/LSTM보다 빠르게 악화된다.",
-            "- dwell 분포와 control smoothness 변화에는 대체로 안정적이지만, "
-            "길이와 속도를 동시에 키운 combined stress에서는 LSTM이 더 강하다.",
-            "- 따라서 현재 결과는 'CA-LRU가 모든 OOD에서 우월하다'가 아니라, "
-            "'retention plasticity가 blank-memory 안정성을 크게 높이지만 "
-            "input-driven transport 정확도는 별도의 병목이다'를 지지한다.",
             "",
             "## 해석 제한",
             "",
@@ -829,24 +881,74 @@ def analyze(args: argparse.Namespace) -> None:
         for target in targets
     ]
     write_csv(output / "ood_checkpoint_provenance.csv", provenance_rows)
-    _write_results_report(output, rows, summary, representatives)
+    _write_results_report(output, rows, summary, representatives, config)
 
-    _plot_axis(
-        rows,
-        representatives,
-        config,
-        output,
-        axis_name="length",
-        stem="fig_O1_length_generalization",
-        title="Zero-retraining sequence-length generalization",
-    )
+    axes_present = {str(row["axis"]) for row in config["conditions"]}
+    if "temporal" in axes_present:
+        figure_stems = [
+            "fig_O1_temporal_generalization",
+            "fig_O2_cumulative_path_stress",
+            "fig_O3_velocity_generalization",
+            "fig_O4_dwell_generalization",
+            "fig_O4b_smoothness_generalization",
+            "fig_O5_combined_and_postblank",
+        ]
+        _plot_axis(
+            rows,
+            representatives,
+            config,
+            output,
+            axis_name="temporal",
+            stem=figure_stems[0],
+            title=(
+                "Elapsed-time generalization · identical command path and endpoint"
+            ),
+        )
+        _plot_axis(
+            rows,
+            representatives,
+            config,
+            output,
+            axis_name="path",
+            stem=figure_stems[1],
+            title=(
+                "Cumulative-path / winding stress · not pure temporal OOD"
+            ),
+        )
+        velocity_stem = figure_stems[2]
+        dwell_stem = figure_stems[3]
+        smoothness_stem = figure_stems[4]
+        combined_stem = figure_stems[5]
+    else:
+        figure_stems = [
+            "fig_O1_length_generalization",
+            "fig_O2_velocity_generalization",
+            "fig_O3_dwell_generalization",
+            "fig_O3b_smoothness_generalization",
+            "fig_O4_combined_and_postblank",
+        ]
+        _plot_axis(
+            rows,
+            representatives,
+            config,
+            output,
+            axis_name="length",
+            stem=figure_stems[0],
+            title=(
+                "Sequence length with cumulative-path growth · v1 stress pilot"
+            ),
+        )
+        velocity_stem = figure_stems[1]
+        dwell_stem = figure_stems[2]
+        smoothness_stem = figure_stems[3]
+        combined_stem = figure_stems[4]
     _plot_axis(
         rows,
         representatives,
         config,
         output,
         axis_name="velocity",
-        stem="fig_O2_velocity_generalization",
+        stem=velocity_stem,
         title="Paired velocity-scale generalization",
     )
     _plot_axis(
@@ -855,7 +957,7 @@ def analyze(args: argparse.Namespace) -> None:
         config,
         output,
         axis_name="dwell",
-        stem="fig_O3_dwell_generalization",
+        stem=dwell_stem,
         title="Dwell-distribution generalization",
     )
     _plot_axis(
@@ -864,10 +966,16 @@ def analyze(args: argparse.Namespace) -> None:
         config,
         output,
         axis_name="smoothness",
-        stem="fig_O3b_smoothness_generalization",
+        stem=smoothness_stem,
         title="Control smoothness generalization",
     )
-    _plot_combined(rows, representatives, config, output)
+    _plot_combined(
+        rows,
+        representatives,
+        config,
+        output,
+        stem=combined_stem,
+    )
 
     atomic_json(
         output / "OOD_ANALYSIS_COMPLETED.json",
@@ -902,13 +1010,7 @@ def analyze(args: argparse.Namespace) -> None:
                 for model in MODELS
                 if not representatives[(model, topology)].task_success
             ],
-            "figures": [
-                "fig_O1_length_generalization.png",
-                "fig_O2_velocity_generalization.png",
-                "fig_O3_dwell_generalization.png",
-                "fig_O3b_smoothness_generalization.png",
-                "fig_O4_combined_and_postblank.png",
-            ],
+            "figures": [f"{stem}.png" for stem in figure_stems],
         },
     )
 

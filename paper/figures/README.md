@@ -45,19 +45,21 @@
 
 ### OOD와 일반화
 
-경로: [`topology/ood_v1/`](topology/ood_v1/)
+현재 경로: [`topology/ood_v2/`](topology/ood_v2/)
 
 | 파일 | 내용 |
 |---|---|
-| `fig_O1_length_generalization` | \(T=128\)에서 학습한 모델의 \(T\leq2048\) zero-retraining 길이 일반화 |
-| `fig_O2_velocity_generalization` | 동일 trajectory primitive를 0.5×–2×로 스케일한 paired velocity OOD |
-| `fig_O3_dwell_generalization` | dense, fixed activity probability, 64-step middle blank 비교 |
-| `fig_O3b_smoothness_generalization` | GP length scale 변화에 대한 control smoothness OOD |
-| `fig_O4_combined_and_postblank` | length×velocity 복합 stress와 이후 512-step blank 기억 |
+| `fig_O1_temporal_generalization` | 동일한 128개 command·endpoint·path를 최대 16배 긴 시간에 배치한 primary temporal OOD |
+| `fig_O2_cumulative_path_stress` | active density를 유지하며 누적 path/winding을 늘린 별도 stress test |
+| `fig_O3_velocity_generalization` | 동일 trajectory primitive를 0.5×–2×로 스케일한 paired velocity OOD |
+| `fig_O4_dwell_generalization` | dense, fixed activity probability, 64-step middle blank 비교 |
+| `fig_O4b_smoothness_generalization` | GP length scale 변화에 대한 control smoothness OOD |
+| `fig_O5_combined_and_postblank` | length×velocity 복합 stress와 이후 512-step blank 기억 |
 
 대표선은 task-success seed 우선이며, 성공 seed가 없는 모델×topology는 점선과
-별표로 표시한다. 수치와 전체 3-seed 범위는
-[`../evidence/topology/ood_v1/`](../evidence/topology/ood_v1/)에 있다.
+fallback 이름으로 표시한다. 수치와 전체 3-seed 범위는
+[`../evidence/topology/ood_v2/`](../evidence/topology/ood_v2/)에 있다.
+`ood_v1`은 elapsed time과 누적 path를 분리하지 못한 pilot으로만 보존한다.
 
 ## 재생성·동기화
 

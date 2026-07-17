@@ -92,6 +92,129 @@ def _subset(batch: ManifoldBatch, count: int, condition_id: str) -> ManifoldBatc
     )
 
 
+def _dilation_schedule(source_horizon: int, target_horizon: int) -> np.ndarray:
+    source = int(source_horizon)
+    target = int(target_horizon)
+    if source <= 0 or target < source:
+        raise ValueError("time dilation requires target horizon >= source horizon")
+    schedule = np.rint(np.linspace(0, target - 1, source)).astype(np.int64)
+    if (
+        schedule.shape != (source,)
+        or schedule[0] != 0
+        or schedule[-1] != target - 1
+        or np.any(np.diff(schedule) <= 0)
+    ):
+        raise RuntimeError("invalid time-dilation schedule")
+    return schedule
+
+
+def _time_dilate(
+    source: ManifoldBatch,
+    *,
+    target_horizon: int,
+    condition_id: str,
+) -> ManifoldBatch:
+    """Insert exact blank steps without changing the ordered command path."""
+
+    schedule = _dilation_schedule(source.horizon, int(target_horizon))
+    time = int(target_horizon)
+    batch = int(source.inputs.shape[1])
+    inputs = np.zeros((time, batch, source.inputs.shape[-1]), dtype=source.inputs.dtype)
+    outputs = np.empty(
+        (time, batch, source.output_targets.shape[-1]),
+        dtype=source.output_targets.dtype,
+    )
+    latent_targets = np.empty(
+        (time, batch, source.latent_targets.shape[-1]),
+        dtype=source.latent_targets.dtype,
+    )
+    latent_path = np.empty(
+        (time + 1, batch, source.latent_path.shape[-1]),
+        dtype=source.latent_path.dtype,
+    )
+    base_drive = np.zeros(
+        (time, batch, source.base_drive.shape[-1]),
+        dtype=source.base_drive.dtype,
+    )
+    effective_velocity = np.zeros(
+        (time, batch, source.effective_velocity.shape[-1]),
+        dtype=source.effective_velocity.dtype,
+    )
+    dwell_mask = np.zeros((time, batch, 1), dtype=source.dwell_mask.dtype)
+    latent_unwrapped = (
+        None
+        if source.latent_unwrapped is None
+        else np.empty(
+            (time + 1, batch, source.latent_unwrapped.shape[-1]),
+            dtype=source.latent_unwrapped.dtype,
+        )
+    )
+
+    output_state = np.array(source.initial_memory, copy=True)
+    latent_state = np.array(source.latent_path[0], copy=True)
+    unwrapped_state = (
+        None
+        if source.latent_unwrapped is None
+        else np.array(source.latent_unwrapped[0], copy=True)
+    )
+    latent_path[0] = latent_state
+    if latent_unwrapped is not None:
+        assert unwrapped_state is not None
+        latent_unwrapped[0] = unwrapped_state
+
+    source_step = 0
+    for target_step in range(time):
+        if source_step < source.horizon and target_step == int(schedule[source_step]):
+            inputs[target_step] = source.inputs[source_step]
+            base_drive[target_step] = source.base_drive[source_step]
+            effective_velocity[target_step] = source.effective_velocity[source_step]
+            dwell_mask[target_step] = source.dwell_mask[source_step]
+            output_state = source.output_targets[source_step]
+            latent_state = source.latent_targets[source_step]
+            if latent_unwrapped is not None:
+                assert source.latent_unwrapped is not None
+                unwrapped_state = source.latent_unwrapped[source_step + 1]
+            source_step += 1
+        outputs[target_step] = output_state
+        latent_targets[target_step] = latent_state
+        latent_path[target_step + 1] = latent_state
+        if latent_unwrapped is not None:
+            assert unwrapped_state is not None
+            latent_unwrapped[target_step + 1] = unwrapped_state
+    if source_step != source.horizon:
+        raise RuntimeError("time dilation did not consume every source command")
+
+    metadata = {
+        **dict(source.metadata),
+        "ood_condition_id": str(condition_id),
+        "condition_axis": "temporal",
+        "condition_value": str(target_horizon),
+        "horizon": time,
+        "source_horizon": source.horizon,
+        "time_dilation": float(time) / float(source.horizon),
+        "time_dilation_policy": (
+            "same ordered source commands placed on an endpoint-inclusive "
+            "uniform integer schedule; all inserted steps are exact blanks"
+        ),
+        "same_command_path_as_id": True,
+        "same_endpoint_as_id": True,
+    }
+    return ManifoldBatch(
+        initial_memory=np.array(source.initial_memory, copy=True),
+        inputs=inputs,
+        output_targets=outputs,
+        latent_targets=latent_targets,
+        latent_path=latent_path,
+        base_drive=base_drive,
+        effective_velocity=effective_velocity,
+        dwell_mask=dwell_mask,
+        trajectory_id=np.array(source.trajectory_id, copy=True),
+        mask=np.ones_like(outputs, dtype=source.mask.dtype),
+        metadata=metadata,
+        latent_unwrapped=latent_unwrapped,
+    )
+
+
 def _paired_checks(
     condition_id: str,
     row: dict[str, Any],
@@ -111,9 +234,44 @@ def _paired_checks(
             np.array_equal(bank.trajectory_id, reference.trajectory_id)
         )
     axis = str(row["axis"])
-    if axis == "length":
+    if axis in {"length", "path"}:
         prefix = prefix_pairing_audit(id_banks, banks)
         checks["id_prefix_exact"] = bool(prefix["pass"])
+    elif axis == "temporal":
+        for topology, bank in banks.items():
+            reference = id_banks[topology]
+            schedule = _dilation_schedule(reference.horizon, bank.horizon)
+            checks[f"{topology}.scheduled_inputs_exact"] = bool(
+                np.array_equal(bank.inputs[schedule], reference.inputs)
+            )
+            checks[f"{topology}.scheduled_targets_exact"] = bool(
+                np.array_equal(
+                    bank.output_targets[schedule], reference.output_targets
+                )
+            )
+            checks[f"{topology}.endpoint_exact"] = bool(
+                np.array_equal(
+                    bank.output_targets[-1], reference.output_targets[-1]
+                )
+            )
+            checks[f"{topology}.path_length_exact"] = bool(
+                np.allclose(
+                    np.linalg.norm(
+                        bank.effective_velocity, axis=-1
+                    ).sum(axis=0),
+                    np.linalg.norm(
+                        reference.effective_velocity, axis=-1
+                    ).sum(axis=0),
+                    rtol=1e-7,
+                    atol=1e-7,
+                )
+            )
+            inserted = np.ones(bank.horizon, dtype=bool)
+            inserted[schedule] = False
+            checks[f"{topology}.inserted_steps_blank"] = bool(
+                np.count_nonzero(bank.inputs[inserted]) == 0
+                and np.count_nonzero(bank.dwell_mask[inserted]) == 0
+            )
     elif axis == "velocity":
         scale = float(row["value"])
         for topology, bank in banks.items():
@@ -197,8 +355,19 @@ def build(output: Path, config_path: Path) -> dict[str, Any]:
         derived: dict[str, ManifoldBatch] = {}
         files: dict[str, Any] = {}
         for topology in TOPOLOGIES:
-            full = _derive(parent, topology, condition)
-            batch = _subset(full, count, condition_id)
+            if str(row["axis"]) == "temporal":
+                if id_banks is None:
+                    raise RuntimeError(
+                        "temporal conditions must follow id_h128"
+                    )
+                batch = _time_dilate(
+                    id_banks[topology],
+                    target_horizon=int(row["horizon"]),
+                    condition_id=condition_id,
+                )
+            else:
+                full = _derive(parent, topology, condition)
+                batch = _subset(full, count, condition_id)
             path = banks_root / f"{condition_id}__{topology}.npz"
             digest = save_manifold_bank(path, batch)
             loaded = load_manifold_bank(path)
@@ -221,7 +390,7 @@ def build(output: Path, config_path: Path) -> dict[str, Any]:
             all_checks[f"{condition_id}.{name}"] = bool(passed)
         if condition_id == "id_h128":
             id_banks = derived
-        if str(row["axis"]) == "length":
+        if str(row["axis"]) in {"length", "path"}:
             length_banks[int(row["horizon"])] = derived
         manifest_rows[condition_id] = {
             "axis": row["axis"],

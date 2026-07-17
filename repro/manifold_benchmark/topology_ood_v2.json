@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "analysis_id": "manifold_topology_ood_v2",
+  "scientific_question": "Does CA-LRU preserve input-driven transport when elapsed time is increased independently of cumulative path length?",
+  "generator_tag": "manifold-generator-v1",
+  "experiment_root_environment": "CALRU_EXPERIMENT_ROOT",
+  "source_parent": "manifold_benchmark_generator_v1_rodrigues-test-20260716/parent_bank.npz",
+  "models": ["rnn", "gru", "lstm", "calru"],
+  "topologies": ["s1", "t2", "s2"],
+  "seeds": [10, 11, 12],
+  "trajectories": 256,
+  "training_horizon": 128,
+  "post_blank_horizons": [0, 128, 512],
+  "representative_seed_policy": "lowest validation_error among task_success=true seeds; if none succeed, lowest-validation-error checkpoint is an explicit failed-task fallback",
+  "primary_axis": "temporal",
+  "stress_axis": "path",
+  "conditions": [
+    {
+      "id": "id_h128",
+      "axis": "id",
+      "value": 128,
+      "label": "ID T=128",
+      "horizon": 128
+    },
+    {
+      "id": "temporal_x2",
+      "axis": "temporal",
+      "value": 2,
+      "label": "2x time",
+      "horizon": 256,
+      "source_condition_id": "id_h128"
+    },
+    {
+      "id": "temporal_x4",
+      "axis": "temporal",
+      "value": 4,
+      "label": "4x time",
+      "horizon": 512,
+      "source_condition_id": "id_h128"
+    },
+    {
+      "id": "temporal_x8",
+      "axis": "temporal",
+      "value": 8,
+      "label": "8x time",
+      "horizon": 1024,
+      "source_condition_id": "id_h128"
+    },
+    {
+      "id": "temporal_x16",
+      "axis": "temporal",
+      "value": 16,
+      "label": "16x time",
+      "horizon": 2048,
+      "source_condition_id": "id_h128"
+    },
+    {
+      "id": "path_h256",
+      "axis": "path",
+      "value": 256,
+      "label": "T=256",
+      "horizon": 256
+    },
+    {
+      "id": "path_h512",
+      "axis": "path",
+      "value": 512,
+      "label": "T=512",
+      "horizon": 512
+    },
+    {
+      "id": "path_h1024",
+      "axis": "path",
+      "value": 1024,
+      "label": "T=1024",
+      "horizon": 1024
+    },
+    {
+      "id": "path_h2048",
+      "axis": "path",
+      "value": 2048,
+      "label": "T=2048",
+      "horizon": 2048
+    },
+    {
+      "id": "velocity_x0p5",
+      "axis": "velocity",
+      "value": 0.5,
+      "label": "0.5x",
+      "horizon": 128,
+      "velocity_scale": 0.5
+    },
+    {
+      "id": "velocity_x1p5",
+      "axis": "velocity",
+      "value": 1.5,
+      "label": "1.5x",
+      "horizon": 128,
+      "velocity_scale": 1.5
+    },
+    {
+      "id": "velocity_x2",
+      "axis": "velocity",
+      "value": 2.0,
+      "label": "2.0x",
+      "horizon": 128,
+      "velocity_scale": 2.0
+    },
+    {
+      "id": "dwell_dense",
+      "axis": "dwell",
+      "value": "dense",
+      "label": "dense",
+      "horizon": 128,
+      "dwell_profile": "dense"
+    },
+    {
+      "id": "dwell_p0p25",
+      "axis": "dwell",
+      "value": 0.25,
+      "label": "active p=0.25",
+      "horizon": 128,
+      "dwell_profile": "fixed_probability",
+      "dwell_active_probability": 0.25
+    },
+    {
+      "id": "dwell_p0p50",
+      "axis": "dwell",
+      "value": 0.5,
+      "label": "active p=0.50",
+      "horizon": 128,
+      "dwell_profile": "fixed_probability",
+      "dwell_active_probability": 0.5
+    },
+    {
+      "id": "dwell_p0p75",
+      "axis": "dwell",
+      "value": 0.75,
+      "label": "active p=0.75",
+      "horizon": 128,
+      "dwell_profile": "fixed_probability",
+      "dwell_active_probability": 0.75
+    },
+    {
+      "id": "dwell_block64",
+      "axis": "dwell",
+      "value": "middle_blank_64",
+      "label": "64-step middle blank",
+      "horizon": 128,
+      "dwell_profile": "variable_sparsity",
+      "dwell_block_start": 32,
+      "dwell_block_length": 64
+    },
+    {
+      "id": "smooth_l0p5",
+      "axis": "smoothness",
+      "value": 0.5,
+      "label": "GP ell=0.5",
+      "horizon": 128,
+      "gp_length_scale": 0.5
+    },
+    {
+      "id": "smooth_l2",
+      "axis": "smoothness",
+      "value": 2.0,
+      "label": "GP ell=2.0",
+      "horizon": 128,
+      "gp_length_scale": 2.0
+    },
+    {
+      "id": "combined_h1024_x1p5",
+      "axis": "combined",
+      "value": "T1024_1.5x",
+      "label": "T=1024, 1.5x",
+      "horizon": 1024,
+      "velocity_scale": 1.5
+    },
+    {
+      "id": "combined_h1024_x2",
+      "axis": "combined",
+      "value": "T1024_2.0x",
+      "label": "T=1024, 2.0x",
+      "horizon": 1024,
+      "velocity_scale": 2.0
+    }
+  ],
+  "primary_metrics": [
+    "sequence_mean_error_radians",
+    "terminal_mean_error_radians",
+    "last_quarter_mean_error_radians",
+    "post_blank_512_mean_error_radians"
+  ],
+  "all_seed_results_are_secondary_robustness_analysis": true,
+  "interpretation_policy": {
+    "temporal": "primary elapsed-time generalization with an exactly preserved command path and endpoint",
+    "path": "cumulative-path and winding stress; not a pure temporal-OOD claim",
+    "combined": "supplementary extreme stress where universal model failure is admissible"
+  }
+}

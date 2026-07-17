@@ -272,7 +272,7 @@
     },
     {
       "id": "topology_ood_banks_v1",
-      "status": "current_paired_ood_banks",
+      "status": "archived_time_path_conflated_pilot_banks",
       "source_root": "manifold_topology_ood_banks_v1-20260717b",
       "generator": "repro/manifold_benchmark/build_ood_banks.py",
       "files": [
@@ -288,7 +288,7 @@
     },
     {
       "id": "topology_ood_v1",
-      "status": "current_zero_retraining_ood",
+      "status": "archived_time_path_conflated_pilot",
       "source_root": "manifold_topology_ood_v1-20260717",
       "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
       "files": [
@@ -359,6 +359,106 @@
         {
           "source": "figures/fig_O4_combined_and_postblank.pdf",
           "destination": "paper/figures/topology/ood_v1/fig_O4_combined_and_postblank.pdf"
+        }
+      ]
+    },
+    {
+      "id": "topology_ood_banks_v2",
+      "status": "current_paired_ood_banks",
+      "source_root": "manifold_topology_ood_banks_v2-20260717b",
+      "generator": "repro/manifold_benchmark/build_ood_banks.py",
+      "files": [
+        {
+          "source": "OOD_BANKS_READY.json",
+          "destination": "paper/evidence/topology/ood_v2/banks_completion.json"
+        },
+        {
+          "source": "ood_banks_manifest.json",
+          "destination": "paper/evidence/topology/ood_v2/banks_manifest.json"
+        }
+      ]
+    },
+    {
+      "id": "topology_ood_v2",
+      "status": "current_zero_retraining_ood",
+      "source_root": "manifold_topology_ood_v2-20260717",
+      "generator": "repro/manifold_benchmark/analyze_ood_generalization.py",
+      "files": [
+        {
+          "source": "OOD_ANALYSIS_COMPLETED.json",
+          "destination": "paper/evidence/topology/ood_v2/completion.json"
+        },
+        {
+          "source": "RESULTS_ko.md",
+          "destination": "paper/evidence/topology/ood_v2/RESULTS_ko.md"
+        },
+        {
+          "source": "ood_checkpoint_provenance.csv",
+          "destination": "paper/evidence/topology/ood_v2/checkpoint_provenance.csv"
+        },
+        {
+          "source": "ood_representative_selection.csv",
+          "destination": "paper/evidence/topology/ood_v2/representative_selection.csv"
+        },
+        {
+          "source": "ood_representative_metrics.csv",
+          "destination": "paper/evidence/topology/ood_v2/representative_metrics.csv"
+        },
+        {
+          "source": "ood_seed_metrics.csv",
+          "destination": "paper/evidence/topology/ood_v2/seed_metrics.csv"
+        },
+        {
+          "source": "ood_all_seed_summary.csv",
+          "destination": "paper/evidence/topology/ood_v2/ood_all_seed_summary.csv"
+        },
+        {
+          "source": "figures/fig_O1_temporal_generalization.png",
+          "destination": "paper/figures/topology/ood_v2/fig_O1_temporal_generalization.png"
+        },
+        {
+          "source": "figures/fig_O1_temporal_generalization.pdf",
+          "destination": "paper/figures/topology/ood_v2/fig_O1_temporal_generalization.pdf"
+        },
+        {
+          "source": "figures/fig_O2_cumulative_path_stress.png",
+          "destination": "paper/figures/topology/ood_v2/fig_O2_cumulative_path_stress.png"
+        },
+        {
+          "source": "figures/fig_O2_cumulative_path_stress.pdf",
+          "destination": "paper/figures/topology/ood_v2/fig_O2_cumulative_path_stress.pdf"
+        },
+        {
+          "source": "figures/fig_O3_velocity_generalization.png",
+          "destination": "paper/figures/topology/ood_v2/fig_O3_velocity_generalization.png"
+        },
+        {
+          "source": "figures/fig_O3_velocity_generalization.pdf",
+          "destination": "paper/figures/topology/ood_v2/fig_O3_velocity_generalization.pdf"
+        },
+        {
+          "source": "figures/fig_O4_dwell_generalization.png",
+          "destination": "paper/figures/topology/ood_v2/fig_O4_dwell_generalization.png"
+        },
+        {
+          "source": "figures/fig_O4_dwell_generalization.pdf",
+          "destination": "paper/figures/topology/ood_v2/fig_O4_dwell_generalization.pdf"
+        },
+        {
+          "source": "figures/fig_O4b_smoothness_generalization.png",
+          "destination": "paper/figures/topology/ood_v2/fig_O4b_smoothness_generalization.png"
+        },
+        {
+          "source": "figures/fig_O4b_smoothness_generalization.pdf",
+          "destination": "paper/figures/topology/ood_v2/fig_O4b_smoothness_generalization.pdf"
+        },
+        {
+          "source": "figures/fig_O5_combined_and_postblank.png",
+          "destination": "paper/figures/topology/ood_v2/fig_O5_combined_and_postblank.png"
+        },
+        {
+          "source": "figures/fig_O5_combined_and_postblank.pdf",
+          "destination": "paper/figures/topology/ood_v2/fig_O5_combined_and_postblank.pdf"
         }
       ]
     }
