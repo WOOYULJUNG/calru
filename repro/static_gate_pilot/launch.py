@@ -18,7 +18,7 @@ from .cache import build_training_cache
 from .models import MODEL_IDS
 
 
-TOPOLOGIES = ("s1", "t2")
+TOPOLOGIES = ("s1", "t2", "s2")
 
 
 def _job_dir(

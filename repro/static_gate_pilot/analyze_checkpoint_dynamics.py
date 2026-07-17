@@ -8,30 +8,48 @@ import math
 from pathlib import Path
 
 import torch
+from torch import nn
 
 from repro.manifold_benchmark.topology_training import (
     intrinsic_metrics,
     load_fixed_bank,
+)
+from repro.manifold_benchmark.topology_models import (
+    build_topology_model,
+    load_transfer_config,
 )
 from repro.sagodi_protocol.artifacts import atomic_json, derived_seed
 
 from .models import StaticGateMemory
 
 
-def _load_model(checkpoint_path: Path, device: torch.device) -> tuple[StaticGateMemory, dict]:
+def _load_model(checkpoint_path: Path, device: torch.device) -> tuple[nn.Module, dict]:
     checkpoint = torch.load(
         checkpoint_path, map_location=device, weights_only=False
     )
     manifest = checkpoint["manifest"]
     metadata = manifest["model"]
-    model = StaticGateMemory(
-        model_id=metadata["model_id"],
-        topology=metadata["topology"],
-        width=int(metadata["width"]),
-        initial_retention=float(metadata["initial_retention"]),
-        initial_write_gain=float(metadata["initial_write_gain"]),
-        recurrent_gain=float(metadata["recurrent_gain"]),
-    ).to(device)
+    if checkpoint.get("checkpoint_type") == "static_gate_side_pilot_v1":
+        model = StaticGateMemory(
+            model_id=metadata["model_id"],
+            topology=metadata["topology"],
+            width=int(metadata["width"]),
+            initial_retention=float(metadata["initial_retention"]),
+            initial_write_gain=float(metadata["initial_write_gain"]),
+            recurrent_gain=float(metadata["recurrent_gain"]),
+        ).to(device)
+    elif manifest.get("campaign_id") == "manifold_topology_transfer_v1":
+        model = build_topology_model(
+            str(metadata["model_id"]),
+            str(manifest["topology"]),
+            model_seed=int(manifest["model_seed"]),
+            config=load_transfer_config(),
+        ).to(device)
+    else:
+        raise ValueError(
+            f"unsupported checkpoint schema for dynamics analysis: "
+            f"{manifest.get('campaign_id')!r}"
+        )
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     model.eval()
     return model, checkpoint
@@ -42,6 +60,8 @@ def _wrapped(value: torch.Tensor) -> torch.Tensor:
 
 
 def _intrinsic_coordinates(topology: str, target: torch.Tensor) -> torch.Tensor:
+    if topology == "s2":
+        return target
     pairs = target.reshape(target.shape[0], -1, 2)
     return torch.atan2(pairs[..., 1], pairs[..., 0])
 
@@ -50,14 +70,20 @@ def _local_tangent_bases(
     states: torch.Tensor,
     coordinates: torch.Tensor,
     *,
+    topology: str,
     tangent_dimension: int,
     neighbors: int,
     anchor_indices: torch.Tensor,
 ) -> list[torch.Tensor]:
     bases: list[torch.Tensor] = []
     for index in anchor_indices.tolist():
-        delta = _wrapped(coordinates - coordinates[index])
-        distances = torch.linalg.vector_norm(delta, dim=-1)
+        if topology == "s2":
+            distances = torch.acos(
+                (coordinates @ coordinates[index]).clamp(-1.0, 1.0)
+            )
+        else:
+            delta = _wrapped(coordinates - coordinates[index])
+            distances = torch.linalg.vector_norm(delta, dim=-1)
         neighbor_indices = torch.argsort(distances)[1 : neighbors + 1]
         local = states[neighbor_indices] - states[index]
         left, _, _ = torch.linalg.svd(local.T, full_matrices=False)
@@ -66,7 +92,7 @@ def _local_tangent_bases(
 
 
 def _local_jacobian(
-    model: StaticGateMemory, state: torch.Tensor
+    model: nn.Module, state: torch.Tensor
 ) -> torch.Tensor:
     blank = torch.zeros(
         1, model.input_dim, device=state.device, dtype=state.dtype
@@ -84,7 +110,7 @@ def _local_jacobian(
 
 @torch.no_grad()
 def _roll_blank(
-    model: StaticGateMemory, state: torch.Tensor, horizon: int
+    model: nn.Module, state: torch.Tensor, horizon: int
 ) -> torch.Tensor:
     blank = torch.zeros(
         state.shape[0], model.input_dim, device=state.device, dtype=state.dtype
@@ -97,7 +123,7 @@ def _roll_blank(
 
 @torch.no_grad()
 def _roll_blank_snapshots(
-    model: StaticGateMemory,
+    model: nn.Module,
     state: torch.Tensor,
     horizons: tuple[int, ...],
 ) -> dict[int, torch.Tensor]:
@@ -163,6 +189,7 @@ def analyze(
     tangent_bases = _local_tangent_bases(
         states,
         coordinates,
+        topology=topology,
         tangent_dimension=tangent_dimension,
         neighbors=neighbors,
         anchor_indices=anchor_indices,
@@ -309,7 +336,12 @@ def analyze(
                     decoded_error["intrinsic_mean_radians"]
                 ),
             }
-        retention = model.retention()
+        retention_method = getattr(model, "retention", None)
+        retention = (
+            retention_method()
+            if callable(retention_method)
+            else torch.empty(0, device=device)
+        )
         task = intrinsic_metrics(topology, prediction, batch.output_targets)
     return {
         "schema_version": 1,
@@ -319,7 +351,7 @@ def analyze(
         "model": model.model_id,
         "topology": topology,
         "seed": manifest["replicate_seed"],
-        "phase": manifest["phase"],
+        "phase": manifest.get("phase", manifest.get("stage")),
         "trajectories": trajectories,
         "anchors": anchors,
         "local_neighbors": neighbors,
@@ -360,10 +392,20 @@ def analyze(
         "finite_local_normal_recovery": recovery,
         "finite_local_tangent_transport": tangent_transport,
         "blank_manifold_evolution": manifold_evolution,
-        "lambda_min": float(retention.min().cpu()),
-        "lambda_mean": float(retention.mean().cpu()),
-        "lambda_max": float(retention.max().cpu()),
-        "lambda_std": float(retention.std(unbiased=False).cpu()),
+        "lambda_min": (
+            float(retention.min().cpu()) if retention.numel() else None
+        ),
+        "lambda_mean": (
+            float(retention.mean().cpu()) if retention.numel() else None
+        ),
+        "lambda_max": (
+            float(retention.max().cpu()) if retention.numel() else None
+        ),
+        "lambda_std": (
+            float(retention.std(unbiased=False).cpu())
+            if retention.numel()
+            else None
+        ),
         "lambda_values": [float(value) for value in retention.cpu().tolist()],
     }
 

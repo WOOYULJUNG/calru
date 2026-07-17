@@ -14,6 +14,7 @@ from repro.manifold_benchmark.generator import (
     ConditionSpec,
     ParentSpec,
     derive_s1,
+    derive_s2,
     derive_torus,
     make_parent_bank,
 )
@@ -27,6 +28,9 @@ ARRAY_NAMES = (
     "t2_initial_memory",
     "t2_inputs",
     "t2_output_targets",
+    "s2_initial_memory",
+    "s2_inputs",
+    "s2_output_targets",
 )
 
 
@@ -68,6 +72,7 @@ def build_training_cache(
     banks = {
         "s1": derive_s1(parent, condition=condition),
         "t2": derive_torus(parent, dimensions=2, condition=condition),
+        "s2": derive_s2(parent, condition=condition),
     }
     shapes: dict[str, list[int]] = {}
     for topology, bank in banks.items():
@@ -111,8 +116,8 @@ def cached_training_batch(
 
     root = root.expanduser().resolve(strict=True)
     metadata = json.loads((root / "metadata.json").read_text())
-    if topology not in {"s1", "t2"}:
-        raise ValueError("static-gate cache only contains s1 and t2")
+    if topology not in {"s1", "t2", "s2"}:
+        raise ValueError("static-gate cache only contains s1, t2, and s2")
     trajectories = int(metadata["trajectories"])
     if not 0 < int(batch_size) <= trajectories:
         raise ValueError("batch size must fit the training cache")

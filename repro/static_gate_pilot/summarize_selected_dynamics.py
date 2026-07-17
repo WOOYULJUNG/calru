@@ -30,8 +30,6 @@ COLORS = {
     ("split_rnn_rp", "rp"): "#c84e4e",
 }
 ORDER = [
-    ("untied_rnn_rp", "no_rp"),
-    ("untied_rnn_rp", "rp"),
     ("split_rnn_rp", "no_rp"),
     ("split_rnn_rp", "rp"),
 ]
@@ -47,8 +45,8 @@ def _load(root: Path) -> list[dict[str, Any]]:
                 **data,
             }
         )
-    if len(rows) != 24:
-        raise ValueError(f"expected 24 dynamics results, found {len(rows)}")
+    if len(rows) != 12:
+        raise ValueError(f"expected 12 dynamics results, found {len(rows)}")
     return rows
 
 
@@ -247,35 +245,34 @@ def _blank_evolution_figure(rows: list[dict[str, Any]], output: Path) -> None:
 
 
 def _lambda_figure(rows: list[dict[str, Any]], output: Path) -> None:
-    fig, axes = plt.subplots(2, 2, figsize=(10.5, 7.6), constrained_layout=True)
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2), constrained_layout=True)
     bins = np.linspace(0.0, 1.0, 31)
-    for row_index, topology in enumerate(("s1", "t2")):
-        for column_index, model in enumerate(("untied_rnn_rp", "split_rnn_rp")):
-            axis = axes[row_index, column_index]
-            for condition in ("no_rp", "rp"):
-                values = np.concatenate(
-                    [
-                        np.asarray(row["lambda_values"], dtype=float)
-                        for row in rows
-                        if row["model"] == model
-                        and row["condition"] == condition
-                        and row["topology"] == topology
-                    ]
-                )
-                axis.hist(
-                    values,
-                    bins=bins,
-                    density=True,
-                    histtype="step",
-                    linewidth=2,
-                    color=COLORS[(model, condition)],
-                    label=CONDITION_LABELS[condition],
-                )
-            axis.set_title(f"{topology.upper()} — {MODEL_LABELS[model]}")
-            axis.set_xlabel(r"Retention $\lambda_j$")
-            axis.set_ylabel("Density")
-            axis.legend()
-            axis.grid(alpha=0.2)
+    model = "split_rnn_rp"
+    for axis, topology in zip(axes, ("s1", "t2")):
+        for condition in ("no_rp", "rp"):
+            values = np.concatenate(
+                [
+                    np.asarray(row["lambda_values"], dtype=float)
+                    for row in rows
+                    if row["model"] == model
+                    and row["condition"] == condition
+                    and row["topology"] == topology
+                ]
+            )
+            axis.hist(
+                values,
+                bins=bins,
+                density=True,
+                histtype="step",
+                linewidth=2,
+                color=COLORS[(model, condition)],
+                label=CONDITION_LABELS[condition],
+            )
+        axis.set_title(f"{topology.upper()} — {MODEL_LABELS[model]}")
+        axis.set_xlabel(r"Retention $\lambda_j$")
+        axis.set_ylabel("Density")
+        axis.legend()
+        axis.grid(alpha=0.2)
     fig.suptitle("Learned retention-coordinate distributions", fontweight="bold")
     fig.savefig(output / "fig_lambda_distributions.png", dpi=220)
     fig.savefig(output / "fig_lambda_distributions.pdf")
@@ -398,7 +395,8 @@ def main() -> None:
         "--root",
         type=Path,
         default=Path(
-            "/home/biadmin/ca_rnn/experiments/static_gate_selected_dynamics_v1"
+            "/home/biadmin/ca_rnn/experiments/"
+            "static_gate_split_selected_dynamics_v1"
         ),
     )
     args = parser.parse_args()

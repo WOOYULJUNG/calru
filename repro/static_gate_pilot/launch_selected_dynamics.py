@@ -12,8 +12,15 @@ import sys
 from typing import Any
 
 
-def _records(selection: Path, selected_root: Path) -> list[dict[str, Any]]:
-    chosen = list(csv.DictReader(selection.open()))
+def _records(
+    selection: Path,
+    selected_root: Path,
+    *,
+    model: str,
+) -> list[dict[str, Any]]:
+    chosen = [
+        row for row in csv.DictReader(selection.open()) if row["model"] == model
+    ]
     records: list[dict[str, Any]] = []
     for row in chosen:
         records.append(
@@ -98,25 +105,27 @@ def main() -> None:
         "--selected-root",
         type=Path,
         default=Path(
-            "/home/biadmin/ca_rnn/experiments/static_gate_selected_seeds_v1"
+            "/home/biadmin/ca_rnn/experiments/static_gate_split_selected_seeds_v1"
         ),
     )
     parser.add_argument(
         "--output",
         type=Path,
         default=Path(
-            "/home/biadmin/ca_rnn/experiments/static_gate_selected_dynamics_v1"
+            "/home/biadmin/ca_rnn/experiments/static_gate_split_selected_dynamics_v1"
         ),
     )
+    parser.add_argument("--model", default="split_rnn_rp")
     parser.add_argument("--devices", default="cuda:0,cuda:1,cuda:2,cuda:3,cuda:4,cuda:5")
     parser.add_argument("--workers", type=int, default=24)
     args = parser.parse_args()
     records = _records(
         args.selection.expanduser().resolve(strict=True),
         args.selected_root.expanduser().resolve(strict=True),
+        model=str(args.model),
     )
-    if len(records) != 24:
-        raise ValueError(f"expected 24 selected checkpoints, found {len(records)}")
+    if len(records) != 12:
+        raise ValueError(f"expected 12 selected checkpoints, found {len(records)}")
     output = args.output.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     devices = [value.strip() for value in args.devices.split(",") if value.strip()]

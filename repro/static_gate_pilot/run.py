@@ -279,11 +279,18 @@ def _decoder_radial_recovery(
     selected = min(int(anchors), int(states.shape[1]))
     clean0 = states[-1, :selected].clone()
     target = batch.output_targets[-1, :selected]
-    radial_output = target.reshape(selected, -1, 2)
-    radial_output = (
-        radial_output
-        / torch.linalg.vector_norm(radial_output, dim=-1, keepdim=True).clamp_min(1e-8)
-    ).reshape(selected, model.output_dim)
+    if batch.topology == "s2":
+        radial_output = target / torch.linalg.vector_norm(
+            target, dim=-1, keepdim=True
+        ).clamp_min(1e-8)
+    else:
+        radial_output = target.reshape(selected, -1, 2)
+        radial_output = (
+            radial_output
+            / torch.linalg.vector_norm(
+                radial_output, dim=-1, keepdim=True
+            ).clamp_min(1e-8)
+        ).reshape(selected, model.output_dim)
     hidden_direction = radial_output @ model.decoder.weight
     hidden_direction = hidden_direction / torch.linalg.vector_norm(
         hidden_direction, dim=-1, keepdim=True
@@ -603,7 +610,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--cell-id")
     parser.add_argument("--model", choices=MODEL_IDS, required=True)
-    parser.add_argument("--topology", choices=("s1", "t2"), required=True)
+    parser.add_argument("--topology", choices=("s1", "t2", "s2"), required=True)
     parser.add_argument("--seed", type=int, default=10)
     parser.add_argument("--width", type=int, default=52)
     parser.add_argument("--updates", type=int, required=True)
