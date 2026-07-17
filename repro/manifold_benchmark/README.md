@@ -121,3 +121,35 @@ evaluates test after each individual final checkpoint, although it never uses
 that result for learning-rate selection, stopping, eligibility, or checkpoint
 selection. A confirmatory campaign should move all test access behind the
 36-run campaign barrier.
+
+## Persistent topology under blank dynamics
+
+`topology_persistence_v1.json` freezes the persistent-homology comparison for
+RNN, GRU, LSTM, validation-selected CA-LRU and the final CA-aware H-C
+configuration. It applies persistent homology directly to the original hidden
+states, never to PCA coordinates. The ideal output manifold selects 128 fixed
+landmarks from the 256-point transported endpoint atlas; exactly those anchors
+are reused for every model, seed and blank horizon. Euclidean hidden distances
+are divided by the median fifth-nearest-neighbor distance before computing
+Vietoris-Rips persistence over the field with two elements.
+
+Install the pinned optional dependency and run:
+
+```bash
+python -m pip install -e ".[topology-analysis]"
+PYTHONPATH=. python -m repro.manifold_benchmark.analyze_persistent_topology \
+  --baseline-run-root /path/to/baseline-runs \
+  --baseline-analysis-root /path/to/baseline-analysis \
+  --calru-run-root /path/to/hparam-runs \
+  --calru-analysis-root /path/to/selected-hparam-analysis \
+  --hc-run-root /path/to/hc-finalist-runs \
+  --hc-analysis-root /path/to/hc-finalist-analysis \
+  --output /path/to/persistent-topology-output \
+  --devices 0,1,2,3,4,5
+```
+
+The primary strong-bar threshold is half the weakest expected persistent
+feature in the ideal topology. Sensitivity results at 0.5, 0.65 and 0.8 of
+that ideal feature are emitted beside the primary seed-level and grouped
+tables. Run artifacts are restartable and bound to the SHA-256 of the frozen
+analysis configuration.

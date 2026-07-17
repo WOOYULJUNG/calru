@@ -13,6 +13,12 @@ from repro.manifold_benchmark.analyze_manifold_geometry import (
     _pairwise_latent,
     _spearman,
 )
+from repro.manifold_benchmark.analyze_persistent_topology import (
+    _finite_diagram,
+    _knn_scale,
+    _persistences,
+    _strong_feature_count,
+)
 from repro.manifold_benchmark.analyze_tangent_normal import (
     _orthonormal_tangent,
     _random_normals,
@@ -154,3 +160,21 @@ def test_latent_distance_and_spearman_are_topology_aware():
     distance = _pairwise_latent("s1", ring)
     assert distance[0, 1] == pytest.approx(0.02)
     assert _spearman(np.arange(10.0), np.arange(10.0) ** 3) == pytest.approx(1.0)
+
+
+def test_persistence_helpers_ignore_infinite_bars_and_count_strong_features():
+    diagram = np.array(
+        [[0.0, np.inf], [0.1, 0.2], [0.2, 1.2], [0.5, 0.9]]
+    )
+    finite = _finite_diagram(diagram)
+    assert finite.shape == (3, 2)
+    np.testing.assert_allclose(_persistences(diagram), [1.0, 0.4, 0.1])
+    assert _strong_feature_count(diagram, 0.3) == 2
+
+
+def test_knn_scale_is_invariant_to_global_rescaling():
+    points = np.stack((np.arange(8.0), np.zeros(8)), axis=1)
+    original, original_zero = _knn_scale(points, k=2)
+    rescaled, rescaled_zero = _knn_scale(7.5 * points, k=2)
+    assert rescaled == pytest.approx(7.5 * original)
+    assert original_zero == rescaled_zero == 0.0

@@ -1,6 +1,32 @@
 # Paper figures
 
-현재 이 디렉터리에는 최종 논문 figure가 없다.
+현재 이 디렉터리에는 persistent-topology 분석으로 생성한 measured-data
+figure가 있다. 아직 본문 figure 번호는 확정하지 않았다.
+
+## Persistent topology figures
+
+- `fig_topology_signature_heatmap.{pdf,png}`: 모델·topology·blank horizon별
+  3-seed persistent \(H_1/H_2\) signature 통과율. 셀 숫자는 강한
+  persistent \(H_1/H_2\) bar 수의 seed median이다.
+- `fig_topology_diagram_distance.{pdf,png}`: 이상적 topology persistence
+  diagram에 대한 bottleneck distance. 선은 3-seed median, band는 seed
+  range이며 y축은 log scale이다.
+- `fig_topology_persistence_diagrams_h0.{pdf,png}`: blank 이전 representative
+  seed-10 persistence diagrams.
+- `fig_topology_persistence_diagrams_h2048.{pdf,png}`: 2,048 blank step 이후
+  representative seed-10 persistence diagrams.
+
+모두 실제 checkpoint와 hidden state로부터 측정한 결과이며 concept diagram이
+아니다. 생성 코드는
+[`repro/manifold_benchmark/analyze_persistent_topology.py`](../../repro/manifold_benchmark/analyze_persistent_topology.py),
+동결된 계약은
+[`topology_persistence_v1.json`](../../repro/manifold_benchmark/topology_persistence_v1.json)에
+있다. 숫자는 `paper/evidence/tables/persistent_topology_*.csv`와
+`persistent_topology_reference.json`에서 추적할 수 있다. 분석일은
+2026-07-17이고, RNN/GRU/LSTM은 ring-selected zero-retuning, CA-LRU는
+validation-selected, H-C는 test 접근 전 고정한 CA-aware finalist를 사용했다.
+
+## 아직 복구되지 않은 기존 figures
 
 과거 작업 요약에는 teaser, architecture, on-manifold movement, OOD, retention
 scaling의 FIG-1–FIG-5와 LaTeX용 PDF가 생성되었다고 기록되어 있다. 그러나 이

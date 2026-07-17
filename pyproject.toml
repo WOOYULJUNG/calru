@@ -17,6 +17,9 @@ dependencies = []
 dev = [
   "pytest>=8,<9",
 ]
+topology-analysis = [
+  "ripser==0.6.15",
+]
 
 [project.scripts]
 calru-build-evidence = "calru_paper.evidence:main"
