@@ -1,0 +1,7 @@
+topology,candidate,beats_best_conventional_task,beats_best_conventional_blank,tangent_near_neutral,local_normal_contracting,positive_tangent_normal_gap,finite_normal_recovery,topology_survives_majority,strict_approximate_ca_success
+s1,calru,True,True,True,False,False,True,False,False
+s1,split,True,True,False,False,False,True,False,False
+t2,calru,True,True,True,False,False,False,False,False
+t2,split,True,True,False,False,False,True,False,False
+s2,calru,False,True,True,False,False,True,False,False
+s2,split,False,True,False,False,False,True,False,False

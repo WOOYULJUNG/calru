@@ -45,6 +45,25 @@ def _load_model(checkpoint_path: Path, device: torch.device) -> tuple[nn.Module,
             model_seed=int(manifest["model_seed"]),
             config=load_transfer_config(),
         ).to(device)
+    elif (
+        manifest.get("campaign_id") == "manifold_calru_topology_tuning_v2"
+        and metadata.get("model_id") == "calru"
+    ):
+        # CA-LRU's topology-specific v2 search changes optimization and RP
+        # settings, but not the registered recurrent architecture. Rebuild the
+        # frozen CA-LRU topology adapter, then load the selected checkpoint
+        # weights so its states pass through exactly the same dynamics analysis
+        # as the split-field and conventional recurrent models.
+        from repro.manifold_benchmark.launch_calru_tuning_v2 import (
+            load_config as load_calru_tuning_config,
+        )
+
+        model = build_topology_model(
+            "calru",
+            str(manifest["topology"]),
+            model_seed=int(manifest["model_seed"]),
+            config=load_calru_tuning_config(),
+        ).to(device)
     else:
         raise ValueError(
             f"unsupported checkpoint schema for dynamics analysis: "
@@ -64,6 +83,37 @@ def _intrinsic_coordinates(topology: str, target: torch.Tensor) -> torch.Tensor:
         return target
     pairs = target.reshape(target.shape[0], -1, 2)
     return torch.atan2(pairs[..., 1], pairs[..., 0])
+
+
+def _primary_state(model: nn.Module, state: torch.Tensor) -> torch.Tensor:
+    extract = getattr(model, "primary_from_reported", None)
+    return extract(state) if callable(extract) else state
+
+
+def _reported_state(model: nn.Module, state: torch.Tensor) -> torch.Tensor:
+    reconstruct = getattr(model, "reported_from_primary", None)
+    return reconstruct(state) if callable(reconstruct) else state
+
+
+def _decode_state(model: nn.Module, state: torch.Tensor) -> torch.Tensor:
+    reconstruct = getattr(model, "reported_from_primary_for_input", None)
+    if callable(reconstruct):
+        blank = torch.zeros(
+            state.shape[0],
+            model.input_dim,
+            device=state.device,
+            dtype=state.dtype,
+        )
+        return model.decode(reconstruct(state, blank))
+    return model.decode(_reported_state(model, state))
+
+
+def _blank_step(model: nn.Module, state: torch.Tensor) -> torch.Tensor:
+    blank = torch.zeros(
+        state.shape[0], model.input_dim, device=state.device, dtype=state.dtype
+    )
+    following = model.step(blank, _reported_state(model, state))
+    return _primary_state(model, following)
 
 
 def _local_tangent_bases(
@@ -95,12 +145,8 @@ def _local_tangent_bases(
 def _local_jacobian(
     model: nn.Module, state: torch.Tensor
 ) -> torch.Tensor:
-    blank = torch.zeros(
-        1, model.input_dim, device=state.device, dtype=state.dtype
-    )
-
     def mapping(value: torch.Tensor) -> torch.Tensor:
-        return model.step(blank, value.unsqueeze(0)).squeeze(0)
+        return _blank_step(model, value.unsqueeze(0)).squeeze(0)
 
     with torch.enable_grad():
         value = state.detach().requires_grad_(True)
@@ -113,12 +159,9 @@ def _local_jacobian(
 def _roll_blank(
     model: nn.Module, state: torch.Tensor, horizon: int
 ) -> torch.Tensor:
-    blank = torch.zeros(
-        state.shape[0], model.input_dim, device=state.device, dtype=state.dtype
-    )
     current = state
     for _ in range(int(horizon)):
-        current = model.step(blank, current)
+        current = _blank_step(model, current)
     return current
 
 
@@ -130,12 +173,9 @@ def _roll_blank_snapshots(
 ) -> dict[int, torch.Tensor]:
     requested = set(int(value) for value in horizons)
     snapshots: dict[int, torch.Tensor] = {}
-    blank = torch.zeros(
-        state.shape[0], model.input_dim, device=state.device, dtype=state.dtype
-    )
     current = state
     for step in range(1, max(requested) + 1):
-        current = model.step(blank, current)
+        current = _blank_step(model, current)
         if step in requested:
             snapshots[step] = current
     return snapshots
@@ -172,16 +212,13 @@ def analyze(
             initial_memory=batch.initial_memory,
             return_states=True,
         )
-        states = sequence[-1]
+        states = _primary_state(model, sequence[-1])
         target = batch.output_targets[-1]
         coordinates = _intrinsic_coordinates(topology, target)
         pairwise = torch.cdist(states, states)
         pairwise.fill_diagonal_(float("inf"))
         neighbor_scale = pairwise.min(dim=1).values.median()
-        blank = torch.zeros(
-            states.shape[0], model.input_dim, device=device, dtype=states.dtype
-        )
-        next_states = model.step(blank, states)
+        next_states = _blank_step(model, states)
         blank_field = next_states - states
     tangent_dimension = 1 if topology == "s1" else 2
     anchor_indices = torch.linspace(
@@ -262,8 +299,8 @@ def analyze(
             clean_anchor_h = clean_h[anchor_indices]
             same_memory = intrinsic_metrics(
                 topology,
-                model.decode(kicked_h).unsqueeze(0),
-                model.decode(clean_anchor_h).unsqueeze(0),
+                _decode_state(model, kicked_h).unsqueeze(0),
+                _decode_state(model, clean_anchor_h).unsqueeze(0),
             )
             recovery[str(horizon)] = {
                 "distance_ratio_median": float(ratio.median().cpu()),
@@ -274,8 +311,8 @@ def analyze(
             }
             tangent_memory = intrinsic_metrics(
                 topology,
-                model.decode(tangent_kicked_h).unsqueeze(0),
-                model.decode(clean_anchor_h).unsqueeze(0),
+                _decode_state(model, tangent_kicked_h).unsqueeze(0),
+                _decode_state(model, clean_anchor_h).unsqueeze(0),
             )
             tangent_transport[str(horizon)] = {
                 "distance_ratio_median": float(tangent_ratio.median().cpu()),
@@ -306,7 +343,7 @@ def analyze(
             )
             decoded_error = intrinsic_metrics(
                 topology,
-                model.decode(evolved).unsqueeze(0),
+                _decode_state(model, evolved).unsqueeze(0),
                 target.unsqueeze(0),
             )
             manifold_evolution[str(horizon)] = {

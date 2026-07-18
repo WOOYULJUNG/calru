@@ -20,6 +20,7 @@ from repro.sagodi_protocol.artifacts import atomic_json
 
 from .analyze_checkpoint_dynamics import (
     _load_model,
+    _primary_state,
     _roll_blank_snapshots,
 )
 
@@ -117,7 +118,7 @@ def main() -> None:
             initial_memory=batch.initial_memory,
             return_states=True,
         )
-        states0 = sequence[-1]
+        states0 = _primary_state(model, sequence[-1])
         ideal = batch.output_targets[-1]
     landmark_indices = _farthest_landmarks(
         ideal.detach().cpu().numpy(), int(args.landmarks)

@@ -30,3 +30,35 @@ The reported decoder-radial recovery is deliberately labeled exploratory:
 the decoder-output radial VJP is not a certified local manifold-normal.
 Positive results must be rechecked with the slow-subspace decomposition before
 they support an attractor claim.
+
+## Split-field refinement and CA-LRU comparison
+
+The later split-field campaign expands the screen to `S1`, `T2`, and `S2`.
+It keeps autonomous and input-driven fields separate and evaluates task error,
+blank memory, local tangent/normal singular gains, finite normal kicks, shape
+distortion, and persistent-homology signatures.
+
+The 10,000-update duration diagnostic resumes nine selected 2,000-update
+checkpoints with their optimizer state:
+
+```bash
+python -m repro.static_gate_pilot.launch_split_gap_followup_v3
+python -m repro.static_gate_pilot.launch_split_candidate_dynamics_v2 \
+  --candidates \
+  /home/biadmin/ca_rnn/experiments/static_gate_split_gap_followup_v3/full_summary.csv \
+  --output \
+  /home/biadmin/ca_rnn/experiments/static_gate_split_gap_followup_dynamics_v3
+```
+
+The CA-LRU-inclusive comparison reanalyzes the validation-selected
+topology-tuning-v2 checkpoints (three seeds per topology) with the same
+split-field analysis and combines them with RNN, GRU, and LSTM:
+
+```bash
+python -m repro.static_gate_pilot.launch_calru_integrated_comparison_v3
+```
+
+For topology wrappers, dynamics and persistent homology are computed on the
+primary recurrent carrier. Decoder-stream coordinates stored in the reported
+state are reconstructed only when decoding; including them in the Jacobian
+would measure decoder recomputation rather than recurrent-state dynamics.
