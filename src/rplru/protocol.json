@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "experiment_id": "rp_lru_intermittent_vector_integration",
+  "dimensions": [1, 2, 4, 8, 16],
+  "rp_lru_hidden_size": 91,
+  "parameter_matching": {
+    "count": "total_parameters",
+    "maximum_relative_gap": 0.05,
+    "minimum_width": 4,
+    "maximum_width": 16384
+  },
+  "task": {
+    "initial_value_low": -0.5,
+    "initial_value_high": 0.5,
+    "delta_low": -0.1,
+    "delta_high": 0.1,
+    "trajectory_low": -1.0,
+    "trajectory_high": 1.0,
+    "maximum_rejection_attempts": 10000,
+    "train_update_count_min": 0,
+    "train_update_count_max": 4,
+    "train_hold_min": 10,
+    "train_hold_max": 50
+  },
+  "training": {
+    "optimizer_updates": 10000,
+    "batch_size": 128,
+    "gradient_clip_norm": 1.0,
+    "weight_decay": 0.0,
+    "validation_interval": 500,
+    "validation_trajectories": 512,
+    "baseline_learning_rates": [0.0003, 0.001, 0.003],
+    "replicate_seeds": [0, 1, 2, 3, 4]
+  },
+  "rp": {
+    "initial_lambda_ranges": [[0.98, 0.999]],
+    "eta_lambdas": [1.0],
+    "retention_thresholds": [0.2],
+    "probe_horizons": [50],
+    "warmup_updates": 3000,
+    "interval_updates": 100,
+    "probe_pairs": 96,
+    "normalization_epsilon": 1e-8
+  },
+  "evaluation": {
+    "update_counts": [0, 1, 2, 4, 8, 16],
+    "segment_hold_lengths": [10, 50, 100, 200, 500, 1000],
+    "trajectories": 1024,
+    "bank_seed": 20260720,
+    "id_update_count_max": 4,
+    "id_hold_max": 50
+  },
+  "ablations": {
+    "retention_modes": ["frozen", "bptt", "all_slow"],
+    "all_slow_lambdas": [1.0]
+  },
+  "analysis": {
+    "near_unit_exponents": [3, 4, 5, 6],
+    "pca_components": 10
+  }
+}

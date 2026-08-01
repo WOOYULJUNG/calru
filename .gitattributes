@@ -2,9 +2,3 @@
 *.csv text eol=lf
 *.json text eol=lf
 *.md text eol=lf
-*.pdf binary
-*.png binary
-
-# Preserve archived evidence and the imported manuscript exactly as received.
-paper/evidence/raw/** -text -eol
-paper/manuscript/sections_01_02.md -text -eol

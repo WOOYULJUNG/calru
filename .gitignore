@@ -29,7 +29,7 @@ Thumbs.db
 *~
 *.swp
 
-# Experiment outputs: committed evidence lives under paper/evidence/ instead
+# Experiment outputs
 logs/
 logs_*/
 outputs/
@@ -44,22 +44,7 @@ traces_*/
 *.ckpt
 *.log
 
-# LaTeX build products. Do not ignore source PDFs/SVGs globally.
-paper/build/
-*.aux
-*.bbl
-*.bcf
-*.blg
-*.fdb_latexmk
-*.fls
-*.lof
-*.lot
-*.out
-*.run.xml
-*.synctex.gz
-*.toc
-
-# Keep committed raw JSON/CSV and paper figures trackable.
-!paper/evidence/raw/**
-!paper/evidence/tables/**
-!paper/figures/**
+# Generated evaluation data
+*.npz
+*.npy
+*.csv
