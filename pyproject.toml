@@ -3,31 +3,32 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "calru-paper"
+name = "rplru"
 version = "0.1.0"
-description = "Auditable evidence aggregation for the CA-LRU paper"
+description = "Minimal reproduction code for Retention Plasticity"
 readme = "README.md"
-requires-python = ">=3.9"
-dependencies = []
-
-# License and author metadata are intentionally omitted until publication and
-# double-blind requirements have been resolved.
+requires-python = ">=3.10"
+dependencies = [
+  "numpy==1.26.4",
+  "torch==2.4.0",
+]
 
 [project.optional-dependencies]
-dev = [
-  "pytest>=8,<9",
-]
-topology-analysis = [
-  "ripser==0.6.15",
-]
+test = ["pytest>=8,<9"]
 
 [project.scripts]
-calru-build-evidence = "calru_paper.evidence:main"
+rplru-train = "rplru.train:main"
+rplru-eval = "rplru.evaluate:main"
+rplru-geometry = "rplru.geometry:main"
+rplru-spatial-train = "rplru.spatial:main"
+rplru-spatial-eval = "rplru.evaluate_spatial:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["calru_paper*"]
+
+[tool.setuptools.package-data]
+rplru = ["protocol.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-q"

@@ -1,4 +1,0 @@
-# Versions recorded for the original experiment environment.
-numpy==1.26.4
-matplotlib==3.5.3
-torch==2.4.0
